@@ -1,0 +1,4 @@
+# Affiliates entity module
+
+
+

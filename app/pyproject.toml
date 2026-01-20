@@ -1,0 +1,51 @@
+[tool.poetry]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = ">=3.12,<3.14"
+fastapi = "^0.116.1"
+pydantic = "^2.11.9"
+gunicorn = "^23.0.0"
+uvicorn = {extras = ["standard"], version = ">=0.38.0,<0.39.0"}
+psycopg2-binary = "^2.9.9"
+python-dotenv = "^1.0.0"
+python-multipart = "^0.0.6"
+python-jose = {extras = ["cryptography"], version = "^3.3.0"}
+passlib = {extras = ["bcrypt"], version = "^1.7.4"}
+pyjwt = "^2.10.1"
+python-dateutil = "^2.9.0"
+Pillow = "^10.0.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.4.2"
+pytest-asyncio = "^0.21.1"
+pytest-cov = "^4.1.0"
+pytest-mock = "^3.12.0"
+factory-boy = "^3.3.0"
+faker = "^20.1.0"
+black = "^23.11.0"
+
+[project]
+name = "CorePlatform"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Bright Debrah Owusu",email = "owusu.debrah@andela.com"}
+]
+readme = "PYPROJECT.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "trovesuite==1.0.33",
+    "uvicorn>=0.38.0,<0.39.0",
+    "gunicorn>=23.0.0",
+    "bcrypt==4.0.1",
+    "passlib[argon2]>=1.7.4,<2.0.0",
+    "pyjwt>=2.10.1,<3.0.0",
+    "python-dateutil>=2.9.0",
+    "pymongo (>=4.15.3,<5.0.0)",
+    "Pillow>=10.0.0",
+]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

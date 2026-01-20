@@ -1,0 +1,2 @@
+# Expenses entity module
+

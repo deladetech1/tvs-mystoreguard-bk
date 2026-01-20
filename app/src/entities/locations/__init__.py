@@ -1,0 +1,2 @@
+# Locations entity module
+

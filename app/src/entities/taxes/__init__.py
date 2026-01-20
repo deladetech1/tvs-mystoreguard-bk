@@ -1,0 +1,2 @@
+# Taxes entity module
+

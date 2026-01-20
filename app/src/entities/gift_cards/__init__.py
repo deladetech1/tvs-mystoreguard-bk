@@ -1,0 +1,4 @@
+# Gift Cards entity module
+
+
+

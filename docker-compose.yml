@@ -1,0 +1,45 @@
+version: "3.8"
+services:
+
+  db:
+    image: postgres:17
+    restart: always
+    env_file:
+      - app/.env
+    ports:
+      - "${DB_PORT:-5431}:5432"
+    volumes:
+      - postgresql_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=${DB_USER:-user}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-password}
+      - POSTGRES_DB=${DB_NAME:-erpdb}
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-user} -d ${DB_NAME:-erpdb}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    container_name: msg-redis-server-mystoreguard
+    image: redis/redis-stack-server:latest
+    restart: always
+    ports:
+      - 6380:6379
+    volumes:
+      - redis_data:/data
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    networks:
+      - default
+
+volumes:
+  postgresql_data:
+  redis_data:
+  
+networks:
+  default:

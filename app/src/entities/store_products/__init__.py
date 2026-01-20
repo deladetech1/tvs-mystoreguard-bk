@@ -1,0 +1,2 @@
+# Store Products entity module
+

@@ -1,0 +1,2 @@
+# Warehouse Configs Entity
+

@@ -1,0 +1,2 @@
+# Warehouse Products entity module
+
