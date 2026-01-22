@@ -38,7 +38,7 @@ variables:
 
   # Registry variables here
   - name: acrName
-    value: 'trovesuite$(env)acr'
+    value: 'trovesuite$(env)acr1'
   - name: containerRegistry
     value: '$(acrName).azurecr.io'
   - name: imageFullName
