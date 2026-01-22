@@ -2262,6 +2262,20 @@ class ProductsService:
                 old_data = dict(existing_batch)
                 batch_number = old_data.get('batch_number', data.batch_id)
 
+                # Block delete if batch is in use (exists in store/warehouse locations)
+                cursor.execute(
+                    f"""SELECT 1 FROM {db_settings.MSG_BATCH_LOCATIONS_TABLE}
+                    WHERE tenant_id = %s AND org_id = %s AND bus_id = %s AND purchase_batche_id = %s
+                    LIMIT 1""",
+                    (tenant_id, org_id, bus_id, data.batch_id),
+                )
+                if cursor.fetchone():
+                    return Respons(
+                        success=False,
+                        detail="Cannot delete batch: it is in use or exists in one or more store or warehouse locations.",
+                        error="BATCH_IN_USE",
+                    )
+
                 # Log activity before permanent deletion
                 try:
                     ActivityLogService.log_activity(
