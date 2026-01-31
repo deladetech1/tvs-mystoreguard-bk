@@ -518,31 +518,35 @@ def permanent_delete_purchase_order(
         return service_result
 
 
-# 7. Receive Purchase Order (NEW API - FLOW 2)
-@purchase_orders_router.post("/receive", response_model=Respons[ReceivePurchaseOrderControllerReadDto])
-def receive_purchase_order(
-    data: ReceivePurchaseOrderControllerWriteDto,
+# 7. Receive Purchase Order(s) (NEW API - FLOW 2) - single or multiple
+@purchase_orders_router.post(
+    "/receive",
+    response_model=Respons[list[ReceivePurchaseOrderControllerReadDto]],
+)
+def receive_purchase_orders(
+    data: list[ReceivePurchaseOrderControllerWriteDto],
     current_user: dict = Depends(CustomAuthService.get_current_user),
     _subscription_check: dict = Depends(verify_subscription_active),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
-    """Receive a purchase order - creates receipt, batches, updates PO items, inserts movements, updates PO status (FLOW 2)"""
+    """Receive one or more purchase orders. Pass a single object in an array for one, or multiple for bulk. Creates receipt, batches, updates PO items, inserts movements, updates PO status (FLOW 2)."""
     with LogContext(
         "purchase_orders",
-        "receive_purchase_order",
-        purchase_order_id=data.purchase_order_id,
+        "receive_purchase_orders",
+        order_count=len(data),
+        purchase_order_ids=[d.purchase_order_id for d in data] if data else [],
     ):
         logger.info(
-            "Processing receive purchase order request",
+            "Processing receive purchase orders request",
             extra={
                 "extra_fields": {
                     "endpoint": "/purchase-orders/receive",
-                    "purchase_order_id": data.purchase_order_id,
+                    "order_count": len(data),
                 }
             },
         )
 
-                # Check if user has any of the required permissions (OR logic)
+        # Check if user has any of the required permissions (OR logic)
         is_authorized = AuthService.has_any_permission(
             user_roles=current_user.data,
             required_permissions=["permission-msg-purchase-orders-update"]
@@ -550,11 +554,10 @@ def receive_purchase_order(
 
         if not is_authorized:
             logger.warning(
-                "Receive purchase order failed - unauthorized access",
+                "Receive purchase orders failed - unauthorized access",
                 extra={
                     "extra_fields": {
                         "endpoint": "/purchase-orders/receive",
-                        "purchase_order_id": data.purchase_order_id,
                         "error": "Unauthorized access",
                         "status": "failed",
                     }
@@ -562,8 +565,8 @@ def receive_purchase_order(
             )
             raise HTTPException(status_code=403, detail="Unauthorized access")
 
-        service_result = PurchaseOrdersService.receive_purchase_order(
-            data=data,
+        service_result = PurchaseOrdersService.receive_purchase_orders(
+            orders=data,
             tenant_id=current_user.data[0].tenant_id,
             org_id=org_bus_loc["org_id"],
             bus_id=org_bus_loc["bus_id"],
@@ -572,22 +575,21 @@ def receive_purchase_order(
 
         if service_result.success:
             logger.info(
-                "Purchase order received successfully",
+                "Purchase orders received successfully",
                 extra={
                     "extra_fields": {
                         "endpoint": "/purchase-orders/receive",
-                        "purchase_order_id": data.purchase_order_id,
+                        "order_count": len(service_result.data) if service_result.data else 0,
                         "status": "success",
                     }
                 },
             )
         else:
             logger.warning(
-                f"Receive purchase order failed: {service_result.detail}",
+                f"Receive purchase orders failed: {service_result.detail}",
                 extra={
                     "extra_fields": {
                         "endpoint": "/purchase-orders/receive",
-                        "purchase_order_id": data.purchase_order_id,
                         "error": service_result.error,
                         "status": "failed",
                     }

@@ -716,7 +716,7 @@ class PurchaseOrdersService:
                         detail="Purchase order not found",
                         error="NOT_FOUND",
                     )
-                
+
                 po_dict = dict(po)
                 supplier_id = po_dict.get('supplier_id')
 
@@ -1070,6 +1070,41 @@ class PurchaseOrdersService:
                 detail=f"Failed to receive purchase order: {str(e)}",
                 error="INTERNAL_ERROR",
             )
+
+    @staticmethod
+    def receive_purchase_orders(
+        orders: List[ReceivePurchaseOrderServiceWriteDto],
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        created_by: str
+    ) -> Respons[List[ReceivePurchaseOrderServiceReadDto]]:
+        """Receive multiple purchase orders. Processes in order; returns first error if any fail."""
+        if not orders:
+            return Respons(
+                success=False,
+                detail="At least one purchase order is required",
+                error="VALIDATION_ERROR",
+            )
+        results: List[ReceivePurchaseOrderServiceReadDto] = []
+        for data in orders:
+            result = PurchaseOrdersService.receive_purchase_order(
+                data=data,
+                tenant_id=tenant_id,
+                org_id=org_id,
+                bus_id=bus_id,
+                created_by=created_by,
+            )
+            if not result.success:
+                return result
+            if result.data and len(result.data) > 0:
+                results.append(result.data[0])
+        return Respons(
+            success=True,
+            detail=f"Received {len(results)} purchase order(s) successfully",
+            data=results,
+        )
+
     @staticmethod
     def update_purchase_order(
         data: UpdatePurchaseOrderServiceWriteDto,

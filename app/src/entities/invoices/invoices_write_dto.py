@@ -64,6 +64,7 @@ class UpdateInvoiceWriteBase(BaseModel):
     """Base write DTO for updating an invoice"""
     customer_id: Optional[str] = None
     sale_date: Optional[str] = Field(None, description="Sale date (YYYY-MM-DD)")
+    due_date: Optional[str] = Field(None, description="Due date (YYYY-MM-DD)")
     status: Optional[InvoiceStatusType] = None
     sale_mode: Optional[str] = None
     description: Optional[str] = None

@@ -978,15 +978,15 @@ class InvoicesService:
                     update_fields.append("customer_id = %s")
                     params.append(data.customer_id)
 
-                if data.invoice_date is not None:
+                if data.sale_date is not None:
                     try:
-                        invoice_date = datetime.strptime(data.invoice_date, "%Y-%m-%d").date()
-                        update_fields.append("invoice_date = %s")
-                        params.append(invoice_date)
+                        sale_date = datetime.strptime(data.sale_date, "%Y-%m-%d").date()
+                        update_fields.append("sale_date = %s")
+                        params.append(sale_date)
                     except ValueError:
                         return Respons(
                             success=False,
-                            detail="Invalid invoice_date format. Expected YYYY-MM-DD",
+                            detail="Invalid sale_date format. Expected YYYY-MM-DD",
                             error="INVALID_DATE_FORMAT",
                         )
 
