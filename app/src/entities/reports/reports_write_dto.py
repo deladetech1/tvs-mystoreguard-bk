@@ -467,6 +467,15 @@ class PricingRulesDetailedReportRequestWriteDto(BaseReportRequestWriteDto):
 
 
 # =====================================================
+# AFFILIATE REPORTS REQUEST DTOs
+# =====================================================
+
+class AffiliatesSummaryReportRequestWriteDto(BaseReportRequestWriteDto):
+    """Request DTO for affiliates summary report"""
+    status: Optional[str] = Field(None, description="Filter by status: ACTIVE, INACTIVE, SUSPENDED")
+
+
+# =====================================================
 # TAX REPORTS REQUEST DTOs
 # =====================================================
 

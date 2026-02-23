@@ -174,9 +174,17 @@ class Settings:
     
     @property
     def cors_origins_list(self) -> list[str]:
-        """Parse CORS_ORIGINS from comma-separated string to list"""
+        """Parse CORS_ORIGINS from comma-separated string to list.
+        When empty, defaults to common dev origins so local frontends work without env."""
         if not self.CORS_ORIGINS:
-            return []
+            return [
+                "http://localhost:3000",
+                "http://localhost:5173",
+                "http://localhost:8080",
+                "http://127.0.0.1:3000",
+                "http://127.0.0.1:5173",
+                "http://127.0.0.1:8080",
+            ]
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
 
 # Global settings instance

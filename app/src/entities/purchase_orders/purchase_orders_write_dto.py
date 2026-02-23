@@ -56,6 +56,9 @@ class UpdatePurchaseOrderItemWriteDto(BaseModel):
     currency_id: Optional[str] = None
     cost_price: Optional[float] = Field(None, ge=0)
     base_selling_price: Optional[float] = Field(None, ge=0)
+    product_size: Optional[str] = None
+    unit_of_measure_id: Optional[str] = None
+    product_expiry_date: Optional[str] = None
 
 
 class UpdatePurchaseOrderWriteDto(UpdatePurchaseOrderWriteBase):

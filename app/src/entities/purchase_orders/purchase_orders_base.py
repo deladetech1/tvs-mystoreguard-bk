@@ -42,6 +42,9 @@ class PurchaseOrderItemBase(BaseModel):
     currency_id: str = Field(..., description="Currency ID")
     cost_price: float = Field(..., ge=0, description="Cost price")
     base_selling_price: float = Field(..., ge=0, description="Base selling price")
+    product_size: Optional[str] = Field(None, description="Product size (expected at receive)")
+    unit_of_measure_id: Optional[str] = Field(None, description="Unit of measure ID (expected at receive)")
+    product_expiry_date: Optional[str] = Field(None, description="Product expiry date YYYY-MM-DD (expected at receive)")
 
 
 # =====================================================

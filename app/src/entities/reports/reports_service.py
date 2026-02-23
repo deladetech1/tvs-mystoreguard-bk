@@ -34,6 +34,7 @@ from src.entities.reports.reports_read_dto import (
     ProductPricesSummaryReportResponseReadBase,
     TaxSummaryReportResponseReadBase,
     TaxRulesSummaryReportResponseReadBase,
+    AffiliatesSummaryReportResponseReadBase,
     # Specific Report Responses - Detailed
     DetailedSalesReportResponseReadBase,
     CustomersSummaryReportResponseReadBase,
@@ -114,6 +115,8 @@ from src.entities.reports.reports_read_dto import (
     # Supplier Reports
     SupplierSummaryItemReadBase,
     SupplierDetailedItemReadBase,
+    # Affiliate Reports
+    AffiliateSummaryItemReadBase,
     # Product Metadata Reports
     ProductMetadataSummaryItemReadBase,
     ProductMetadataGraphItemReadBase,
@@ -934,6 +937,985 @@ class ReportsService:
                 detail=f"Failed to generate balance sheet report: {str(e)}",
                 error="INTERNAL_ERROR",
             )
+
+    @staticmethod
+    def get_invoices_summary_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: InvoicesSummaryReportRequestWriteDto,
+    ) -> Respons[InvoicesSummaryReportResponseReadBase]:
+        """Get invoices summary report"""
+        logger.info("Generating invoices summary report", extra={
+            "extra_fields": {"tenant_id": tenant_id}
+        })
+
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions, params = ReportsService._get_base_where_conditions(
+                    tenant_id, org_id, bus_id, data.loc_id, data.location_ids, table_alias="i"
+                )
+                conditions.append("i.deleted_by IS NULL")
+                conditions, params = ReportsService._add_date_filters(
+                    conditions, params, data.from_date, data.to_date, "i.sale_date"
+                )
+                if data.status:
+                    conditions.append("i.status = %s")
+                    params.append(data.status)
+
+                where_clause = " AND ".join(conditions)
+
+                # Main aggregates
+                cursor.execute(
+                    f"""
+                    SELECT
+                        COUNT(*) as total_invoices,
+                        COALESCE(SUM(i.total_amount), 0) as total_amount,
+                        COALESCE(SUM(i.paid_amount), 0) as paid_amount,
+                        COALESCE(SUM(CASE WHEN i.status NOT IN ('CANCELLED') AND i.balance_amount > 0
+                            THEN i.balance_amount ELSE 0 END), 0) as outstanding_amount,
+                        COALESCE(SUM(CASE WHEN i.status = 'OVERDUE' OR (i.due_date IS NOT NULL AND i.due_date < CURRENT_DATE AND i.balance_amount > 0)
+                            THEN i.balance_amount ELSE 0 END), 0) as overdue_amount,
+                        COALESCE(AVG(CASE WHEN i.status != 'CANCELLED' THEN i.total_amount END), 0) as average_invoice_value
+                    FROM {db_settings.MSG_INVOICES_TABLE} i
+                    WHERE {where_clause}
+                    """,
+                    tuple(params),
+                )
+                agg_result = cursor.fetchone()
+
+                # Count by status
+                cursor.execute(
+                    f"""
+                    SELECT i.status, COUNT(*) as cnt, COALESCE(SUM(i.total_amount), 0) as amount
+                    FROM {db_settings.MSG_INVOICES_TABLE} i
+                    WHERE {where_clause}
+                    GROUP BY i.status
+                    """,
+                    tuple(params),
+                )
+                status_rows = cursor.fetchall()
+                invoices_by_status = {}
+                for row in status_rows:
+                    invoices_by_status[row['status']] = {
+                        "count": int(row['cnt']),
+                        "amount": str(ReportsService._quantize_decimal(row['amount'])),
+                    }
+
+                total_invoices = int(agg_result['total_invoices']) if agg_result else 0
+                total_amount = ReportsService._quantize_decimal(agg_result['total_amount']) if agg_result else Decimal('0')
+                paid_amount = ReportsService._quantize_decimal(agg_result['paid_amount']) if agg_result else Decimal('0')
+                outstanding_amount = ReportsService._quantize_decimal(agg_result['outstanding_amount']) if agg_result else Decimal('0')
+                overdue_amount = ReportsService._quantize_decimal(agg_result['overdue_amount']) if agg_result else Decimal('0')
+                average_invoice_value = ReportsService._quantize_decimal(agg_result['average_invoice_value']) if agg_result else Decimal('0')
+
+                summary_item = InvoiceSummaryItemReadBase(
+                    total_invoices=total_invoices,
+                    total_amount=total_amount,
+                    paid_amount=paid_amount,
+                    outstanding_amount=outstanding_amount,
+                    overdue_amount=overdue_amount,
+                    average_invoice_value=average_invoice_value,
+                    invoices_by_status=invoices_by_status,
+                )
+
+                response = InvoicesSummaryReportResponseReadBase(
+                    report_type="invoices_summary",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={
+                        "status": data.status,
+                        "loc_id": data.loc_id,
+                        "location_ids": data.location_ids,
+                    },
+                    summary_items=[summary_item],
+                    total_items=1,
+                    totals={
+                        "total_invoices": total_invoices,
+                        "total_amount": str(total_amount),
+                        "paid_amount": str(paid_amount),
+                        "outstanding_amount": str(outstanding_amount),
+                        "overdue_amount": str(overdue_amount),
+                        "average_invoice_value": str(average_invoice_value),
+                    },
+                )
+
+                return Respons(
+                    success=True,
+                    detail="Invoices summary report generated successfully",
+                    data=[response],
+                )
+
+        except Exception as e:
+            logger.error(f"Error generating invoices summary report: {str(e)}", exc_info=True)
+            return Respons(
+                success=False,
+                detail=f"Failed to generate invoices summary report: {str(e)}",
+                error="INTERNAL_ERROR",
+            )
+
+    @staticmethod
+    def get_invoices_detailed_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: InvoicesDetailedReportRequestWriteDto,
+    ) -> Respons[InvoicesDetailedReportResponseReadBase]:
+        """Get invoices detailed report"""
+        logger.info("Generating invoices detailed report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions, params = ReportsService._get_base_where_conditions(
+                    tenant_id, org_id, bus_id, data.loc_id, data.location_ids, table_alias="i"
+                )
+                conditions.append("i.deleted_by IS NULL")
+                conditions, params = ReportsService._add_date_filters(
+                    conditions, params, data.from_date, data.to_date, "i.sale_date"
+                )
+                if data.customer_id:
+                    conditions.append("i.customer_id = %s")
+                    params.append(data.customer_id)
+                if data.status:
+                    conditions.append("i.status = %s")
+                    params.append(data.status)
+                if data.min_amount is not None:
+                    conditions.append("i.total_amount >= %s")
+                    params.append(data.min_amount)
+                if data.max_amount is not None:
+                    conditions.append("i.total_amount <= %s")
+                    params.append(data.max_amount)
+                where = " AND ".join(conditions)
+                offset = (data.page - 1) * data.size
+
+                cursor.execute(
+                    f"""
+                    SELECT i.id as invoice_id, i.invoice_number, i.sale_date as invoice_date, i.due_date,
+                        c.fullname as customer_name, i.total_amount, i.paid_amount, i.balance_amount,
+                        i.status,
+                        CASE WHEN i.due_date IS NOT NULL AND i.due_date < CURRENT_DATE AND i.balance_amount > 0
+                            THEN (CURRENT_DATE - i.due_date)::int ELSE 0 END as days_overdue,
+                        (SELECT COUNT(*) FROM {db_settings.MSG_INVOICE_ITEMS_TABLE} ii
+                            WHERE ii.invoice_id = i.id AND ii.tenant_id = i.tenant_id AND ii.org_id = i.org_id
+                            AND ii.bus_id = i.bus_id AND ii.loc_id = i.loc_id) as items_count
+                    FROM {db_settings.MSG_INVOICES_TABLE} i
+                    LEFT JOIN {db_settings.MSG_CUSTOMERS_TABLE} c
+                        ON i.customer_id = c.id AND i.tenant_id = c.tenant_id AND i.org_id = c.org_id AND i.bus_id = c.bus_id
+                    WHERE {where}
+                    ORDER BY i.sale_date DESC, i.cdatetime DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    tuple(params) + (data.size, offset),
+                )
+                rows = cursor.fetchall()
+                cursor.execute(
+                    f"SELECT COUNT(*) as cnt FROM {db_settings.MSG_INVOICES_TABLE} i WHERE {where}",
+                    tuple(params),
+                )
+                total_items = cursor.fetchone()['cnt']
+                total_amount_sum = sum(ReportsService._quantize_decimal(r['total_amount']) for r in rows)
+
+                items = [
+                    InvoiceDetailedItemReadBase(
+                        invoice_id=r['invoice_id'],
+                        invoice_number=r['invoice_number'],
+                        invoice_date=r['invoice_date'],
+                        due_date=r['due_date'],
+                        customer_name=r['customer_name'] or "",
+                        total_amount=ReportsService._quantize_decimal(r['total_amount']),
+                        paid_amount=ReportsService._quantize_decimal(r['paid_amount']),
+                        balance_amount=ReportsService._quantize_decimal(r['balance_amount']),
+                        status=r['status'],
+                        days_overdue=r['days_overdue'],
+                        items_count=int(r['items_count']) if r['items_count'] else 0,
+                    )
+                    for r in rows
+                ]
+
+                response = InvoicesDetailedReportResponseReadBase(
+                    report_type="invoices_detailed",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={"customer_id": data.customer_id, "status": data.status},
+                    items=items,
+                    total_items=total_items,
+                    total_amount=ReportsService._quantize_decimal(total_amount_sum) if items else None,
+                    pagination={"page": data.page, "size": data.size, "total": total_items},
+                )
+                return Respons(success=True, detail="Invoices detailed report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating invoices detailed report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_invoice_aging_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: InvoiceAgingReportRequestWriteDto,
+    ) -> Respons[InvoiceAgingReportResponseReadBase]:
+        """Get invoice aging report"""
+        logger.info("Generating invoice aging report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions, params = ReportsService._get_base_where_conditions(
+                    tenant_id, org_id, bus_id, data.loc_id, data.location_ids, table_alias="i"
+                )
+                conditions.append("i.deleted_by IS NULL")
+                conditions.append("i.balance_amount > 0")
+                if not data.include_paid:
+                    conditions.append("i.status IN ('DRAFT', 'PARTIALLY_PAID', 'OVERDUE')")
+                conditions, params = ReportsService._add_date_filters(
+                    conditions, params, data.from_date, data.to_date, "i.sale_date"
+                )
+                if data.customer_id:
+                    conditions.append("i.customer_id = %s")
+                    params.append(data.customer_id)
+                where = " AND ".join(conditions)
+                offset = (data.page - 1) * data.size
+
+                cursor.execute(
+                    f"""
+                    SELECT i.customer_id, c.fullname as customer_name, i.id as invoice_id, i.invoice_number,
+                        i.sale_date as invoice_date, i.due_date,
+                        CASE WHEN i.due_date IS NOT NULL AND i.due_date < CURRENT_DATE
+                            THEN (CURRENT_DATE - i.due_date)::int ELSE 0 END as days_overdue,
+                        i.balance_amount as amount, i.status
+                    FROM {db_settings.MSG_INVOICES_TABLE} i
+                    LEFT JOIN {db_settings.MSG_CUSTOMERS_TABLE} c
+                        ON i.customer_id = c.id AND i.tenant_id = c.tenant_id AND i.org_id = c.org_id AND i.bus_id = c.bus_id
+                    WHERE {where}
+                    ORDER BY days_overdue DESC NULLS LAST, i.due_date ASC NULLS LAST
+                    LIMIT %s OFFSET %s
+                    """,
+                    tuple(params) + (data.size, offset),
+                )
+                rows = cursor.fetchall()
+                cursor.execute(
+                    f"SELECT COUNT(*) as cnt, COALESCE(SUM(i.balance_amount), 0) as tot FROM {db_settings.MSG_INVOICES_TABLE} i WHERE {where}",
+                    tuple(params),
+                )
+                agg = cursor.fetchone()
+                total_items = agg['cnt']
+                total_amount_val = ReportsService._quantize_decimal(agg['tot'])
+
+                items = [
+                    InvoiceAgingItemReadBase(
+                        customer_id=r['customer_id'] or "",
+                        customer_name=r['customer_name'] or "",
+                        invoice_id=r['invoice_id'],
+                        invoice_number=r['invoice_number'],
+                        invoice_date=r['invoice_date'],
+                        due_date=r['due_date'],
+                        days_overdue=r['days_overdue'] or 0,
+                        amount=ReportsService._quantize_decimal(r['amount']),
+                        status=r['status'],
+                    )
+                    for r in rows
+                ]
+
+                response = InvoiceAgingReportResponseReadBase(
+                    report_type="invoices_aging",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={"include_paid": data.include_paid, "customer_id": data.customer_id},
+                    items=items,
+                    total_items=total_items,
+                    total_amount=total_amount_val,
+                    pagination={"page": data.page, "size": data.size, "total": total_items},
+                )
+                return Respons(success=True, detail="Invoice aging report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating invoice aging report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_payments_summary_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: PaymentsSummaryReportRequestWriteDto,
+    ) -> Respons[PaymentsSummaryReportResponseReadBase]:
+        """Get payments summary report from sales_payments and invoice_payments"""
+        logger.info("Generating payments summary report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions, params = ReportsService._get_base_where_conditions(
+                    tenant_id, org_id, bus_id, data.loc_id, data.location_ids, table_alias="sp"
+                )
+                conditions.append("sp.deleted_by IS NULL")
+                conditions, params = ReportsService._add_date_filters(
+                    conditions, params, data.from_date, data.to_date, "DATE(sp.cdatetime)"
+                )
+                if data.payment_method:
+                    conditions.append("sp.payment_method = %s")
+                    params.append(data.payment_method)
+                if data.status:
+                    conditions.append("sp.payment_status = %s")
+                    params.append(data.status)
+                where = " AND ".join(conditions)
+
+                # Sales payments
+                cursor.execute(
+                    f"""
+                    SELECT COUNT(*) as cnt, COALESCE(SUM(paid_amount), 0) as amt,
+                        payment_method, payment_status
+                    FROM {db_settings.MSG_SALES_PAYMENTS_TABLE} sp
+                    WHERE {where}
+                    GROUP BY payment_method, payment_status
+                    """,
+                    tuple(params),
+                )
+                sales_rows = cursor.fetchall()
+
+                # Invoice payments - same conditions but table alias ip
+                ip_conditions, ip_params = ReportsService._get_base_where_conditions(
+                    tenant_id, org_id, bus_id, data.loc_id, data.location_ids, table_alias="ip"
+                )
+                ip_conditions.append("ip.deleted_by IS NULL")
+                ip_conditions, ip_params = ReportsService._add_date_filters(
+                    ip_conditions, ip_params, data.from_date, data.to_date, "DATE(ip.cdatetime)"
+                )
+                if data.payment_method:
+                    ip_conditions.append("ip.payment_method = %s")
+                    ip_params.append(data.payment_method)
+                if data.status:
+                    ip_conditions.append("ip.payment_status = %s")
+                    ip_params.append(data.status)
+                ip_where = " AND ".join(ip_conditions)
+
+                cursor.execute(
+                    f"""
+                    SELECT COUNT(*) as cnt, COALESCE(SUM(paid_amount), 0) as amt,
+                        payment_method, payment_status
+                    FROM {db_settings.MSG_INVOICE_PAYMENTS_TABLE} ip
+                    WHERE {ip_where}
+                    GROUP BY payment_method, payment_status
+                    """,
+                    tuple(ip_params),
+                )
+                inv_rows = cursor.fetchall()
+
+                payments_by_method = {}
+                payments_by_status = {}
+                total_payments = 0
+                total_amount = Decimal('0')
+                refunds_count = 0
+                refunds_amount = Decimal('0')
+
+                for row in sales_rows + inv_rows:
+                    cnt, amt = int(row['cnt']), ReportsService._quantize_decimal(row['amt'])
+                    meth, status = row['payment_method'], row['payment_status']
+                    total_payments += cnt
+                    total_amount += amt
+                    payments_by_method[meth] = payments_by_method.get(meth, {'count': 0, 'amount': Decimal('0')})
+                    payments_by_method[meth]['count'] += cnt
+                    payments_by_method[meth]['amount'] += amt
+                    payments_by_status[status] = payments_by_status.get(status, {'count': 0, 'amount': Decimal('0')})
+                    payments_by_status[status]['count'] += cnt
+                    payments_by_status[status]['amount'] += amt
+                    if status == 'REFUNDED':
+                        refunds_count += cnt
+                        refunds_amount += amt
+
+                for k in payments_by_method:
+                    payments_by_method[k] = {"count": payments_by_method[k]['count'], "amount": str(payments_by_method[k]['amount'])}
+                for k in payments_by_status:
+                    payments_by_status[k] = {"count": payments_by_status[k]['count'], "amount": str(payments_by_status[k]['amount'])}
+
+                avg = total_amount / total_payments if total_payments else Decimal('0')
+                summary_item = PaymentSummaryItemReadBase(
+                    total_payments=total_payments,
+                    total_amount=total_amount,
+                    payments_by_method=payments_by_method,
+                    payments_by_status=payments_by_status,
+                    average_payment_amount=ReportsService._quantize_decimal(avg),
+                    refunds_count=refunds_count,
+                    refunds_amount=refunds_amount,
+                )
+                response = PaymentsSummaryReportResponseReadBase(
+                    report_type="payments_summary",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={"payment_method": data.payment_method, "status": data.status},
+                    summary_items=[summary_item],
+                    total_items=1,
+                    totals={"total_payments": total_payments, "total_amount": str(total_amount), "refunds_count": refunds_count, "refunds_amount": str(refunds_amount)},
+                )
+                return Respons(success=True, detail="Payments summary report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating payments summary report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_payments_detailed_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: PaymentsDetailedReportRequestWriteDto,
+    ) -> Respons[PaymentsDetailedReportResponseReadBase]:
+        """Get payments detailed report"""
+        logger.info("Generating payments detailed report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                offset = (data.page - 1) * data.size
+                items = []
+                conditions, params = ReportsService._get_base_where_conditions(
+                    tenant_id, org_id, bus_id, data.loc_id, data.location_ids, table_alias="sp"
+                )
+                conditions.append("sp.deleted_by IS NULL")
+                conditions, params = ReportsService._add_date_filters(
+                    conditions, params, data.from_date, data.to_date, "DATE(sp.cdatetime)"
+                )
+                if data.payment_method:
+                    conditions.append("sp.payment_method = %s")
+                    params.append(data.payment_method)
+                if data.status:
+                    conditions.append("sp.payment_status = %s")
+                    params.append(data.status)
+                if data.sale_id:
+                    conditions.append("sp.sale_id = %s")
+                    params.append(data.sale_id)
+                where = " AND ".join(conditions)
+
+                cursor.execute(
+                    f"""
+                    SELECT sp.id as payment_id, sp.sale_id, NULL::text as invoice_id,
+                        DATE(sp.cdatetime) as payment_date, sp.payment_method, sp.paid_amount as amount,
+                        sp.payment_status as status, sp.description as reference_number,
+                        c.fullname as customer_name
+                    FROM {db_settings.MSG_SALES_PAYMENTS_TABLE} sp
+                    LEFT JOIN {db_settings.MSG_SALES_TABLE} s ON sp.sale_id = s.id AND sp.tenant_id = s.tenant_id AND sp.org_id = s.org_id AND sp.bus_id = s.bus_id AND sp.loc_id = s.loc_id AND s.deleted_by IS NULL
+                    LEFT JOIN {db_settings.MSG_CUSTOMERS_TABLE} c ON s.customer_id = c.id AND s.tenant_id = c.tenant_id AND s.org_id = c.org_id AND s.bus_id = c.bus_id
+                    WHERE {where}
+                    ORDER BY sp.cdatetime DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    tuple(params) + (data.size, offset),
+                )
+                for row in cursor.fetchall():
+                    items.append(PaymentDetailedItemReadBase(
+                        payment_id=row['payment_id'],
+                        sale_id=row['sale_id'],
+                        invoice_id=row['invoice_id'],
+                        payment_date=row['payment_date'],
+                        payment_method=row['payment_method'],
+                        amount=ReportsService._quantize_decimal(row['amount']),
+                        status=row['status'],
+                        reference_number=row['reference_number'],
+                        customer_name=row['customer_name'],
+                    ))
+
+                inv_conditions, inv_params = ReportsService._get_base_where_conditions(
+                    tenant_id, org_id, bus_id, data.loc_id, data.location_ids, table_alias="ip"
+                )
+                inv_conditions.append("ip.deleted_by IS NULL")
+                inv_conditions, inv_params = ReportsService._add_date_filters(
+                    inv_conditions, inv_params, data.from_date, data.to_date, "DATE(ip.cdatetime)"
+                )
+                if data.payment_method:
+                    inv_conditions.append("ip.payment_method = %s")
+                    inv_params.append(data.payment_method)
+                if data.status:
+                    inv_conditions.append("ip.payment_status = %s")
+                    inv_params.append(data.status)
+                if data.invoice_id:
+                    inv_conditions.append("ip.invoice_id = %s")
+                    inv_params.append(data.invoice_id)
+                inv_where = " AND ".join(inv_conditions)
+
+                cursor.execute(
+                    f"""
+                    SELECT ip.id as payment_id, NULL::text as sale_id, ip.invoice_id,
+                        DATE(ip.cdatetime) as payment_date, ip.payment_method, ip.paid_amount as amount,
+                        ip.payment_status as status, ip.description as reference_number,
+                        c.fullname as customer_name
+                    FROM {db_settings.MSG_INVOICE_PAYMENTS_TABLE} ip
+                    LEFT JOIN {db_settings.MSG_INVOICES_TABLE} i ON ip.invoice_id = i.id AND ip.tenant_id = i.tenant_id AND ip.org_id = i.org_id AND ip.bus_id = i.bus_id AND ip.loc_id = i.loc_id AND i.deleted_by IS NULL
+                    LEFT JOIN {db_settings.MSG_CUSTOMERS_TABLE} c ON i.customer_id = c.id AND i.tenant_id = c.tenant_id AND i.org_id = c.org_id AND i.bus_id = c.bus_id
+                    WHERE {inv_where}
+                    ORDER BY ip.cdatetime DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    tuple(inv_params) + (data.size, offset),
+                )
+                for row in cursor.fetchall():
+                    items.append(PaymentDetailedItemReadBase(
+                        payment_id=row['payment_id'],
+                        sale_id=row['sale_id'],
+                        invoice_id=row['invoice_id'],
+                        payment_date=row['payment_date'],
+                        payment_method=row['payment_method'],
+                        amount=ReportsService._quantize_decimal(row['amount']),
+                        status=row['status'],
+                        reference_number=row['reference_number'],
+                        customer_name=row['customer_name'],
+                    ))
+
+                items.sort(key=lambda x: x.payment_date, reverse=True)
+                items = items[: data.size]
+                total_amount = sum(i.amount for i in items)
+
+                cursor.execute(
+                    f"SELECT COUNT(*) FROM {db_settings.MSG_SALES_PAYMENTS_TABLE} sp WHERE {where}",
+                    tuple(params),
+                )
+                cnt_s = cursor.fetchone()['count']
+                cursor.execute(
+                    f"SELECT COUNT(*) FROM {db_settings.MSG_INVOICE_PAYMENTS_TABLE} ip WHERE {inv_where}",
+                    tuple(inv_params),
+                )
+                cnt_i = cursor.fetchone()['count']
+                total_items = cnt_s + cnt_i
+
+                response = PaymentsDetailedReportResponseReadBase(
+                    report_type="payments_detailed",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={},
+                    items=items,
+                    total_items=total_items,
+                    total_amount=ReportsService._quantize_decimal(total_amount) if items else None,
+                    pagination={"page": data.page, "size": data.size, "total": total_items},
+                )
+                return Respons(success=True, detail="Payments detailed report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating payments detailed report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_payments_graphical_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: PaymentsGraphicalReportRequestWriteDto,
+    ) -> Respons[PaymentsGraphicalReportResponseReadBase]:
+        """Get payments graphical report"""
+        logger.info("Generating payments graphical report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                fmt = {"DAY": "YYYY-MM-DD", "WEEK": "IYYY-IW", "MONTH": "YYYY-MM", "YEAR": "YYYY"}.get(
+                    getattr(data, 'group_by', 'MONTH') or 'MONTH', "YYYY-MM"
+                )
+                conditions, params = ReportsService._get_base_where_conditions(
+                    tenant_id, org_id, bus_id, data.loc_id, data.location_ids, table_alias="sp"
+                )
+                conditions.append("sp.deleted_by IS NULL")
+                conditions, params = ReportsService._add_date_filters(
+                    conditions, params, data.from_date, data.to_date, "DATE(sp.cdatetime)"
+                )
+                where = " AND ".join(conditions)
+                ip_conditions, ip_params = ReportsService._get_base_where_conditions(
+                    tenant_id, org_id, bus_id, data.loc_id, data.location_ids, table_alias="ip"
+                )
+                ip_conditions.append("ip.deleted_by IS NULL")
+                ip_conditions, ip_params = ReportsService._add_date_filters(
+                    ip_conditions, ip_params, data.from_date, data.to_date, "DATE(ip.cdatetime)"
+                )
+                ip_where = " AND ".join(ip_conditions)
+
+                cursor.execute(
+                    f"""
+                    SELECT period, payment_method, COALESCE(SUM(paid_amount), 0) as amount, COUNT(*) as cnt
+                    FROM (
+                        SELECT TO_CHAR(sp.cdatetime, %s) as period, sp.payment_method, sp.paid_amount
+                        FROM {db_settings.MSG_SALES_PAYMENTS_TABLE} sp
+                        WHERE {where}
+                    ) sub
+                    GROUP BY period, payment_method
+                    """,
+                    (fmt,) + tuple(params),
+                )
+                rows = cursor.fetchall()
+                cursor.execute(
+                    f"""
+                    SELECT period, payment_method, COALESCE(SUM(paid_amount), 0) as amount, COUNT(*) as cnt
+                    FROM (
+                        SELECT TO_CHAR(ip.cdatetime, %s) as period, ip.payment_method, ip.paid_amount
+                        FROM {db_settings.MSG_INVOICE_PAYMENTS_TABLE} ip
+                        WHERE {ip_where}
+                    ) sub
+                    GROUP BY period, payment_method
+                    """,
+                    (fmt,) + tuple(ip_params),
+                )
+                inv_rows = cursor.fetchall()
+
+                period_data = {}
+                for row in rows + inv_rows:
+                    p, m = row['period'], row['payment_method']
+                    key = (p, m)
+                    if key not in period_data:
+                        period_data[key] = {'amount': Decimal('0'), 'count': 0}
+                    period_data[key]['amount'] += ReportsService._quantize_decimal(row['amount'])
+                    period_data[key]['count'] += int(row['cnt'])
+
+                graph_data = [
+                    PaymentGraphItemReadBase(
+                        period=k[0],
+                        payment_method=k[1],
+                        amount=v['amount'],
+                        count=v['count'],
+                    )
+                    for k, v in sorted(period_data.items())
+                ]
+                response = PaymentsGraphicalReportResponseReadBase(
+                    report_type="payments_graphical",
+                    report_format="GRAPHICAL",
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={},
+                    graph_data=graph_data,
+                    chart_type="bar",
+                    metadata={},
+                )
+                return Respons(success=True, detail="Payments graphical report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating payments graphical report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_pricing_rules_summary_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: PricingRulesSummaryReportRequestWriteDto,
+    ) -> Respons[PricingRulesSummaryReportResponseReadBase]:
+        """Get pricing rules summary report"""
+        logger.info("Generating pricing rules summary report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions = ["r.tenant_id = %s", "r.org_id = %s", "r.bus_id = %s", "r.deleted_by IS NULL"]
+                params = [tenant_id, org_id, bus_id]
+                if data.rule_id:
+                    conditions.append("r.id = %s")
+                    params.append(data.rule_id)
+                if data.is_active is not None:
+                    conditions.append("r.is_active = %s")
+                    params.append(data.is_active)
+                where = " AND ".join(conditions)
+
+                cursor.execute(
+                    f"""
+                    SELECT r.id as rule_id, r.name as rule_name, r.rule_type, r.is_active,
+                        r.discount_value, r.discount_percent, r.cdatetime
+                    FROM {db_settings.MSG_PRICING_RULES_TABLE} r
+                    WHERE {where}
+                    ORDER BY r.name
+                    """,
+                    tuple(params),
+                )
+                rows = cursor.fetchall()
+                summary_items = []
+                for row in rows:
+                    summary_items.append(PricingRuleSummaryItemReadBase(
+                        rule_id=row['rule_id'],
+                        rule_name=row['rule_name'],
+                        times_applied=0,
+                        total_discount_amount=Decimal('0'),
+                        total_items_affected=Decimal('0'),
+                        average_discount_percentage=row['discount_percent'] or Decimal('0'),
+                    ))
+                response = PricingRulesSummaryReportResponseReadBase(
+                    report_type="pricing_rules_summary",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={"rule_id": data.rule_id, "is_active": data.is_active},
+                    summary_items=summary_items,
+                    total_items=len(summary_items),
+                    totals={"total_rules": len(summary_items)},
+                )
+                return Respons(success=True, detail="Pricing rules summary report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating pricing rules summary report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_pricing_rules_detailed_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: PricingRulesDetailedReportRequestWriteDto,
+    ) -> Respons[PricingRulesDetailedReportResponseReadBase]:
+        """Get pricing rules detailed report"""
+        logger.info("Generating pricing rules detailed report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions = ["r.tenant_id = %s", "r.org_id = %s", "r.bus_id = %s"]
+                params = [tenant_id, org_id, bus_id]
+                if not data.include_inactive:
+                    conditions.append("r.is_active = true")
+                if data.rule_id:
+                    conditions.append("r.id = %s")
+                    params.append(data.rule_id)
+                where = " AND ".join(conditions)
+                offset = (data.page - 1) * data.size
+
+                cursor.execute(
+                    f"""
+                    SELECT r.id as rule_id, r.name as rule_name, r.rule_type, r.is_active,
+                        r.discount_value, r.discount_percent, r.cdatetime
+                    FROM {db_settings.MSG_PRICING_RULES_TABLE} r
+                    WHERE {where}
+                    ORDER BY r.name
+                    LIMIT %s OFFSET %s
+                    """,
+                    tuple(params) + (data.size, offset),
+                )
+                rows = cursor.fetchall()
+                cursor.execute(f"SELECT COUNT(*) as cnt FROM {db_settings.MSG_PRICING_RULES_TABLE} r WHERE {where}", tuple(params))
+                total_items = cursor.fetchone()['cnt']
+
+                items = []
+                for row in rows:
+                    cdt = row['cdatetime']
+                    items.append(PricingRuleDetailedItemReadBase(
+                        rule_id=row['rule_id'],
+                        rule_name=row['rule_name'],
+                        rule_type=row['rule_type'],
+                        is_active=row['is_active'],
+                        times_applied=0,
+                        total_discount=Decimal('0'),
+                        affected_products_count=0,
+                        date_created=cdt.date() if cdt else date.today(),
+                        last_applied_date=None,
+                    ))
+                response = PricingRulesDetailedReportResponseReadBase(
+                    report_type="pricing_rules_detailed",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={},
+                    items=items,
+                    total_items=total_items,
+                    total_amount=None,
+                    pagination={"page": data.page, "size": data.size, "total": total_items},
+                )
+                return Respons(success=True, detail="Pricing rules detailed report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating pricing rules detailed report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_affiliates_summary_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: AffiliatesSummaryReportRequestWriteDto,
+    ) -> Respons[AffiliatesSummaryReportResponseReadBase]:
+        """Get affiliates summary report"""
+        logger.info("Generating affiliates summary report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions = ["a.tenant_id = %s", "a.org_id = %s", "a.bus_id = %s", "a.delete_status = 'NOT_DELETED'"]
+                params = [tenant_id, org_id, bus_id]
+                if data.status:
+                    conditions.append("a.status = %s")
+                    params.append(data.status)
+                where = " AND ".join(conditions)
+
+                cursor.execute(
+                    f"""
+                    SELECT a.id as affiliate_id, a.affiliate_code, a.affiliate_name,
+                        a.total_referrals, a.total_conversions, a.total_commission_earned, a.total_commission_paid,
+                        a.status,
+                        (a.total_commission_earned - a.total_commission_paid) as commission_outstanding,
+                        CASE WHEN a.total_referrals > 0 THEN (a.total_conversions::numeric / a.total_referrals * 100) ELSE NULL END as conversion_rate,
+                        CASE WHEN a.total_conversions > 0 THEN (a.total_commission_earned / a.total_conversions) ELSE NULL END as avg_commission,
+                        (SELECT MAX(r.referral_date) FROM {db_settings.MSG_AFFILIATE_REFERRALS_TABLE} r
+                            WHERE r.affiliate_id = a.id AND r.tenant_id = a.tenant_id AND r.org_id = a.org_id AND r.bus_id = a.bus_id) as last_referral_date
+                    FROM {db_settings.MSG_AFFILIATES_TABLE} a
+                    WHERE {where}
+                    ORDER BY a.affiliate_name
+                    """,
+                    tuple(params),
+                )
+                rows = cursor.fetchall()
+                summary_items = []
+                for r in rows:
+                    outstanding = ReportsService._quantize_decimal(r['commission_outstanding'] or 0)
+                    conv_rate = ReportsService._quantize_decimal(r['conversion_rate']) if r['conversion_rate'] is not None else None
+                    avg_comm = ReportsService._quantize_decimal(r['avg_commission']) if r['avg_commission'] is not None else None
+                    lrd = r['last_referral_date'].date() if hasattr(r['last_referral_date'], 'date') else r['last_referral_date'] if isinstance(r['last_referral_date'], date) else r['last_referral_date']
+                    summary_items.append(AffiliateSummaryItemReadBase(
+                        affiliate_id=r['affiliate_id'],
+                        affiliate_code=r['affiliate_code'],
+                        affiliate_name=r['affiliate_name'],
+                        total_referrals=int(r['total_referrals'] or 0),
+                        total_conversions=int(r['total_conversions'] or 0),
+                        total_commission_earned=ReportsService._quantize_decimal(r['total_commission_earned'] or 0),
+                        total_commission_paid=ReportsService._quantize_decimal(r['total_commission_paid'] or 0),
+                        commission_outstanding=outstanding,
+                        conversion_rate=conv_rate,
+                        average_commission_per_conversion=avg_comm,
+                        status=r['status'],
+                        last_referral_date=lrd,
+                    ))
+                response = AffiliatesSummaryReportResponseReadBase(
+                    report_type="affiliates_summary",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={"status": data.status},
+                    summary_items=summary_items,
+                    total_items=len(summary_items),
+                    totals={"total_affiliates": len(summary_items)},
+                )
+                return Respons(success=True, detail="Affiliates summary report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating affiliates summary report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_tax_summary_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: TaxSummaryReportRequestWriteDto,
+    ) -> Respons[TaxSummaryReportResponseReadBase]:
+        """Get tax summary report - lists taxes with usage from sales/invoice items"""
+        logger.info("Generating tax summary report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions = ["t.tenant_id = %s", "t.org_id = %s", "t.bus_id = %s", "t.deleted_by IS NULL"]
+                params = [tenant_id, org_id, bus_id]
+                if data.tax_id:
+                    conditions.append("t.id = %s")
+                    params.append(data.tax_id)
+                where = " AND ".join(conditions)
+
+                cursor.execute(
+                    f"""
+                    SELECT t.id as tax_id, t.name as tax_name, t.rate as tax_rate
+                    FROM {db_settings.MSG_TAXES_TABLE} t
+                    WHERE {where}
+                    ORDER BY t.name
+                    """,
+                    tuple(params),
+                )
+                tax_rows = cursor.fetchall()
+                summary_items = []
+                for tr in tax_rows:
+                    tid = tr['tax_id']
+                    cursor.execute(
+                        f"""
+                        SELECT COALESCE(SUM(si.line_total), 0) as taxable, COALESCE(SUM(si.tax_amount), 0) as tax_amt, COUNT(DISTINCT si.sale_id) as txn_cnt
+                        FROM {db_settings.MSG_SALES_ITEMS_TABLE} si
+                        INNER JOIN {db_settings.MSG_SALES_TABLE} s ON si.sale_id = s.id AND si.tenant_id = s.tenant_id AND si.org_id = s.org_id AND si.bus_id = s.bus_id AND si.loc_id = s.loc_id
+                        WHERE si.tenant_id = %s AND si.org_id = %s AND si.bus_id = %s AND s.deleted_by IS NULL
+                        AND si.tax_rate = %s
+                        """,
+                        (tenant_id, org_id, bus_id, float(tr['tax_rate'] or 0)),
+                    )
+                    sales_agg = cursor.fetchone()
+                    cursor.execute(
+                        f"""
+                        SELECT COALESCE(SUM(ii.line_total), 0) as taxable, COALESCE(SUM(ii.tax_amount), 0) as tax_amt, COUNT(DISTINCT ii.invoice_id) as txn_cnt
+                        FROM {db_settings.MSG_INVOICE_ITEMS_TABLE} ii
+                        INNER JOIN {db_settings.MSG_INVOICES_TABLE} i ON ii.invoice_id = i.id AND ii.tenant_id = i.tenant_id AND ii.org_id = i.org_id AND ii.bus_id = i.bus_id AND ii.loc_id = i.loc_id
+                        WHERE ii.tenant_id = %s AND ii.org_id = %s AND ii.bus_id = %s AND i.deleted_by IS NULL
+                        AND ii.tax_rate = %s
+                        """,
+                        (tenant_id, org_id, bus_id, float(tr['tax_rate'] or 0)),
+                    )
+                    inv_agg = cursor.fetchone()
+                    taxable = ReportsService._quantize_decimal((sales_agg['taxable'] or 0) + (inv_agg['taxable'] or 0))
+                    tax_collected = ReportsService._quantize_decimal((sales_agg['tax_amt'] or 0) + (inv_agg['tax_amt'] or 0))
+                    txn_cnt = int(sales_agg['txn_cnt'] or 0) + int(inv_agg['txn_cnt'] or 0)
+                    summary_items.append(TaxSummaryItemReadBase(
+                        tax_id=tid,
+                        tax_name=tr['tax_name'],
+                        tax_rate=ReportsService._quantize_decimal(tr['tax_rate'] or 0),
+                        total_taxable_amount=taxable,
+                        total_tax_collected=tax_collected,
+                        transaction_count=txn_cnt,
+                    ))
+                response = TaxSummaryReportResponseReadBase(
+                    report_type="tax_summary",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={"tax_id": data.tax_id},
+                    summary_items=summary_items,
+                    total_items=len(summary_items),
+                    totals={},
+                )
+                return Respons(success=True, detail="Tax summary report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating tax summary report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_tax_rules_summary_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: TaxRuleSummaryReportRequestWriteDto,
+    ) -> Respons[TaxRulesSummaryReportResponseReadBase]:
+        """Get tax rules summary report"""
+        logger.info("Generating tax rules summary report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions = ["r.tenant_id = %s", "r.org_id = %s", "r.bus_id = %s", "r.deleted_by IS NULL"]
+                params = [tenant_id, org_id, bus_id]
+                if data.rule_id:
+                    conditions.append("r.id = %s")
+                    params.append(data.rule_id)
+                if data.is_active is not None:
+                    conditions.append("r.is_active = %s")
+                    params.append(data.is_active)
+                where = " AND ".join(conditions)
+
+                cursor.execute(
+                    f"""
+                    SELECT r.id as rule_id, r.name as rule_name, r.rule_type, r.tax_id
+                    FROM {db_settings.MSG_TAX_RULES_TABLE} r
+                    WHERE {where}
+                    ORDER BY r.name
+                    """,
+                    tuple(params),
+                )
+                rows = cursor.fetchall()
+                summary_items = [
+                    TaxRuleSummaryItemReadBase(
+                        rule_id=r['rule_id'],
+                        rule_name=r['rule_name'],
+                        times_applied=0,
+                        total_tax_collected=Decimal('0'),
+                        affected_transactions=0,
+                    )
+                    for r in rows
+                ]
+                response = TaxRulesSummaryReportResponseReadBase(
+                    report_type="tax_rules_summary",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={"rule_id": data.rule_id, "is_active": data.is_active},
+                    summary_items=summary_items,
+                    total_items=len(summary_items),
+                    totals={"total_rules": len(summary_items)},
+                )
+                return Respons(success=True, detail="Tax rules summary report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating tax rules summary report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
 
     # =====================================================
     # 2. CUSTOMER REPORTS
@@ -2000,13 +2982,16 @@ class ReportsService:
         try:
             with DatabaseManager.transaction() as cursor:
                 conditions, params = ReportsService._get_base_where_conditions(
-                    tenant_id, org_id, bus_id, data.loc_id, data.location_ids
+                    tenant_id, org_id, bus_id, data.loc_id, data.location_ids, table_alias="sp"
                 )
                 conditions.append("sp.delete_status = 'NOT_DELETED'")
                 base_where = " AND ".join(conditions)
 
-                # Get products with low stock
-                # Note: This assumes a minimum threshold field exists or needs to be calculated
+                # Get products with low stock.
+                # Low = out of stock, OR at/below reorder_level, OR at/below threshold% of average.
+                # Use GREATEST(..., min_low_qty) so single-location products (where AVG = current_qty)
+                # still show when qty is at or below min_low_qty (e.g. 10).
+                min_low_qty = 10
                 query = f"""
                     SELECT 
                         sp.product_id,
@@ -2014,6 +2999,7 @@ class ReportsService:
                         p.sku,
                         sp.current_qty,
                         sp.loc_id,
+                        sp.reorder_level,
                         l.loc_name as location_name
                     FROM {db_settings.MSG_STORE_PRODUCTS_TABLE} sp
                     INNER JOIN {db_settings.MSG_PRODUCTS_TABLE} p
@@ -2026,22 +3012,44 @@ class ReportsService:
                         AND sp.tenant_id = l.tenant_id
                     WHERE {base_where}
                     AND p.delete_status = 'NOT_DELETED'
-                    AND (sp.current_qty <= 0 OR sp.current_qty <= COALESCE((SELECT AVG(current_qty) * %s / 100 FROM {db_settings.MSG_STORE_PRODUCTS_TABLE} WHERE product_id = sp.product_id AND tenant_id = sp.tenant_id), 0))
+                    AND (
+                        sp.current_qty <= 0
+                        OR sp.current_qty <= sp.reorder_level
+                        OR sp.current_qty <= GREATEST(
+                            COALESCE(
+                                (SELECT AVG(current_qty) * %s / 100
+                                 FROM {db_settings.MSG_STORE_PRODUCTS_TABLE} sp2
+                                 WHERE sp2.product_id = sp.product_id AND sp2.tenant_id = sp.tenant_id),
+                                0
+                            ),
+                            %s
+                        )
+                    )
                     ORDER BY sp.current_qty ASC
                 """
                 
                 params.append(data.threshold_percentage)
+                params.append(min_low_qty)
                 if not data.include_zero_stock:
-                    query = query.replace("AND (sp.current_qty <= 0 OR", "AND (")
-                
+                    query = query.replace(
+                        "sp.current_qty <= 0\n                        OR sp.current_qty <= sp.reorder_level",
+                        "sp.current_qty > 0\n                        AND (sp.current_qty <= sp.reorder_level",
+                    ).replace(
+                        "                        )\n                    )",
+                        "                        ))\n                    )",
+                    )
                 cursor.execute(query, tuple(params))
                 results = cursor.fetchall()
 
                 items = []
                 for row in results:
                     current_qty = Decimal(str(row.get('current_qty', 0)))
-                    minimum_threshold = Decimal(str(current_qty)) * Decimal(str(100 + data.threshold_percentage)) / Decimal('100')
-                    reorder_suggestion = minimum_threshold - current_qty if current_qty < minimum_threshold else Decimal('0')
+                    reorder_level = Decimal(str(row.get('reorder_level', 0)))
+                    minimum_threshold = max(
+                        reorder_level,
+                        current_qty * Decimal(str(100 + data.threshold_percentage)) / Decimal('100'),
+                    )
+                    reorder_suggestion = max(Decimal('0'), minimum_threshold - current_qty)
                     
                     items.append(LowInventoryItemReadBase(
                         product_id=row['product_id'],
@@ -2201,6 +3209,354 @@ class ReportsService:
             return Respons(
                 success=False,
                 detail=f"Failed to generate inventory summary report: {str(e)}",
+                error="INTERNAL_ERROR",
+            )
+
+    @staticmethod
+    def get_inventory_detailed_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: InventoryDetailedReportRequestWriteDto,
+    ) -> Respons[InventoryDetailedReportResponseReadBase]:
+        """Get inventory detailed report - per product per location with current qty, unit cost, value, batches count, last movement date"""
+        logger.info("Generating inventory detailed report", extra={
+            "extra_fields": {"tenant_id": tenant_id}
+        })
+
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions, params = ReportsService._get_base_where_conditions(
+                    tenant_id, org_id, bus_id, data.loc_id, data.location_ids, table_alias="sp"
+                )
+                conditions.append("sp.delete_status = 'NOT_DELETED'")
+                base_where = " AND ".join(conditions)
+
+                product_filter = ""
+                if data.product_id:
+                    product_filter = " AND sp.product_id = %s"
+                    params.append(data.product_id)
+                if data.product_ids:
+                    placeholders = ','.join(['%s'] * len(data.product_ids))
+                    product_filter = f" AND sp.product_id IN ({placeholders})"
+                    params.extend(data.product_ids)
+
+                qty_filter = ""
+                if data.min_quantity is not None:
+                    qty_filter += " AND sp.current_qty >= %s"
+                    params.append(data.min_quantity)
+                if data.max_quantity is not None:
+                    qty_filter += " AND sp.current_qty <= %s"
+                    params.append(data.max_quantity)
+
+                query = f"""
+                    SELECT 
+                        sp.product_id,
+                        p.name as product_name,
+                        p.sku,
+                        l.loc_name as location_name,
+                        sp.current_qty as current_qty,
+                        COALESCE(batch_costs.avg_cost, 0) as unit_cost,
+                        sp.current_qty * COALESCE(batch_costs.avg_cost, 0) as total_value,
+                        COALESCE(batch_costs.batches_count, 0) as batches_count,
+                        (SELECT MAX(DATE(pm.cdate)) FROM {db_settings.MSG_PRODUCT_MOVEMENTS_TABLE} pm
+                         WHERE pm.product_id = sp.product_id AND pm.location_id = sp.loc_id
+                         AND pm.tenant_id = sp.tenant_id AND pm.org_id = sp.org_id AND pm.bus_id = sp.bus_id) as last_movement_date
+                    FROM {db_settings.MSG_STORE_PRODUCTS_TABLE} sp
+                    INNER JOIN {db_settings.MSG_PRODUCTS_TABLE} p
+                        ON sp.product_id = p.id
+                        AND sp.tenant_id = p.tenant_id
+                        AND sp.org_id = p.org_id
+                        AND sp.bus_id = p.bus_id
+                    LEFT JOIN {db_settings.CORE_PLATFORM_LOCATIONS_TABLE} l
+                        ON sp.loc_id = l.id
+                        AND sp.tenant_id = l.tenant_id
+                    LEFT JOIN (
+                        SELECT bl.loc_id, pb.product_id, bl.tenant_id, bl.org_id, bl.bus_id,
+                               AVG(pb.cost_price) as avg_cost,
+                               COUNT(DISTINCT bl.purchase_batche_id) as batches_count
+                        FROM {db_settings.MSG_BATCH_LOCATIONS_TABLE} bl
+                        INNER JOIN {db_settings.MSG_PURCHASE_BATCHES_TABLE} pb
+                            ON bl.purchase_batche_id = pb.id
+                            AND bl.tenant_id = pb.tenant_id
+                            AND bl.org_id = pb.org_id
+                            AND bl.bus_id = pb.bus_id
+                        WHERE bl.location_type = 'STORE'
+                        GROUP BY bl.loc_id, pb.product_id, bl.tenant_id, bl.org_id, bl.bus_id
+                    ) batch_costs
+                        ON batch_costs.loc_id = sp.loc_id
+                        AND batch_costs.product_id = sp.product_id
+                        AND batch_costs.tenant_id = sp.tenant_id
+                        AND batch_costs.org_id = sp.org_id
+                        AND batch_costs.bus_id = sp.bus_id
+                    WHERE {base_where}
+                    AND p.delete_status = 'NOT_DELETED'
+                    {product_filter}
+                    {qty_filter}
+                    ORDER BY l.loc_name, p.name
+                """
+                cursor.execute(query, tuple(params))
+                results = cursor.fetchall()
+
+                items = []
+                for row in results:
+                    unit_cost = ReportsService._quantize_decimal(row.get('unit_cost', 0))
+                    total_value = ReportsService._quantize_decimal(row.get('total_value', 0))
+                    last_mov = row.get('last_movement_date')
+                    if last_mov is None:
+                        last_movement_date = None
+                    elif isinstance(last_mov, datetime):
+                        last_movement_date = last_mov.date()
+                    else:
+                        last_movement_date = last_mov
+
+                    items.append(InventoryDetailedItemReadBase(
+                        product_id=row['product_id'],
+                        product_name=row.get('product_name', 'Unknown'),
+                        sku=row.get('sku'),
+                        location_name=row.get('location_name', 'Unknown Location'),
+                        current_qty=ReportsService._quantize_decimal(row.get('current_qty', 0)),
+                        unit_cost=unit_cost,
+                        total_value=total_value,
+                        batches_count=int(row.get('batches_count', 0)),
+                        last_movement_date=last_movement_date,
+                    ))
+
+                total_amount = sum(item.total_value for item in items)
+                offset = (data.page - 1) * data.size
+                paginated_items = items[offset:offset + data.size]
+
+                response = InventoryDetailedReportResponseReadBase(
+                    report_type="inventory_detailed",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    items=paginated_items,
+                    total_items=len(items),
+                    total_amount=ReportsService._quantize_decimal(total_amount),
+                    pagination={
+                        "page": data.page,
+                        "size": data.size,
+                        "total_pages": (len(items) + data.size - 1) // data.size if data.size > 0 else 0,
+                    }
+                )
+
+                return Respons(
+                    success=True,
+                    detail="Inventory detailed report generated successfully",
+                    data=[response],
+                )
+
+        except Exception as e:
+            logger.error(f"Error generating inventory detailed report: {str(e)}", exc_info=True)
+            return Respons(
+                success=False,
+                detail=f"Failed to generate inventory detailed report: {str(e)}",
+                error="INTERNAL_ERROR",
+            )
+
+    @staticmethod
+    def get_inventory_count_summary_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: InventoryCountReportRequestWriteDto,
+    ) -> Respons[InventoryCountSummaryReportResponseReadBase]:
+        """Get inventory count summary report. Uses current store product qty as expected; counted equals expected when no count data exists."""
+        logger.info("Generating inventory count summary report", extra={
+            "extra_fields": {"tenant_id": tenant_id}
+        })
+
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions, params = ReportsService._get_base_where_conditions(
+                    tenant_id, org_id, bus_id, data.loc_id, data.location_ids, table_alias="sp"
+                )
+                conditions.append("sp.delete_status = 'NOT_DELETED'")
+                base_where = " AND ".join(conditions)
+
+                query = f"""
+                    SELECT 
+                        sp.product_id,
+                        p.name as product_name,
+                        p.sku,
+                        l.loc_name as location_name,
+                        sp.current_qty as expected_qty,
+                        sp.current_qty as counted_qty,
+                        0 as variance,
+                        0 as variance_value
+                    FROM {db_settings.MSG_STORE_PRODUCTS_TABLE} sp
+                    INNER JOIN {db_settings.MSG_PRODUCTS_TABLE} p
+                        ON sp.product_id = p.id
+                        AND sp.tenant_id = p.tenant_id
+                        AND sp.org_id = p.org_id
+                        AND sp.bus_id = p.bus_id
+                    LEFT JOIN {db_settings.CORE_PLATFORM_LOCATIONS_TABLE} l
+                        ON sp.loc_id = l.id
+                        AND sp.tenant_id = l.tenant_id
+                    WHERE {base_where}
+                    AND p.delete_status = 'NOT_DELETED'
+                    ORDER BY l.loc_name, p.name
+                """
+                cursor.execute(query, tuple(params))
+                results = cursor.fetchall()
+
+                items = []
+                for row in results:
+                    expected_qty = ReportsService._quantize_decimal(row.get('expected_qty', 0))
+                    counted_qty = ReportsService._quantize_decimal(row.get('counted_qty', 0))
+                    variance = ReportsService._quantize_decimal(row.get('variance', 0))
+                    variance_value = ReportsService._quantize_decimal(row.get('variance_value', 0))
+                    items.append(InventoryCountItemReadBase(
+                        product_id=row['product_id'],
+                        product_name=row.get('product_name', 'Unknown'),
+                        sku=row.get('sku'),
+                        expected_qty=expected_qty,
+                        counted_qty=counted_qty,
+                        variance=variance,
+                        variance_value=variance_value,
+                        location_name=row.get('location_name', 'Unknown Location'),
+                    ))
+
+                total_amount = sum(item.variance_value for item in items)
+                offset = (data.page - 1) * data.size
+                paginated_items = items[offset:offset + data.size]
+
+                response = InventoryCountSummaryReportResponseReadBase(
+                    report_type="inventory_count_summary",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    items=paginated_items,
+                    total_items=len(items),
+                    total_amount=ReportsService._quantize_decimal(total_amount),
+                    pagination={
+                        "page": data.page,
+                        "size": data.size,
+                        "total_pages": (len(items) + data.size - 1) // data.size if data.size > 0 else 0,
+                    }
+                )
+
+                return Respons(
+                    success=True,
+                    detail="Inventory count summary report generated successfully",
+                    data=[response],
+                )
+
+        except Exception as e:
+            logger.error(f"Error generating inventory count summary report: {str(e)}", exc_info=True)
+            return Respons(
+                success=False,
+                detail=f"Failed to generate inventory count summary report: {str(e)}",
+                error="INTERNAL_ERROR",
+            )
+
+    @staticmethod
+    def get_inventory_count_detailed_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: InventoryCountDetailedReportRequestWriteDto,
+    ) -> Respons[InventoryCountDetailedReportResponseReadBase]:
+        """Get inventory count detailed report. Uses current store product qty as expected; counted equals expected when no count data exists."""
+        logger.info("Generating inventory count detailed report", extra={
+            "extra_fields": {"tenant_id": tenant_id}
+        })
+
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions, params = ReportsService._get_base_where_conditions(
+                    tenant_id, org_id, bus_id, data.loc_id, data.location_ids, table_alias="sp"
+                )
+                conditions.append("sp.delete_status = 'NOT_DELETED'")
+                base_where = " AND ".join(conditions)
+
+                product_filter = ""
+                if data.product_id:
+                    product_filter = " AND sp.product_id = %s"
+                    params.append(data.product_id)
+                if data.product_ids:
+                    placeholders = ','.join(['%s'] * len(data.product_ids))
+                    product_filter = f" AND sp.product_id IN ({placeholders})"
+                    params.extend(data.product_ids)
+
+                query = f"""
+                    SELECT 
+                        sp.product_id,
+                        p.name as product_name,
+                        p.sku,
+                        l.loc_name as location_name,
+                        sp.current_qty as expected_qty,
+                        sp.current_qty as counted_qty,
+                        0 as variance,
+                        0 as variance_value
+                    FROM {db_settings.MSG_STORE_PRODUCTS_TABLE} sp
+                    INNER JOIN {db_settings.MSG_PRODUCTS_TABLE} p
+                        ON sp.product_id = p.id
+                        AND sp.tenant_id = p.tenant_id
+                        AND sp.org_id = p.org_id
+                        AND sp.bus_id = p.bus_id
+                    LEFT JOIN {db_settings.CORE_PLATFORM_LOCATIONS_TABLE} l
+                        ON sp.loc_id = l.id
+                        AND sp.tenant_id = l.tenant_id
+                    WHERE {base_where}
+                    AND p.delete_status = 'NOT_DELETED'
+                    {product_filter}
+                    ORDER BY l.loc_name, p.name
+                """
+                cursor.execute(query, tuple(params))
+                results = cursor.fetchall()
+
+                items = []
+                for row in results:
+                    expected_qty = ReportsService._quantize_decimal(row.get('expected_qty', 0))
+                    counted_qty = ReportsService._quantize_decimal(row.get('counted_qty', 0))
+                    variance = ReportsService._quantize_decimal(row.get('variance', 0))
+                    variance_value = ReportsService._quantize_decimal(row.get('variance_value', 0))
+                    items.append(InventoryCountItemReadBase(
+                        product_id=row['product_id'],
+                        product_name=row.get('product_name', 'Unknown'),
+                        sku=row.get('sku'),
+                        expected_qty=expected_qty,
+                        counted_qty=counted_qty,
+                        variance=variance,
+                        variance_value=variance_value,
+                        location_name=row.get('location_name', 'Unknown Location'),
+                    ))
+
+                total_amount = sum(item.variance_value for item in items)
+                offset = (data.page - 1) * data.size
+                paginated_items = items[offset:offset + data.size]
+
+                response = InventoryCountDetailedReportResponseReadBase(
+                    report_type="inventory_count_detailed",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    items=paginated_items,
+                    total_items=len(items),
+                    total_amount=ReportsService._quantize_decimal(total_amount),
+                    pagination={
+                        "page": data.page,
+                        "size": data.size,
+                        "total_pages": (len(items) + data.size - 1) // data.size if data.size > 0 else 0,
+                    }
+                )
+
+                return Respons(
+                    success=True,
+                    detail="Inventory count detailed report generated successfully",
+                    data=[response],
+                )
+
+        except Exception as e:
+            logger.error(f"Error generating inventory count detailed report: {str(e)}", exc_info=True)
+            return Respons(
+                success=False,
+                detail=f"Failed to generate inventory count detailed report: {str(e)}",
                 error="INTERNAL_ERROR",
             )
 
@@ -3156,14 +4512,12 @@ class ReportsService:
                 # Group by clause
                 group_by_clause = "si.product_id, p.name"
                 location_select = ""
-                # Include location fields if grouping by location OR if filtering by a single location
-                single_location = (data.location_ids and len(data.location_ids) == 1)
+                # Always include location fields: exact columns when grouping by location, else MAX() so every row has a location
                 if data.group_by_location:
                     group_by_clause += ", s.loc_id, l.loc_name"
                     location_select = ",\n                        s.loc_id,\n                        l.loc_name as location_name"
-                elif single_location:
-                    # When filtering by single location but not grouping, include location in SELECT but not GROUP BY
-                    # Use MAX() or MIN() to satisfy SQL requirements since we know all rows have the same location
+                else:
+                    # When not grouping by location, use MAX() so location_id/location_name are never null
                     location_select = ",\n                        MAX(s.loc_id) as loc_id,\n                        MAX(l.loc_name) as location_name"
 
                 # Query to get product gross profit
@@ -3324,14 +4678,11 @@ class ReportsService:
 
                 group_by_clause = "si.product_id, p.name"
                 location_select = ""
-                # Include location fields if grouping by location OR if filtering by a single location
-                single_location = (data.location_ids and len(data.location_ids) == 1)
+                # Always include location fields: exact columns when grouping by location, else MAX() so every row has a location
                 if data.group_by_location:
                     group_by_clause += ", s.loc_id, l.loc_name"
                     location_select = ",\n                        s.loc_id,\n                        l.loc_name as location_name"
-                elif single_location:
-                    # When filtering by single location but not grouping, include location in SELECT but not GROUP BY
-                    # Use MAX() or MIN() to satisfy SQL requirements since we know all rows have the same location
+                else:
                     location_select = ",\n                        MAX(s.loc_id) as loc_id,\n                        MAX(l.loc_name) as location_name"
 
                 # Get product gross profit
@@ -3638,4 +4989,1275 @@ class ReportsService:
                 detail=f"Failed to generate location performance report: {str(e)}",
                 error="INTERNAL_ERROR",
             )
+
+    # =====================================================
+    # 10. RECEIVINGS REPORTS
+    # =====================================================
+
+    @staticmethod
+    def _get_po_base_conditions(tenant_id: str, org_id: str, bus_id: str, from_date=None, to_date=None, supplier_id=None, status=None, table_alias="po"):
+        """Build base WHERE conditions for purchase orders (no loc_id)"""
+        prefix = f"{table_alias}."
+        conditions = [f"{prefix}tenant_id = %s", f"{prefix}org_id = %s", f"{prefix}bus_id = %s"]
+        params = [tenant_id, org_id, bus_id]
+        if from_date:
+            conditions.append(f"{prefix}order_date >= %s")
+            params.append(from_date)
+        if to_date:
+            conditions.append(f"{prefix}order_date <= %s")
+            params.append(to_date)
+        if supplier_id:
+            conditions.append(f"{prefix}supplier_id = %s")
+            params.append(supplier_id)
+        if status:
+            conditions.append(f"{prefix}status = %s")
+            params.append(status)
+        return conditions, params
+
+    @staticmethod
+    def get_receivings_summary_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: ReceivingSummaryReportRequestWriteDto,
+    ) -> Respons[ReceivingsSummaryReportResponseReadBase]:
+        """Get receivings summary report"""
+        logger.info("Generating receivings summary report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions, params = ReportsService._get_po_base_conditions(
+                    tenant_id, org_id, bus_id, data.from_date, data.to_date, data.supplier_id, data.status
+                )
+                where = " AND ".join(conditions)
+
+                cursor.execute(
+                    f"""
+                    SELECT COUNT(DISTINCT po.id) as total_receivings,
+                        COALESCE(SUM(poi.qty_ordered * poi.cost_price), 0) as total_amount,
+                        COALESCE(SUM(poi.qty_received), 0) as total_items_received
+                    FROM {db_settings.MSG_PURCHASE_ORDERS_TABLE} po
+                    LEFT JOIN {db_settings.MSG_PURCHASE_ORDER_ITEMS_TABLE} poi ON po.id = poi.purchase_order_id AND po.tenant_id = poi.tenant_id AND po.org_id = poi.org_id AND po.bus_id = poi.bus_id
+                    WHERE {where}
+                    """,
+                    tuple(params),
+                )
+                row = cursor.fetchone()
+                total_receivings = int(row['total_receivings'] or 0)
+                total_amount = ReportsService._quantize_decimal(row['total_amount'] or 0)
+                total_items_received = ReportsService._quantize_decimal(row['total_items_received'] or 0)
+                avg_value = (total_amount / total_receivings) if total_receivings > 0 else Decimal('0')
+
+                cursor.execute(
+                    f"""
+                    SELECT po.status, COUNT(*) as cnt
+                    FROM {db_settings.MSG_PURCHASE_ORDERS_TABLE} po
+                    WHERE {where}
+                    GROUP BY po.status
+                    """,
+                    tuple(params),
+                )
+                receivings_by_status = {r['status']: int(r['cnt']) for r in cursor.fetchall()}
+
+                cursor.execute(
+                    f"""
+                    SELECT s.fullname as supplier_name, COUNT(DISTINCT po.id) as cnt
+                    FROM {db_settings.MSG_PURCHASE_ORDERS_TABLE} po
+                    LEFT JOIN {db_settings.MSG_SUPPLIERS_TABLE} s ON po.supplier_id = s.id AND po.tenant_id = s.tenant_id AND po.org_id = s.org_id AND po.bus_id = s.bus_id
+                    WHERE {where}
+                    GROUP BY s.fullname
+                    ORDER BY cnt DESC
+                    LIMIT 20
+                    """,
+                    tuple(params),
+                )
+                receivings_by_supplier = {r['supplier_name'] or 'Unknown': int(r['cnt']) for r in cursor.fetchall()}
+
+                summary_item = ReceivingSummaryItemReadBase(
+                    total_receivings=total_receivings,
+                    total_amount=total_amount,
+                    total_items_received=total_items_received,
+                    average_receiving_value=ReportsService._quantize_decimal(avg_value),
+                    receivings_by_status=receivings_by_status,
+                    receivings_by_supplier=receivings_by_supplier,
+                )
+                response = ReceivingsSummaryReportResponseReadBase(
+                    report_type="receivings_summary",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={"supplier_id": data.supplier_id, "status": data.status},
+                    summary_items=[summary_item],
+                    total_items=1,
+                    totals={"total_receivings": total_receivings, "total_amount": float(total_amount)},
+                )
+                return Respons(success=True, detail="Receivings summary report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating receivings summary report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_receivings_detailed_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: ReceivingDetailedReportRequestWriteDto,
+    ) -> Respons[ReceivingsDetailedReportResponseReadBase]:
+        """Get receivings detailed report"""
+        logger.info("Generating receivings detailed report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions, params = ReportsService._get_po_base_conditions(
+                    tenant_id, org_id, bus_id, data.from_date, data.to_date, data.supplier_id, data.status
+                )
+                where = " AND ".join(conditions)
+                offset = (data.page - 1) * data.size
+
+                cursor.execute(
+                    f"""
+                    SELECT po.id as purchase_order_id, po.po_number, po.order_date as receiving_date,
+                        s.fullname as supplier_name,
+                        COALESCE(SUM(poi.qty_ordered * poi.cost_price), 0) as total_amount,
+                        COUNT(DISTINCT poi.id) as items_count,
+                        po.status,
+                        (SELECT COUNT(*) FROM {db_settings.MSG_PURCHASE_RECEIPTS_TABLE} pr
+                            WHERE pr.purchase_order_id = po.id AND pr.tenant_id = po.tenant_id AND pr.org_id = po.org_id AND pr.bus_id = po.bus_id) as batches_created
+                    FROM {db_settings.MSG_PURCHASE_ORDERS_TABLE} po
+                    LEFT JOIN {db_settings.MSG_SUPPLIERS_TABLE} s ON po.supplier_id = s.id AND po.tenant_id = s.tenant_id AND po.org_id = s.org_id AND po.bus_id = s.bus_id
+                    LEFT JOIN {db_settings.MSG_PURCHASE_ORDER_ITEMS_TABLE} poi ON po.id = poi.purchase_order_id AND po.tenant_id = poi.tenant_id AND po.org_id = poi.org_id AND po.bus_id = poi.bus_id
+                    WHERE {where}
+                    GROUP BY po.id, po.po_number, po.order_date, s.fullname, po.status
+                    ORDER BY po.order_date DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    tuple(params) + (data.size, offset),
+                )
+                rows = cursor.fetchall()
+                cursor.execute(
+                    f"SELECT COUNT(*) as cnt FROM {db_settings.MSG_PURCHASE_ORDERS_TABLE} po WHERE {where}",
+                    tuple(params),
+                )
+                total_items = cursor.fetchone()['cnt']
+                items = []
+                for row in rows:
+                    rec_date = row['receiving_date']
+                    if hasattr(rec_date, 'date'):
+                        rec_date = rec_date.date()
+                    items.append(ReceivingDetailedItemReadBase(
+                        purchase_order_id=row['purchase_order_id'],
+                        po_number=row['po_number'],
+                        receiving_date=rec_date,
+                        supplier_name=row['supplier_name'],
+                        total_amount=ReportsService._quantize_decimal(row['total_amount']),
+                        items_count=int(row['items_count'] or 0),
+                        status=row['status'],
+                        batches_created=int(row['batches_created'] or 0),
+                    ))
+                total_amount = sum(i.total_amount for i in items)
+                response = ReceivingsDetailedReportResponseReadBase(
+                    report_type="receivings_detailed",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={"supplier_id": data.supplier_id, "status": data.status},
+                    items=items,
+                    total_items=total_items,
+                    total_amount=ReportsService._quantize_decimal(total_amount),
+                    pagination={"page": data.page, "size": data.size, "total": total_items},
+                )
+                return Respons(success=True, detail="Receivings detailed report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating receivings detailed report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_receivings_summary_categories_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: ReceivingSummaryCategoriesReportRequestWriteDto,
+    ) -> Respons[ReceivingsSummaryCategoriesReportResponseReadBase]:
+        """Get receivings summary by categories report"""
+        logger.info("Generating receivings summary categories report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions, params = ReportsService._get_po_base_conditions(
+                    tenant_id, org_id, bus_id, data.from_date, data.to_date, data.supplier_id, None
+                )
+                where = " AND ".join(conditions)
+
+                cursor.execute(
+                    f"""
+                    SELECT COALESCE(amp.metadata_value, 'Uncategorized') as category_name,
+                        COUNT(DISTINCT po.id) as total_receivings,
+                        COALESCE(SUM(poi.qty_ordered * poi.cost_price), 0) as total_amount,
+                        COALESCE(SUM(poi.qty_received), 0) as total_quantity
+                    FROM {db_settings.MSG_PURCHASE_ORDERS_TABLE} po
+                    LEFT JOIN {db_settings.MSG_PURCHASE_ORDER_ITEMS_TABLE} poi ON po.id = poi.purchase_order_id AND po.tenant_id = poi.tenant_id AND po.org_id = poi.org_id AND po.bus_id = poi.bus_id
+                    LEFT JOIN {db_settings.MSG_PRODUCTS_TABLE} p ON poi.product_id = p.id AND poi.tenant_id = p.tenant_id AND poi.org_id = p.org_id AND poi.bus_id = p.bus_id
+                    LEFT JOIN {db_settings.MSG_ASSIGN_METADATA_TO_PRODUCTS_TABLE} amp ON p.id = amp.product_id AND amp.tenant_id = p.tenant_id AND amp.org_id = p.org_id AND amp.bus_id = p.bus_id AND amp.of_type = 'CATEGORY'
+                    WHERE {where}
+                    GROUP BY COALESCE(amp.metadata_value, 'Uncategorized')
+                    ORDER BY total_amount DESC
+                    """,
+                    tuple(params),
+                )
+                rows = cursor.fetchall()
+                items = []
+                for row in rows:
+                    items.append(ReceivingCategoryItemReadBase(
+                        category_name=row['category_name'],
+                        total_receivings=int(row['total_receivings'] or 0),
+                        total_amount=ReportsService._quantize_decimal(row['total_amount'] or 0),
+                        total_quantity=ReportsService._quantize_decimal(row['total_quantity'] or 0),
+                    ))
+                total_amount = sum(i.total_amount for i in items)
+                response = ReceivingsSummaryCategoriesReportResponseReadBase(
+                    report_type="receivings_summary_categories",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={"supplier_id": data.supplier_id},
+                    items=items,
+                    total_items=len(items),
+                    total_amount=ReportsService._quantize_decimal(total_amount),
+                    pagination={},
+                )
+                return Respons(success=True, detail="Receivings summary categories report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating receivings summary categories report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_suspended_receivings_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: SuspendedReceivingsReportRequestWriteDto,
+    ) -> Respons[ReceivingsSuspendedReportResponseReadBase]:
+        """Get suspended receivings report - POs with status DRAFT or PARTIALLY_RECEIVED"""
+        logger.info("Generating suspended receivings report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions, params = ReportsService._get_po_base_conditions(
+                    tenant_id, org_id, bus_id, data.from_date, data.to_date, None, None
+                )
+                conditions.append("po.status IN ('DRAFT', 'PARTIALLY_RECEIVED')")
+                where = " AND ".join(conditions)
+                offset = (data.page - 1) * data.size
+
+                cursor.execute(
+                    f"""
+                    SELECT po.id as purchase_order_id, po.po_number, po.order_date as receiving_date,
+                        s.fullname as supplier_name,
+                        COALESCE(SUM(poi.qty_ordered * poi.cost_price), 0) as total_amount,
+                        COUNT(DISTINCT poi.id) as items_count,
+                        po.status,
+                        (SELECT COUNT(*) FROM {db_settings.MSG_PURCHASE_RECEIPTS_TABLE} pr WHERE pr.purchase_order_id = po.id AND pr.tenant_id = po.tenant_id AND pr.org_id = po.org_id AND pr.bus_id = po.bus_id) as batches_created
+                    FROM {db_settings.MSG_PURCHASE_ORDERS_TABLE} po
+                    LEFT JOIN {db_settings.MSG_SUPPLIERS_TABLE} s ON po.supplier_id = s.id AND po.tenant_id = s.tenant_id AND po.org_id = s.org_id AND po.bus_id = s.bus_id
+                    LEFT JOIN {db_settings.MSG_PURCHASE_ORDER_ITEMS_TABLE} poi ON po.id = poi.purchase_order_id AND po.tenant_id = poi.tenant_id AND po.org_id = poi.org_id AND po.bus_id = poi.bus_id
+                    WHERE {where}
+                    GROUP BY po.id, po.po_number, po.order_date, s.fullname, po.status
+                    ORDER BY po.order_date DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    tuple(params) + (data.size, offset),
+                )
+                rows = cursor.fetchall()
+                cursor.execute(
+                    f"SELECT COUNT(*) as cnt FROM {db_settings.MSG_PURCHASE_ORDERS_TABLE} po WHERE {where}",
+                    tuple(params),
+                )
+                total_items = cursor.fetchone()['cnt']
+                items = []
+                for row in rows:
+                    rec_date = row['receiving_date']
+                    if hasattr(rec_date, 'date'):
+                        rec_date = rec_date.date()
+                    items.append(ReceivingDetailedItemReadBase(
+                        purchase_order_id=row['purchase_order_id'],
+                        po_number=row['po_number'],
+                        receiving_date=rec_date,
+                        supplier_name=row['supplier_name'],
+                        total_amount=ReportsService._quantize_decimal(row['total_amount']),
+                        items_count=int(row['items_count'] or 0),
+                        status=row['status'],
+                        batches_created=int(row['batches_created'] or 0),
+                    ))
+                total_amount = sum(i.total_amount for i in items)
+                response = ReceivingsSuspendedReportResponseReadBase(
+                    report_type="receivings_suspended",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={},
+                    items=items,
+                    total_items=total_items,
+                    total_amount=ReportsService._quantize_decimal(total_amount),
+                    pagination={"page": data.page, "size": data.size, "total": total_items},
+                )
+                return Respons(success=True, detail="Suspended receivings report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating suspended receivings report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_deleted_receivings_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: DeletedReceivingsReportRequestWriteDto,
+    ) -> Respons[ReceivingsDeletedReportResponseReadBase]:
+        """Get deleted receivings report - purchase orders with CANCELLED status"""
+        logger.info("Generating deleted receivings report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions, params = ReportsService._get_po_base_conditions(
+                    tenant_id, org_id, bus_id, data.from_date, data.to_date, None, None
+                )
+                conditions.append("po.status = 'CANCELLED'")
+                where = " AND ".join(conditions)
+                offset = (data.page - 1) * data.size
+
+                cursor.execute(
+                    f"""
+                    SELECT po.id as purchase_order_id, po.po_number, po.order_date as receiving_date,
+                        s.fullname as supplier_name,
+                        COALESCE(SUM(poi.qty_ordered * poi.cost_price), 0) as total_amount,
+                        COUNT(DISTINCT poi.id) as items_count,
+                        po.status,
+                        (SELECT COUNT(*) FROM {db_settings.MSG_PURCHASE_RECEIPTS_TABLE} pr WHERE pr.purchase_order_id = po.id AND pr.tenant_id = po.tenant_id AND pr.org_id = po.org_id AND pr.bus_id = po.bus_id) as batches_created
+                    FROM {db_settings.MSG_PURCHASE_ORDERS_TABLE} po
+                    LEFT JOIN {db_settings.MSG_SUPPLIERS_TABLE} s ON po.supplier_id = s.id AND po.tenant_id = s.tenant_id AND po.org_id = s.org_id AND po.bus_id = s.bus_id
+                    LEFT JOIN {db_settings.MSG_PURCHASE_ORDER_ITEMS_TABLE} poi ON po.id = poi.purchase_order_id AND po.tenant_id = poi.tenant_id AND po.org_id = poi.org_id AND po.bus_id = poi.bus_id
+                    WHERE {where}
+                    GROUP BY po.id, po.po_number, po.order_date, s.fullname, po.status
+                    ORDER BY po.order_date DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    tuple(params) + (data.size, offset),
+                )
+                rows = cursor.fetchall()
+                cursor.execute(
+                    f"SELECT COUNT(*) as cnt FROM {db_settings.MSG_PURCHASE_ORDERS_TABLE} po WHERE {where}",
+                    tuple(params),
+                )
+                total_items = cursor.fetchone()['cnt']
+                items = []
+                for row in rows:
+                    rec_date = row['receiving_date']
+                    if hasattr(rec_date, 'date'):
+                        rec_date = rec_date.date()
+                    items.append(ReceivingDetailedItemReadBase(
+                        purchase_order_id=row['purchase_order_id'],
+                        po_number=row['po_number'],
+                        receiving_date=rec_date,
+                        supplier_name=row['supplier_name'],
+                        total_amount=ReportsService._quantize_decimal(row['total_amount']),
+                        items_count=int(row['items_count'] or 0),
+                        status=row['status'],
+                        batches_created=int(row['batches_created'] or 0),
+                    ))
+                total_amount = sum(i.total_amount for i in items)
+                response = ReceivingsDeletedReportResponseReadBase(
+                    report_type="receivings_deleted",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={},
+                    items=items,
+                    total_items=total_items,
+                    total_amount=ReportsService._quantize_decimal(total_amount),
+                    pagination={"page": data.page, "size": data.size, "total": total_items},
+                )
+                return Respons(success=True, detail="Deleted receivings report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating deleted receivings report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_receivings_summary_taxes_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: ReceivingSummaryTaxesReportRequestWriteDto,
+    ) -> Respons[ReceivingsSummaryTaxesReportResponseReadBase]:
+        """Get receivings summary taxes report - purchase order items don't typically have tax_id, return empty/placeholder"""
+        logger.info("Generating receivings summary taxes report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions, params = ReportsService._get_po_base_conditions(
+                    tenant_id, org_id, bus_id, data.from_date, data.to_date, data.supplier_id, None
+                )
+                where = " AND ".join(conditions)
+                cursor.execute(
+                    f"""
+                    SELECT t.id as tax_id, t.name as tax_name, t.rate as tax_rate,
+                        0::numeric as total_taxable_amount, 0::numeric as total_tax_amount, 0::int as transaction_count
+                    FROM {db_settings.MSG_TAXES_TABLE} t
+                    WHERE t.tenant_id = %s AND t.org_id = %s AND t.bus_id = %s AND t.deleted_by IS NULL
+                    """,
+                    (tenant_id, org_id, bus_id),
+                )
+                rows = cursor.fetchall()
+                items = []
+                for row in rows:
+                    items.append(ReceivingTaxItemReadBase(
+                        tax_name=row['tax_name'],
+                        tax_rate=ReportsService._quantize_decimal(row['tax_rate'] or 0),
+                        total_taxable_amount=Decimal('0'),
+                        total_tax_amount=Decimal('0'),
+                        transaction_count=0,
+                    ))
+                response = ReceivingsSummaryTaxesReportResponseReadBase(
+                    report_type="receivings_summary_taxes",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={"supplier_id": data.supplier_id},
+                    items=items,
+                    total_items=len(items),
+                    total_amount=Decimal('0'),
+                    pagination={},
+                )
+                return Respons(success=True, detail="Receivings summary taxes report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating receivings summary taxes report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_receivings_graphical_taxes_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: ReceivingGraphicalTaxesReportRequestWriteDto,
+    ) -> Respons[ReceivingsGraphicalTaxesReportResponseReadBase]:
+        """Get receivings graphical taxes report"""
+        logger.info("Generating receivings graphical taxes report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions, params = ReportsService._get_po_base_conditions(
+                    tenant_id, org_id, bus_id, data.from_date, data.to_date, data.supplier_id, None
+                )
+                where = " AND ".join(conditions)
+                cursor.execute(
+                    f"""
+                    SELECT t.id, t.name as tax_name, t.rate as tax_rate,
+                        0::numeric as total_taxable_amount, 0::numeric as total_tax_amount, 0::int as transaction_count
+                    FROM {db_settings.MSG_TAXES_TABLE} t
+                    WHERE t.tenant_id = %s AND t.org_id = %s AND t.bus_id = %s AND t.deleted_by IS NULL
+                    """,
+                    (tenant_id, org_id, bus_id),
+                )
+                rows = cursor.fetchall()
+                graph_data = []
+                for row in rows:
+                    graph_data.append(ReceivingTaxItemReadBase(
+                        tax_name=row['tax_name'],
+                        tax_rate=ReportsService._quantize_decimal(row['tax_rate'] or 0),
+                        total_taxable_amount=Decimal('0'),
+                        total_tax_amount=Decimal('0'),
+                        transaction_count=0,
+                    ))
+                response = ReceivingsGraphicalTaxesReportResponseReadBase(
+                    report_type="receivings_graphical_taxes",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={"supplier_id": data.supplier_id},
+                    graph_data=graph_data,
+                    chart_type="bar",
+                    metadata={},
+                )
+                return Respons(success=True, detail="Receivings graphical taxes report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating receivings graphical taxes report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_cheapest_supplier_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: CheapestSupplierReportRequestWriteDto,
+    ) -> Respons[CheapestSupplierReportResponseReadBase]:
+        """Get cheapest supplier per product report"""
+        logger.info("Generating cheapest supplier report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions = ["poi.tenant_id = %s", "poi.org_id = %s", "poi.bus_id = %s", "po.status NOT IN ('CANCELLED', 'DRAFT')"]
+                params = [tenant_id, org_id, bus_id]
+                product_ids = data.product_ids or []
+                if data.product_id:
+                    product_ids = [data.product_id] if not product_ids else product_ids
+                if product_ids:
+                    placeholders = ','.join(['%s'] * len(product_ids))
+                    conditions.append(f"poi.product_id IN ({placeholders})")
+                    params.extend(product_ids)
+                where = " AND ".join(conditions)
+
+                cursor.execute(
+                    f"""
+                    WITH supplier_agg AS (
+                        SELECT poi.product_id, po.supplier_id,
+                            AVG(poi.cost_price) as average_cost,
+                            COUNT(*) as purchase_count,
+                            SUM(poi.qty_received) as total_quantity
+                        FROM {db_settings.MSG_PURCHASE_ORDER_ITEMS_TABLE} poi
+                        INNER JOIN {db_settings.MSG_PURCHASE_ORDERS_TABLE} po ON poi.purchase_order_id = po.id AND poi.tenant_id = po.tenant_id AND poi.org_id = po.org_id AND poi.bus_id = po.bus_id
+                        WHERE {where}
+                        GROUP BY poi.product_id, po.supplier_id
+                        HAVING COUNT(*) >= %s
+                    ),
+                    ranked AS (
+                        SELECT product_id, supplier_id, average_cost, purchase_count, total_quantity,
+                            ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY average_cost ASC) as rn
+                        FROM supplier_agg
+                    )
+                    SELECT r.product_id, p.name as product_name, s.id as supplier_id, s.fullname as supplier_name,
+                        r.average_cost, r.purchase_count, r.total_quantity
+                    FROM ranked r
+                    INNER JOIN {db_settings.MSG_PRODUCTS_TABLE} p ON r.product_id = p.id AND p.tenant_id = %s AND p.org_id = %s AND p.bus_id = %s
+                    INNER JOIN {db_settings.MSG_SUPPLIERS_TABLE} s ON r.supplier_id = s.id AND s.tenant_id = %s AND s.org_id = %s AND s.bus_id = %s
+                    WHERE r.rn = 1
+                    ORDER BY p.name
+                    """,
+                    tuple(params) + (data.min_purchases, tenant_id, org_id, bus_id, tenant_id, org_id, bus_id),
+                )
+                rows = cursor.fetchall()
+                items = []
+                for row in rows:
+                    items.append(CheapestSupplierItemReadBase(
+                        product_id=row['product_id'],
+                        product_name=row['product_name'],
+                        supplier_id=row['supplier_id'],
+                        supplier_name=row['supplier_name'],
+                        average_cost=ReportsService._quantize_decimal(row['average_cost']),
+                        purchase_count=int(row['purchase_count']),
+                        total_quantity=ReportsService._quantize_decimal(row['total_quantity']),
+                    ))
+                response = CheapestSupplierReportResponseReadBase(
+                    report_type="cheapest_supplier",
+                    report_format="DETAILED",
+                    generated_at=datetime.now(),
+                    period_start=None,
+                    period_end=None,
+                    filters_applied={"product_id": data.product_id, "product_ids": data.product_ids, "min_purchases": data.min_purchases},
+                    items=items,
+                    total_items=len(items),
+                    total_amount=None,
+                    pagination={},
+                )
+                return Respons(success=True, detail="Cheapest supplier report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating cheapest supplier report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_receivings_items_graphical_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: ReceivingItemsGraphicalReportRequestWriteDto,
+    ) -> Respons[ReceivingsItemsGraphicalReportResponseReadBase]:
+        """Get receivings items graphical report"""
+        logger.info("Generating receivings items graphical report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions, params = ReportsService._get_po_base_conditions(
+                    tenant_id, org_id, bus_id, data.from_date, data.to_date, data.supplier_id, None
+                )
+                where = " AND ".join(conditions)
+                date_expr = "TO_CHAR(po.order_date, 'YYYY-MM')" if data.group_by in ('MONTH', 'YEAR') else "poi.product_id"
+                group_col = "TO_CHAR(po.order_date, 'YYYY-MM')" if data.group_by in ('MONTH', 'YEAR') else "p.name"
+                order_col = "TO_CHAR(po.order_date, 'YYYY-MM')" if data.group_by in ('MONTH', 'YEAR') else "total_value DESC"
+
+                cursor.execute(
+                    f"""
+                    SELECT {group_col} as label,
+                        COALESCE(SUM(poi.qty_received * poi.cost_price), 0) as total_value,
+                        COALESCE(SUM(poi.qty_received), 0) as total_qty
+                    FROM {db_settings.MSG_PURCHASE_ORDERS_TABLE} po
+                    LEFT JOIN {db_settings.MSG_PURCHASE_ORDER_ITEMS_TABLE} poi ON po.id = poi.purchase_order_id AND po.tenant_id = poi.tenant_id AND po.org_id = poi.org_id AND po.bus_id = poi.bus_id
+                    LEFT JOIN {db_settings.MSG_PRODUCTS_TABLE} p ON poi.product_id = p.id AND poi.tenant_id = p.tenant_id AND poi.org_id = p.org_id AND poi.bus_id = p.bus_id
+                    WHERE {where}
+                    GROUP BY {group_col}
+                    ORDER BY {order_col}
+                    LIMIT 50
+                    """,
+                    tuple(params),
+                )
+                rows = cursor.fetchall()
+                graph_data = []
+                for row in rows:
+                    graph_data.append(GraphDataPointReadBase(
+                        label=str(row['label'] or 'Unknown'),
+                        value=ReportsService._quantize_decimal(row['total_value']),
+                        category=str(row['label']),
+                        date=None,
+                    ))
+                response = ReceivingsItemsGraphicalReportResponseReadBase(
+                    report_type="receivings_items_graphical",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={"supplier_id": data.supplier_id, "group_by": data.group_by},
+                    graph_data=graph_data,
+                    chart_type="bar",
+                    metadata={},
+                )
+                return Respons(success=True, detail="Receivings items graphical report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating receivings items graphical report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_receivings_items_summary_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: ReceivingItemsSummaryReportRequestWriteDto,
+    ) -> Respons[ReceivingsItemsSummaryReportResponseReadBase]:
+        """Get receivings items summary report"""
+        logger.info("Generating receivings items summary report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions, params = ReportsService._get_po_base_conditions(
+                    tenant_id, org_id, bus_id, data.from_date, data.to_date, data.supplier_id, None
+                )
+                if data.product_id:
+                    conditions.append("poi.product_id = %s")
+                    params.append(data.product_id)
+                where = " AND ".join(conditions)
+                if data.group_by == 'PRODUCT':
+                    select_col = "poi.product_id, p.name as product_name"
+                    group_col = "poi.product_id, p.name"
+                else:
+                    select_col = "TO_CHAR(po.order_date, 'YYYY-MM') as product_name, NULL::text as product_id"
+                    group_col = "TO_CHAR(po.order_date, 'YYYY-MM')"
+
+                cursor.execute(
+                    f"""
+                    SELECT {select_col},
+                        COUNT(DISTINCT po.id) as sale_count,
+                        COALESCE(SUM(poi.qty_received), 0) as total_quantity,
+                        COALESCE(SUM(poi.qty_received * poi.cost_price), 0) as total_revenue
+                    FROM {db_settings.MSG_PURCHASE_ORDERS_TABLE} po
+                    LEFT JOIN {db_settings.MSG_PURCHASE_ORDER_ITEMS_TABLE} poi ON po.id = poi.purchase_order_id AND po.tenant_id = poi.tenant_id AND po.org_id = poi.org_id AND po.bus_id = poi.bus_id
+                    LEFT JOIN {db_settings.MSG_PRODUCTS_TABLE} p ON poi.product_id = p.id AND poi.tenant_id = p.tenant_id AND poi.org_id = p.org_id AND poi.bus_id = p.bus_id
+                    WHERE {where}
+                    GROUP BY {group_col}
+                    ORDER BY total_revenue DESC
+                    LIMIT 100
+                    """,
+                    tuple(params),
+                )
+                rows = cursor.fetchall()
+                summary_items = []
+                for row in rows:
+                    sale_count = int(row['sale_count'] or 0)
+                    total_qty = ReportsService._quantize_decimal(row['total_quantity'] or 0)
+                    total_rev = ReportsService._quantize_decimal(row['total_revenue'] or 0)
+                    product_id = row.get('product_id') or ''
+                    product_name = row.get('product_name') or 'Unknown'
+                    summary_items.append(SummaryItemReadBase(
+                        product_id=product_id,
+                        product_name=product_name,
+                        sale_count=sale_count,
+                        total_quantity=total_qty,
+                        total_revenue=total_rev,
+                    ))
+                response = ReceivingsItemsSummaryReportResponseReadBase(
+                    report_type="receivings_items_summary",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={"supplier_id": data.supplier_id, "product_id": data.product_id, "group_by": data.group_by},
+                    summary_items=summary_items,
+                    total_items=len(summary_items),
+                    totals={"total_quantity": sum(i.total_quantity for i in summary_items), "total_revenue": sum(i.total_revenue for i in summary_items)},
+                )
+                return Respons(success=True, detail="Receivings items summary report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating receivings items summary report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_receivings_payments_graphical_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: ReceivingPaymentsGraphicalReportRequestWriteDto,
+    ) -> Respons[ReceivingsPaymentsGraphicalReportResponseReadBase]:
+        """Get receivings payments graphical report - no purchase payment table, return empty"""
+        logger.info("Generating receivings payments graphical report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            response = ReceivingsPaymentsGraphicalReportResponseReadBase(
+                report_type="receivings_payments_graphical",
+                report_format=data.format,
+                generated_at=datetime.now(),
+                period_start=data.from_date,
+                period_end=data.to_date,
+                filters_applied={"supplier_id": data.supplier_id, "group_by": data.group_by},
+                graph_data=[],
+                chart_type="line",
+                metadata={"note": "Purchase order payments are not tracked in the current schema"},
+            )
+            return Respons(success=True, detail="Receivings payments graphical report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating receivings payments graphical report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_receivings_payments_summary_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: ReceivingPaymentsSummaryReportRequestWriteDto,
+    ) -> Respons[ReceivingsPaymentsSummaryReportResponseReadBase]:
+        """Get receivings payments summary report - no purchase payment table, return empty"""
+        logger.info("Generating receivings payments summary report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            response = ReceivingsPaymentsSummaryReportResponseReadBase(
+                report_type="receivings_payments_summary",
+                report_format=data.format,
+                generated_at=datetime.now(),
+                period_start=data.from_date,
+                period_end=data.to_date,
+                filters_applied={"supplier_id": data.supplier_id, "payment_method": data.payment_method},
+                summary_items=[],
+                total_items=0,
+                totals={"total_amount": 0, "total_payments": 0},
+            )
+            return Respons(success=True, detail="Receivings payments summary report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating receivings payments summary report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_receivings_payments_detailed_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: ReceivingPaymentsDetailedReportRequestWriteDto,
+    ) -> Respons[ReceivingsPaymentsDetailedReportResponseReadBase]:
+        """Get receivings payments detailed report - no purchase payment table, return empty"""
+        logger.info("Generating receivings payments detailed report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            response = ReceivingsPaymentsDetailedReportResponseReadBase(
+                report_type="receivings_payments_detailed",
+                report_format=data.format,
+                generated_at=datetime.now(),
+                period_start=data.from_date,
+                period_end=data.to_date,
+                filters_applied={"supplier_id": data.supplier_id, "payment_method": data.payment_method},
+                items=[],
+                total_items=0,
+                total_amount=Decimal('0'),
+                pagination={"page": data.page, "size": data.size, "total": 0},
+            )
+            return Respons(success=True, detail="Receivings payments detailed report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating receivings payments detailed report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    # =====================================================
+    # 11. SUPPLIER REPORTS
+    # =====================================================
+
+    @staticmethod
+    def get_suppliers_graphical_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: SuppliersGraphicalReportRequestWriteDto,
+    ) -> Respons[SuppliersGraphicalReportResponseReadBase]:
+        """Get suppliers graphical report"""
+        logger.info("Generating suppliers graphical report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions, params = ReportsService._get_po_base_conditions(
+                    tenant_id, org_id, bus_id, data.from_date, data.to_date, None, None
+                )
+                where = " AND ".join(conditions)
+                if data.metric == 'revenue':
+                    val_expr = "COALESCE(SUM(poi.qty_ordered * poi.cost_price), 0)"
+                elif data.metric == 'quantity':
+                    val_expr = "COALESCE(SUM(poi.qty_ordered), 0)"
+                else:
+                    val_expr = "COUNT(DISTINCT po.id)"
+
+                cursor.execute(
+                    f"""
+                    SELECT s.fullname as label, s.id as category, {val_expr} as value
+                    FROM {db_settings.MSG_PURCHASE_ORDERS_TABLE} po
+                    INNER JOIN {db_settings.MSG_SUPPLIERS_TABLE} s ON po.supplier_id = s.id AND po.tenant_id = s.tenant_id AND po.org_id = s.org_id AND po.bus_id = s.bus_id
+                    LEFT JOIN {db_settings.MSG_PURCHASE_ORDER_ITEMS_TABLE} poi ON po.id = poi.purchase_order_id AND po.tenant_id = poi.tenant_id AND po.org_id = poi.org_id AND po.bus_id = poi.bus_id
+                    WHERE {where}
+                    GROUP BY s.id, s.fullname
+                    ORDER BY value DESC
+                    LIMIT 50
+                    """,
+                    tuple(params),
+                )
+                rows = cursor.fetchall()
+                graph_data = []
+                for row in rows:
+                    graph_data.append(GraphDataPointReadBase(
+                        label=row['label'] or 'Unknown',
+                        value=ReportsService._quantize_decimal(row['value']),
+                        category=row['category'],
+                        date=None,
+                    ))
+                response = SuppliersGraphicalReportResponseReadBase(
+                    report_type="suppliers_graphical",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={"group_by": data.group_by, "metric": data.metric},
+                    graph_data=graph_data,
+                    chart_type="bar",
+                    metadata={},
+                )
+                return Respons(success=True, detail="Suppliers graphical report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating suppliers graphical report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_suppliers_summary_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: SuppliersSummaryReportRequestWriteDto,
+    ) -> Respons[SuppliersSummaryReportResponseReadBase]:
+        """Get suppliers summary report"""
+        logger.info("Generating suppliers summary report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                join_extra = ["po.tenant_id = s.tenant_id", "po.org_id = s.org_id", "po.bus_id = s.bus_id"]
+                join_params = []
+                if data.from_date:
+                    join_extra.append("po.order_date >= %s")
+                    join_params.append(data.from_date)
+                if data.to_date:
+                    join_extra.append("po.order_date <= %s")
+                    join_params.append(data.to_date)
+                if data.supplier_id:
+                    join_extra.append("po.supplier_id = %s")
+                    join_params.append(data.supplier_id)
+                join_clause = " AND ".join(join_extra)
+                having_parts = []
+                having_params = []
+                if data.min_purchases is not None:
+                    having_parts.append("COUNT(DISTINCT po.id) >= %s")
+                    having_params.append(data.min_purchases)
+                if data.min_amount is not None:
+                    having_parts.append("COALESCE(SUM(poi.qty_ordered * poi.cost_price), 0) >= %s")
+                    having_params.append(data.min_amount)
+                having = " HAVING " + " AND ".join(having_parts) if having_parts else ""
+
+                cursor.execute(
+                    f"""
+                    SELECT s.id as supplier_id, s.fullname as supplier_name,
+                        COUNT(DISTINCT po.id) as total_purchases,
+                        COALESCE(SUM(poi.qty_ordered * poi.cost_price), 0) as total_amount,
+                        COALESCE(SUM(poi.qty_ordered), 0) as total_items_purchased,
+                        MAX(po.order_date) as last_purchase_date
+                    FROM {db_settings.MSG_SUPPLIERS_TABLE} s
+                    LEFT JOIN {db_settings.MSG_PURCHASE_ORDERS_TABLE} po ON s.id = po.supplier_id AND {join_clause}
+                    LEFT JOIN {db_settings.MSG_PURCHASE_ORDER_ITEMS_TABLE} poi ON po.id = poi.purchase_order_id AND poi.tenant_id = po.tenant_id AND poi.org_id = po.org_id AND poi.bus_id = po.bus_id
+                    WHERE s.tenant_id = %s AND s.org_id = %s AND s.bus_id = %s AND s.delete_status = 'NOT_DELETED'
+                    GROUP BY s.id, s.fullname
+                    {having}
+                    ORDER BY total_amount DESC
+                    """,
+                    tuple(join_params) + (tenant_id, org_id, bus_id) + tuple(having_params),
+                )
+                rows = cursor.fetchall()
+                summary_items = []
+                for row in rows:
+                    lp = row['last_purchase_date']
+                    lp_date = lp.date() if lp and hasattr(lp, 'date') else lp
+                    total_purchases = int(row['total_purchases'] or 0)
+                    avg_val = (ReportsService._quantize_decimal(row['total_amount']) / total_purchases) if total_purchases else Decimal('0')
+                    summary_items.append(SupplierSummaryItemReadBase(
+                        supplier_id=row['supplier_id'],
+                        supplier_name=row['supplier_name'],
+                        total_purchases=total_purchases,
+                        total_amount=ReportsService._quantize_decimal(row['total_amount'] or 0),
+                        total_items_purchased=ReportsService._quantize_decimal(row['total_items_purchased'] or 0),
+                        average_order_value=ReportsService._quantize_decimal(avg_val),
+                        last_purchase_date=lp_date,
+                        on_time_delivery_rate=None,
+                    ))
+                response = SuppliersSummaryReportResponseReadBase(
+                    report_type="suppliers_summary",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={"supplier_id": data.supplier_id, "min_purchases": data.min_purchases, "min_amount": data.min_amount},
+                    summary_items=summary_items,
+                    total_items=len(summary_items),
+                    totals={"total_suppliers": len(summary_items)},
+                )
+                return Respons(success=True, detail="Suppliers summary report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating suppliers summary report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_suppliers_detailed_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: SuppliersDetailedReportRequestWriteDto,
+    ) -> Respons[SuppliersDetailedReportResponseReadBase]:
+        """Get suppliers detailed report"""
+        logger.info("Generating suppliers detailed report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions = ["s.tenant_id = %s", "s.org_id = %s", "s.bus_id = %s", "s.delete_status = 'NOT_DELETED'"]
+                params = [tenant_id, org_id, bus_id]
+                if not data.include_inactive:
+                    conditions.append("s.is_active = true")
+                if data.supplier_id:
+                    conditions.append("s.id = %s")
+                    params.append(data.supplier_id)
+                where = " AND ".join(conditions)
+                offset = (data.page - 1) * data.size
+
+                cursor.execute(
+                    f"""
+                    SELECT s.id as supplier_id, s.fullname as supplier_name, s.contact, s.email, s.address,
+                        COUNT(DISTINCT po.id) as total_orders,
+                        COALESCE(SUM(poi.qty_ordered * poi.cost_price), 0) as total_spent,
+                        COALESCE(SUM(poi.qty_ordered), 0) as total_items,
+                        MIN(po.order_date) as first_order_date,
+                        MAX(po.order_date) as last_order_date
+                    FROM {db_settings.MSG_SUPPLIERS_TABLE} s
+                    LEFT JOIN {db_settings.MSG_PURCHASE_ORDERS_TABLE} po ON s.id = po.supplier_id AND s.tenant_id = po.tenant_id AND s.org_id = po.org_id AND s.bus_id = po.bus_id
+                    LEFT JOIN {db_settings.MSG_PURCHASE_ORDER_ITEMS_TABLE} poi ON po.id = poi.purchase_order_id AND poi.tenant_id = po.tenant_id AND poi.org_id = po.org_id AND poi.bus_id = po.bus_id
+                    WHERE {where}
+                    GROUP BY s.id, s.fullname, s.contact, s.email, s.address
+                    ORDER BY total_spent DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    tuple(params) + (data.size, offset),
+                )
+                rows = cursor.fetchall()
+                cursor.execute(
+                    f"SELECT COUNT(*) as cnt FROM {db_settings.MSG_SUPPLIERS_TABLE} s WHERE {where}",
+                    tuple(params),
+                )
+                total_items = cursor.fetchone()['cnt']
+                items = []
+                for row in rows:
+                    total_orders = int(row['total_orders'] or 0)
+                    avg_val = (ReportsService._quantize_decimal(row['total_spent']) / total_orders) if total_orders else Decimal('0')
+                    items.append(SupplierDetailedItemReadBase(
+                        supplier_id=row['supplier_id'],
+                        supplier_name=row['supplier_name'],
+                        contact=row['contact'],
+                        email=row['email'],
+                        address=row['address'],
+                        total_orders=total_orders,
+                        total_spent=ReportsService._quantize_decimal(row['total_spent'] or 0),
+                        total_items=ReportsService._quantize_decimal(row['total_items'] or 0),
+                        first_order_date=row['first_order_date'].date() if row['first_order_date'] and hasattr(row['first_order_date'], 'date') else row['first_order_date'],
+                        last_order_date=row['last_order_date'].date() if row['last_order_date'] and hasattr(row['last_order_date'], 'date') else row['last_order_date'],
+                        average_order_value=ReportsService._quantize_decimal(avg_val),
+                    ))
+                total_amount = sum(i.total_spent for i in items)
+                response = SuppliersDetailedReportResponseReadBase(
+                    report_type="suppliers_detailed",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={"supplier_id": data.supplier_id, "include_inactive": data.include_inactive},
+                    items=items,
+                    total_items=total_items,
+                    total_amount=ReportsService._quantize_decimal(total_amount),
+                    pagination={"page": data.page, "size": data.size, "total": total_items},
+                )
+                return Respons(success=True, detail="Suppliers detailed report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating suppliers detailed report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_suppliers_summary_items_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: SuppliersSummaryItemsReportRequestWriteDto,
+    ) -> Respons[SuppliersSummaryItemsReportResponseReadBase]:
+        """Get suppliers summary items report"""
+        logger.info("Generating suppliers summary items report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions, params = ReportsService._get_po_base_conditions(
+                    tenant_id, org_id, bus_id, data.from_date, data.to_date, data.supplier_id, None
+                )
+                if data.product_id:
+                    conditions.append("poi.product_id = %s")
+                    params.append(data.product_id)
+                where = " AND ".join(conditions)
+
+                cursor.execute(
+                    f"""
+                    SELECT p.id as product_id, p.name as product_name,
+                        COUNT(DISTINCT po.id) as sale_count,
+                        COALESCE(SUM(poi.qty_ordered), 0) as total_quantity,
+                        COALESCE(SUM(poi.qty_ordered * poi.cost_price), 0) as total_revenue
+                    FROM {db_settings.MSG_PURCHASE_ORDERS_TABLE} po
+                    LEFT JOIN {db_settings.MSG_PURCHASE_ORDER_ITEMS_TABLE} poi ON po.id = poi.purchase_order_id AND po.tenant_id = poi.tenant_id AND po.org_id = poi.org_id AND po.bus_id = poi.bus_id
+                    LEFT JOIN {db_settings.MSG_PRODUCTS_TABLE} p ON poi.product_id = p.id AND poi.tenant_id = p.tenant_id AND poi.org_id = p.org_id AND poi.bus_id = p.bus_id
+                    WHERE {where}
+                    GROUP BY p.id, p.name
+                    ORDER BY total_revenue DESC
+                    LIMIT 100
+                    """,
+                    tuple(params),
+                )
+                rows = cursor.fetchall()
+                summary_items = []
+                for row in rows:
+                    summary_items.append(SummaryItemReadBase(
+                        product_id=row['product_id'] or '',
+                        product_name=row['product_name'] or 'Unknown',
+                        sale_count=int(row['sale_count'] or 0),
+                        total_quantity=ReportsService._quantize_decimal(row['total_quantity'] or 0),
+                        total_revenue=ReportsService._quantize_decimal(row['total_revenue'] or 0),
+                    ))
+                response = SuppliersSummaryItemsReportResponseReadBase(
+                    report_type="suppliers_summary_items",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={"supplier_id": data.supplier_id, "product_id": data.product_id},
+                    summary_items=summary_items,
+                    total_items=len(summary_items),
+                    totals={"total_quantity": sum(i.total_quantity for i in summary_items), "total_revenue": sum(i.total_revenue for i in summary_items)},
+                )
+                return Respons(success=True, detail="Suppliers summary items report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating suppliers summary items report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_suppliers_receivings_graphical_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: SuppliersGraphicalReceivingsReportRequestWriteDto,
+    ) -> Respons[SuppliersReceivingsGraphicalReportResponseReadBase]:
+        """Get suppliers receivings graphical report"""
+        logger.info("Generating suppliers receivings graphical report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions, params = ReportsService._get_po_base_conditions(
+                    tenant_id, org_id, bus_id, data.from_date, data.to_date, data.supplier_id, None
+                )
+                where = " AND ".join(conditions)
+                group_expr = "TO_CHAR(po.order_date, 'YYYY-MM')" if data.group_by in ('MONTH', 'YEAR') else "s.fullname"
+                cursor.execute(
+                    f"""
+                    SELECT {group_expr} as label, COALESCE(SUM(poi.qty_ordered * poi.cost_price), 0) as value
+                    FROM {db_settings.MSG_PURCHASE_ORDERS_TABLE} po
+                    INNER JOIN {db_settings.MSG_SUPPLIERS_TABLE} s ON po.supplier_id = s.id AND po.tenant_id = s.tenant_id AND po.org_id = s.org_id AND po.bus_id = s.bus_id
+                    LEFT JOIN {db_settings.MSG_PURCHASE_ORDER_ITEMS_TABLE} poi ON po.id = poi.purchase_order_id AND poi.tenant_id = po.tenant_id AND poi.org_id = po.org_id AND poi.bus_id = poi.bus_id
+                    WHERE {where}
+                    GROUP BY {group_expr}
+                    ORDER BY value DESC
+                    LIMIT 50
+                    """,
+                    tuple(params),
+                )
+                rows = cursor.fetchall()
+                graph_data = [GraphDataPointReadBase(label=str(r['label'] or 'Unknown'), value=ReportsService._quantize_decimal(r['value']), category=str(r['label']), date=None) for r in rows]
+                response = SuppliersReceivingsGraphicalReportResponseReadBase(
+                    report_type="suppliers_receivings_graphical",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={"supplier_id": data.supplier_id, "group_by": data.group_by},
+                    graph_data=graph_data,
+                    chart_type="line",
+                    metadata={},
+                )
+                return Respons(success=True, detail="Suppliers receivings graphical report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating suppliers receivings graphical report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_suppliers_receivings_summary_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: SuppliersSummaryReceivingsReportRequestWriteDto,
+    ) -> Respons[SuppliersReceivingsSummaryReportResponseReadBase]:
+        """Get suppliers receivings summary report"""
+        logger.info("Generating suppliers receivings summary report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions, params = ReportsService._get_po_base_conditions(
+                    tenant_id, org_id, bus_id, data.from_date, data.to_date, data.supplier_id, None
+                )
+                where = " AND ".join(conditions)
+                cursor.execute(
+                    f"""
+                    SELECT COUNT(DISTINCT po.id) as total_receivings,
+                        COALESCE(SUM(poi.qty_ordered * poi.cost_price), 0) as total_amount,
+                        COALESCE(SUM(poi.qty_ordered), 0) as total_items_received
+                    FROM {db_settings.MSG_PURCHASE_ORDERS_TABLE} po
+                    LEFT JOIN {db_settings.MSG_PURCHASE_ORDER_ITEMS_TABLE} poi ON po.id = poi.purchase_order_id AND po.tenant_id = poi.tenant_id AND po.org_id = poi.org_id AND po.bus_id = poi.bus_id
+                    WHERE {where}
+                    """,
+                    tuple(params),
+                )
+                row = cursor.fetchone()
+                total_receivings = int(row['total_receivings'] or 0)
+                total_amount = ReportsService._quantize_decimal(row['total_amount'] or 0)
+                total_items_received = ReportsService._quantize_decimal(row['total_items_received'] or 0)
+                avg_value = (total_amount / total_receivings) if total_receivings > 0 else Decimal('0')
+                summary_item = ReceivingSummaryItemReadBase(
+                    total_receivings=total_receivings,
+                    total_amount=total_amount,
+                    total_items_received=total_items_received,
+                    average_receiving_value=ReportsService._quantize_decimal(avg_value),
+                    receivings_by_status={},
+                    receivings_by_supplier={},
+                )
+                response = SuppliersReceivingsSummaryReportResponseReadBase(
+                    report_type="suppliers_receivings_summary",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={"supplier_id": data.supplier_id},
+                    summary_items=[summary_item],
+                    total_items=1,
+                    totals={"total_receivings": total_receivings, "total_amount": float(total_amount)},
+                )
+                return Respons(success=True, detail="Suppliers receivings summary report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating suppliers receivings summary report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_suppliers_receivings_detailed_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: SuppliersDetailedReceivingsReportRequestWriteDto,
+    ) -> Respons[SuppliersReceivingsDetailedReportResponseReadBase]:
+        """Get suppliers receivings detailed report"""
+        logger.info("Generating suppliers receivings detailed report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions, params = ReportsService._get_po_base_conditions(
+                    tenant_id, org_id, bus_id, data.from_date, data.to_date, data.supplier_id, None
+                )
+                where = " AND ".join(conditions)
+                offset = (data.page - 1) * data.size
+
+                cursor.execute(
+                    f"""
+                    SELECT po.id as purchase_order_id, po.po_number, po.order_date as receiving_date,
+                        s.fullname as supplier_name,
+                        COALESCE(SUM(poi.qty_ordered * poi.cost_price), 0) as total_amount,
+                        COUNT(DISTINCT poi.id) as items_count,
+                        po.status,
+                        (SELECT COUNT(*) FROM {db_settings.MSG_PURCHASE_RECEIPTS_TABLE} pr WHERE pr.purchase_order_id = po.id AND pr.tenant_id = po.tenant_id AND pr.org_id = po.org_id AND pr.bus_id = po.bus_id) as batches_created
+                    FROM {db_settings.MSG_PURCHASE_ORDERS_TABLE} po
+                    LEFT JOIN {db_settings.MSG_SUPPLIERS_TABLE} s ON po.supplier_id = s.id AND po.tenant_id = s.tenant_id AND po.org_id = s.org_id AND po.bus_id = s.bus_id
+                    LEFT JOIN {db_settings.MSG_PURCHASE_ORDER_ITEMS_TABLE} poi ON po.id = poi.purchase_order_id AND po.tenant_id = poi.tenant_id AND po.org_id = poi.org_id AND po.bus_id = poi.bus_id
+                    WHERE {where}
+                    GROUP BY po.id, po.po_number, po.order_date, s.fullname, po.status
+                    ORDER BY po.order_date DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    tuple(params) + (data.size, offset),
+                )
+                rows = cursor.fetchall()
+                cursor.execute(
+                    f"SELECT COUNT(*) as cnt FROM {db_settings.MSG_PURCHASE_ORDERS_TABLE} po WHERE {where}",
+                    tuple(params),
+                )
+                total_items = cursor.fetchone()['cnt']
+                items = []
+                for row in rows:
+                    rec_date = row['receiving_date']
+                    if hasattr(rec_date, 'date'):
+                        rec_date = rec_date.date()
+                    items.append(ReceivingDetailedItemReadBase(
+                        purchase_order_id=row['purchase_order_id'],
+                        po_number=row['po_number'],
+                        receiving_date=rec_date,
+                        supplier_name=row['supplier_name'],
+                        total_amount=ReportsService._quantize_decimal(row['total_amount']),
+                        items_count=int(row['items_count'] or 0),
+                        status=row['status'],
+                        batches_created=int(row['batches_created'] or 0),
+                    ))
+                total_amount = sum(i.total_amount for i in items)
+                response = SuppliersReceivingsDetailedReportResponseReadBase(
+                    report_type="suppliers_receivings_detailed",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    filters_applied={"supplier_id": data.supplier_id},
+                    items=items,
+                    total_items=total_items,
+                    total_amount=ReportsService._quantize_decimal(total_amount),
+                    pagination={"page": data.page, "size": data.size, "total": total_items},
+                )
+                return Respons(success=True, detail="Suppliers receivings detailed report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating suppliers receivings detailed report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_suppliers_tax_by_payments_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: SuppliersTaxByPaymentsReportRequestWriteDto,
+    ) -> Respons[SuppliersTaxByPaymentsReportResponseReadBase]:
+        """Get suppliers tax by payments report - no purchase payment table, return empty"""
+        logger.info("Generating suppliers tax by payments report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            response = SuppliersTaxByPaymentsReportResponseReadBase(
+                report_type="suppliers_tax_by_payments",
+                report_format=data.format,
+                generated_at=datetime.now(),
+                period_start=data.from_date,
+                period_end=data.to_date,
+                filters_applied={"supplier_id": data.supplier_id, "payment_method": data.payment_method},
+                items=[],
+                total_items=0,
+                total_amount=Decimal('0'),
+                pagination={"page": data.page, "size": data.size, "total": 0},
+            )
+            return Respons(success=True, detail="Suppliers tax by payments report generated successfully", data=[response])
+        except Exception as e:
+            logger.error(f"Error generating suppliers tax by payments report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
 

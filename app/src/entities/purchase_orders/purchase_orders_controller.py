@@ -521,7 +521,7 @@ def permanent_delete_purchase_order(
 # 7. Receive Purchase Order(s) (NEW API - FLOW 2) - single or multiple
 @purchase_orders_router.post(
     "/receive",
-    response_model=Respons[list[ReceivePurchaseOrderControllerReadDto]],
+    response_model=Respons[ReceivePurchaseOrderControllerReadDto],
 )
 def receive_purchase_orders(
     data: list[ReceivePurchaseOrderControllerWriteDto],

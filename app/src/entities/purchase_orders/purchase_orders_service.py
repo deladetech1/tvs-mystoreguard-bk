@@ -1,5 +1,7 @@
 from typing import Optional, List
 from decimal import Decimal, ROUND_HALF_UP
+from datetime import date
+from collections import defaultdict
 from src.entities.purchase_orders.purchase_orders_read_dto import (
     CreatePurchaseOrderServiceReadDto,
     UpdatePurchaseOrderServiceReadDto,
@@ -252,7 +254,13 @@ class PurchaseOrdersService:
             (tenant_id, org_id, bus_id, purchase_order_id),
         )
         items = cursor.fetchall()
-        return [dict(item) for item in items]
+        result = []
+        for item in items:
+            item_dict = dict(item)
+            if item_dict.get('product_expiry_date') and isinstance(item_dict['product_expiry_date'], date):
+                item_dict['product_expiry_date'] = item_dict['product_expiry_date'].isoformat()
+            result.append(item_dict)
+        return result
 
     @staticmethod
     def _get_purchase_order_batches(
@@ -521,6 +529,16 @@ class PurchaseOrdersService:
                         if not cursor.fetchone():
                             raise ValueError(f"Currency {item.currency_id} not found")
 
+                        # Verify unit of measure if provided
+                        if getattr(item, 'unit_of_measure_id', None):
+                            cursor.execute(
+                                f"""SELECT id FROM {db_settings.CORE_PLATFORM_UNIT_OF_MEASURE_TABLE}
+                                WHERE tenant_id = %s AND id = %s""",
+                                (tenant_id, item.unit_of_measure_id),
+                            )
+                            if not cursor.fetchone():
+                                raise ValueError(f"Unit of measure {item.unit_of_measure_id} not found")
+
                         item_id = Helper.generate_unique_identifier(prefix="poi")
                         qty_received = 0  # Always 0 for new PO
                         qty_remaining = item.qty_ordered  # Set explicitly
@@ -528,14 +546,18 @@ class PurchaseOrdersService:
                         cursor.execute(
                             f"""INSERT INTO {db_settings.MSG_PURCHASE_ORDER_ITEMS_TABLE}
                             (id, tenant_id, org_id, bus_id, purchase_order_id, product_id,
-                             qty_ordered, qty_received, qty_remaining, currency_id, cost_price, base_selling_price)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                             qty_ordered, qty_received, qty_remaining, currency_id, cost_price, base_selling_price,
+                             product_size, unit_of_measure_id, product_expiry_date)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             RETURNING *""",
                             (
                                 item_id, tenant_id, org_id, bus_id, po_id,
                                 item.product_id, item.qty_ordered,
                                 qty_received, qty_remaining,
-                                item.currency_id, item.cost_price, item.base_selling_price
+                                item.currency_id, item.cost_price, item.base_selling_price,
+                                getattr(item, 'product_size', None) or None,
+                                getattr(item, 'unit_of_measure_id', None) or None,
+                                getattr(item, 'product_expiry_date', None) or None,
                             ),
                         )
 
@@ -720,15 +742,143 @@ class PurchaseOrdersService:
                 po_dict = dict(po)
                 supplier_id = po_dict.get('supplier_id')
 
+                # Pre-validate: aggregate received_qty by purchase_order_item_id (before creating receipt)
+                qty_per_po_item = defaultdict(int)
+                for receipt_item in data.items:
+                    qty_per_po_item[receipt_item.purchase_order_item_id] += receipt_item.received_qty
+
+                already_fully_received_all = True  # idempotent: all lines already at 0 remaining
+                for po_item_id, total_in_receipt in qty_per_po_item.items():
+                    cursor.execute(
+                        f"""SELECT * FROM {db_settings.MSG_PURCHASE_ORDER_ITEMS_TABLE}
+                        WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s
+                        AND purchase_order_id = %s""",
+                        (po_item_id, tenant_id, org_id, bus_id, data.purchase_order_id),
+                    )
+                    poi = cursor.fetchone()
+                    if not poi:
+                        raise ValueError(f"Purchase order item {po_item_id} not found")
+                    poi_dict = dict(poi)
+                    qty_ordered = poi_dict.get('qty_ordered', 0)
+                    cursor.execute(
+                        f"""SELECT COALESCE(SUM(pb.qty_received), 0) as total_received
+                        FROM {db_settings.MSG_PURCHASE_BATCHES_TABLE} pb
+                        INNER JOIN {db_settings.MSG_PRODUCT_MOVEMENTS_TABLE} pm 
+                            ON pb.id = pm.batch_id AND pb.tenant_id = pm.tenant_id 
+                            AND pb.org_id = pm.org_id AND pb.bus_id = pm.bus_id
+                        INNER JOIN {db_settings.MSG_PURCHASE_RECEIPTS_TABLE} pr 
+                            ON pm.reference_id = pr.id AND pm.tenant_id = pr.tenant_id 
+                            AND pm.org_id = pr.org_id AND pm.bus_id = pr.bus_id
+                        WHERE pb.tenant_id = %s AND pb.org_id = %s AND pb.bus_id = %s 
+                        AND pb.product_id = %s AND pb.delete_status = 'NOT_DELETED'
+                        AND pb.batch_type = 'PURCHASE' AND pr.purchase_order_id = %s
+                        AND pm.movement_type = 'IN' AND pm.reason = 'PURCHASE'""",
+                        (tenant_id, org_id, bus_id, poi_dict.get('product_id'), data.purchase_order_id),
+                    )
+                    total_received_result = cursor.fetchone()
+                    total_received_so_far = float(total_received_result.get('total_received', 0) or 0) if total_received_result else 0
+                    current_qty_remaining = qty_ordered - total_received_so_far
+                    if total_in_receipt > current_qty_remaining:
+                        if current_qty_remaining > 0:
+                            raise ValueError(
+                                f"Received quantity ({total_in_receipt}) exceeds remaining quantity ({current_qty_remaining}) for purchase order item {po_item_id}. "
+                                f"Ordered: {qty_ordered}, Already received: {total_received_so_far}, Remaining: {current_qty_remaining}."
+                            )
+                        # remaining is 0: this line is already fully received (duplicate receive)
+                        already_fully_received_all = already_fully_received_all and True
+                    else:
+                        already_fully_received_all = False
+
+                # Idempotent: all lines already fully received — return success without creating a new receipt
+                if already_fully_received_all and qty_per_po_item:
+                    po_dict.setdefault('created_by', None)
+                    po_dict.setdefault('supplier_name', None)
+                    po_dict.setdefault('assign_to_name', None)
+                    cursor.execute(
+                        f"""SELECT po.*, creator.fullname as created_by,
+                                   supplier.fullname as supplier_name, assignee.fullname as assign_to_name
+                            FROM {db_settings.MSG_PURCHASE_ORDERS_TABLE} po
+                            LEFT JOIN {db_settings.CORE_PLATFORM_USERS_TABLE} creator ON po.created_by = creator.id AND po.tenant_id = creator.tenant_id
+                            LEFT JOIN {db_settings.MSG_SUPPLIERS_TABLE} supplier ON po.supplier_id = supplier.id
+                                AND po.tenant_id = supplier.tenant_id AND po.org_id = supplier.org_id AND po.bus_id = supplier.bus_id
+                            LEFT JOIN {db_settings.CORE_PLATFORM_USERS_TABLE} assignee ON po.assign_to = assignee.id AND po.tenant_id = assignee.tenant_id
+                            WHERE po.id = %s AND po.tenant_id = %s AND po.org_id = %s AND po.bus_id = %s""",
+                        (data.purchase_order_id, tenant_id, org_id, bus_id),
+                    )
+                    po_with_users = cursor.fetchone()
+                    if po_with_users:
+                        po_dict = dict(po_with_users)
+                        po_dict['created_by'] = po_dict.get('created_by') or None
+                        po_dict['supplier_name'] = po_dict.get('supplier_name') or None
+                        po_dict['assign_to_name'] = po_dict.get('assign_to_name') or None
+                    items_data = PurchaseOrdersService._get_purchase_order_items(
+                        cursor, tenant_id, org_id, bus_id, data.purchase_order_id
+                    )
+                    batches_data = PurchaseOrdersService._get_purchase_order_batches(
+                        cursor, tenant_id, org_id, bus_id, data.purchase_order_id
+                    )
+                    batch_ids = [b.get('id') for b in batches_data if b.get('id')]
+                    movements_by_batch = PurchaseOrdersService._get_batch_movements(
+                        cursor, tenant_id, org_id, bus_id, batch_ids
+                    ) if batch_ids else {}
+                    batches_list = PurchaseOrdersService._convert_batches_to_dtos(batches_data, movements_by_batch)
+                    batches_by_product = {}
+                    for batch in batches_list:
+                        pid = batch.product_id
+                        if pid not in batches_by_product:
+                            batches_by_product[pid] = []
+                        batches_by_product[pid].append(batch)
+                    items_list = []
+                    for item in items_data:
+                        item_dict = dict(item)
+                        item_dict['batches'] = batches_by_product.get(item_dict.get('product_id'), None)
+                        cid = item_dict.get('currency_id')
+                        if cid:
+                            item_dict['currency'] = CurrencyReadDto(
+                                id=cid,
+                                name=item_dict.pop('currency_name', None),
+                                code=item_dict.pop('currency_code', None),
+                                symbol=item_dict.pop('currency_symbol', None),
+                                decimal_places=item_dict.pop('currency_decimal_places', None),
+                                currency_position=item_dict.pop('currency_position', None),
+                            )
+                        else:
+                            item_dict['currency'] = None
+                        items_list.append(PurchaseOrderItemReadDto(**item_dict))
+                    cursor.execute(
+                        f"""SELECT * FROM {db_settings.MSG_PURCHASE_RECEIPTS_TABLE}
+                        WHERE tenant_id = %s AND org_id = %s AND bus_id = %s AND purchase_order_id = %s
+                        ORDER BY cdatetime DESC NULLS LAST LIMIT 1""",
+                        (tenant_id, org_id, bus_id, data.purchase_order_id),
+                    )
+                    latest_receipt = cursor.fetchone()
+                    if latest_receipt:
+                        r = dict(latest_receipt)
+                        receipt_read = PurchaseReceiptReadBase(
+                            id=r.get('id'), tenant_id=r.get('tenant_id'), org_id=r.get('org_id'), bus_id=r.get('bus_id'),
+                            purchase_order_id=r.get('purchase_order_id'), receipt_number=r.get('receipt_number'),
+                            received_date=r.get('received_date'), description=r.get('description'), status=r.get('status'),
+                            cdatetime=r.get('cdatetime'), created_by=r.get('created_by'),
+                        )
+                    else:
+                        receipt_read = None
+                    po_read = ReceivePurchaseOrderServiceReadDto(
+                        purchase_order=PurchaseOrderReadBase(**po_dict),
+                        items=items_list,
+                        receipt=receipt_read,
+                    )
+                    return Respons(
+                        success=True,
+                        detail="Already fully received; no new receipt created.",
+                        data=[po_read],
+                    )
+
                 # Step 2: Create Receipt
                 receipt_id = Helper.generate_unique_identifier(prefix="rec")
                 receipt_number = PurchaseOrdersService._generate_receipt_number(
                     cursor, tenant_id, org_id, bus_id
                 )
-
-                # Default status to DRAFT if not provided
                 receipt_status = getattr(data, 'status', 'DRAFT')
-                
                 cursor.execute(
                     f"""INSERT INTO {db_settings.MSG_PURCHASE_RECEIPTS_TABLE}
                     (id, tenant_id, org_id, bus_id, purchase_order_id, receipt_number,
@@ -791,11 +941,14 @@ class PurchaseOrdersService:
                     total_received_after_this = total_received_so_far + received_qty
                     current_qty_remaining = qty_ordered - total_received_so_far
                     
-                    # Validate received quantity - check against remaining quantity
+                    # Skip already-fully-received lines (idempotent: no batch, no update)
+                    if received_qty > current_qty_remaining and current_qty_remaining == 0:
+                        continue
+                    # Reject over-receive when there is remaining (invalid)
                     if received_qty > current_qty_remaining:
                         raise ValueError(
                             f"Received quantity ({received_qty}) exceeds remaining quantity ({current_qty_remaining}). "
-                            f"Ordered: {qty_ordered}, Already received: {total_received_so_far}, Remaining: {current_qty_remaining}"
+                            f"Ordered: {qty_ordered}, Already received: {total_received_so_far}, Remaining: {current_qty_remaining}."
                         )
 
                     # Step 4: Create Batch
@@ -814,15 +967,20 @@ class PurchaseOrdersService:
                     if cursor.fetchone():
                         raise ValueError(f"Batch with number '{batch_number}' already exists")
 
-                    # Verify unit of measure if provided
-                    if receipt_item.unit_of_measure_id:
+                    # Default batch product_size, unit_of_measure_id, product_expiry_date from PO item when not provided in receipt
+                    batch_product_size = receipt_item.product_size if receipt_item.product_size is not None else poi_dict.get('product_size')
+                    batch_unit_of_measure_id = receipt_item.unit_of_measure_id if receipt_item.unit_of_measure_id is not None else poi_dict.get('unit_of_measure_id')
+                    batch_product_expiry_date = receipt_item.product_expiry_date if receipt_item.product_expiry_date is not None else poi_dict.get('product_expiry_date')
+
+                    # Verify unit of measure if provided (from receipt or PO item)
+                    if batch_unit_of_measure_id:
                         cursor.execute(
                             f"""SELECT id FROM {db_settings.CORE_PLATFORM_UNIT_OF_MEASURE_TABLE}
                             WHERE tenant_id = %s AND id = %s""",
-                            (tenant_id, receipt_item.unit_of_measure_id),
+                            (tenant_id, batch_unit_of_measure_id),
                         )
                         if not cursor.fetchone():
-                            raise ValueError(f"Unit of measure {receipt_item.unit_of_measure_id} not found")
+                            raise ValueError(f"Unit of measure {batch_unit_of_measure_id} not found")
 
                     batch_id = Helper.generate_unique_identifier(prefix="bat")
                     batch_status = 'RECEIVED'  # Status for received batches
@@ -843,8 +1001,8 @@ class PurchaseOrdersService:
                             batch_id, tenant_id, org_id, bus_id, poi_dict.get('product_id'),
                             supplier_id, batch_number,
                             poi_dict.get('currency_id'), poi_dict.get('cost_price'), poi_dict.get('base_selling_price'),
-                            receipt_item.product_size, receipt_item.unit_of_measure_id,
-                            receipt_item.product_expiry_date,
+                            batch_product_size, batch_unit_of_measure_id,
+                            batch_product_expiry_date,
                             'PURCHASE',  # Batch type for stock from supplier
                             qty_ordered,  # qty_ordered is required for PURCHASE batches
                             received_qty, batch_qty_remaining, qty_remaining_for_purchase_order,  # qty_remaining = actual stock, qty_remaining_for_purchase_order = PO remaining
@@ -1336,6 +1494,28 @@ class PurchaseOrdersService:
                             item_update_fields.append("base_selling_price = %s")
                             item_params.append(item.base_selling_price)
                         
+                        # Update product_size if provided
+                        if item.product_size is not None:
+                            item_update_fields.append("product_size = %s")
+                            item_params.append(item.product_size)
+                        
+                        # Update unit_of_measure_id if provided (validate first)
+                        if item.unit_of_measure_id is not None:
+                            cursor.execute(
+                                f"""SELECT id FROM {db_settings.CORE_PLATFORM_UNIT_OF_MEASURE_TABLE}
+                                WHERE tenant_id = %s AND id = %s""",
+                                (tenant_id, item.unit_of_measure_id),
+                            )
+                            if not cursor.fetchone():
+                                raise ValueError(f"Unit of measure {item.unit_of_measure_id} not found")
+                            item_update_fields.append("unit_of_measure_id = %s")
+                            item_params.append(item.unit_of_measure_id)
+                        
+                        # Update product_expiry_date if provided
+                        if item.product_expiry_date is not None:
+                            item_update_fields.append("product_expiry_date = %s")
+                            item_params.append(item.product_expiry_date)
+                        
                         # Execute update if there are fields to update
                         if item_update_fields:
                             item_params.extend([item_id, tenant_id, org_id, bus_id, purchase_order_id])
@@ -1382,6 +1562,16 @@ class PurchaseOrdersService:
                         if cursor.fetchone():
                             raise ValueError(f"Product {item.product_id} already exists in this purchase order")
                         
+                        # Validate unit of measure if provided (for new item)
+                        if getattr(item, 'unit_of_measure_id', None):
+                            cursor.execute(
+                                f"""SELECT id FROM {db_settings.CORE_PLATFORM_UNIT_OF_MEASURE_TABLE}
+                                WHERE tenant_id = %s AND id = %s""",
+                                (tenant_id, item.unit_of_measure_id),
+                            )
+                            if not cursor.fetchone():
+                                raise ValueError(f"Unit of measure {item.unit_of_measure_id} not found")
+                        
                         # Insert new item
                         item_id = Helper.generate_unique_identifier(prefix="poi")
                         qty_received = 0
@@ -1389,14 +1579,18 @@ class PurchaseOrdersService:
                         cursor.execute(
                             f"""INSERT INTO {db_settings.MSG_PURCHASE_ORDER_ITEMS_TABLE}
                             (id, tenant_id, org_id, bus_id, purchase_order_id, product_id,
-                             qty_ordered, qty_received, qty_remaining, currency_id, cost_price, base_selling_price)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                             qty_ordered, qty_received, qty_remaining, currency_id, cost_price, base_selling_price,
+                             product_size, unit_of_measure_id, product_expiry_date)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             RETURNING *""",
                             (
                                 item_id, tenant_id, org_id, bus_id, purchase_order_id,
                                 item.product_id, item.qty_ordered,
                                 qty_received, qty_remaining,
-                                item.currency_id, item.cost_price, item.base_selling_price
+                                item.currency_id, item.cost_price, item.base_selling_price,
+                                getattr(item, 'product_size', None) or None,
+                                getattr(item, 'unit_of_measure_id', None) or None,
+                                getattr(item, 'product_expiry_date', None) or None,
                             ),
                         )
 

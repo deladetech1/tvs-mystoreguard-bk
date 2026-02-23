@@ -70,6 +70,9 @@ Available Report DTOs by Category:
 - SupplierSummaryItemReadBase: Supplier summary statistics
 - SupplierDetailedItemReadBase: Detailed supplier information and statistics
 
+=== AFFILIATE REPORTS ===
+- AffiliateSummaryItemReadBase: Affiliate summary with referrals, conversions, commissions
+
 === PRODUCT METADATA REPORTS ===
 - ProductMetadataSummaryItemReadBase: Product metadata summary
 - ProductMetadataGraphItemReadBase: Product metadata graph data
@@ -627,6 +630,26 @@ class SupplierDetailedItemReadBase(BaseModel):
 
 
 # =====================================================
+# AFFILIATE REPORTS
+# =====================================================
+
+class AffiliateSummaryItemReadBase(BaseModel):
+    """Affiliate summary item"""
+    affiliate_id: str
+    affiliate_code: str
+    affiliate_name: str
+    total_referrals: int
+    total_conversions: int
+    total_commission_earned: Decimal
+    total_commission_paid: Decimal
+    commission_outstanding: Decimal
+    conversion_rate: Optional[Decimal]
+    average_commission_per_conversion: Optional[Decimal]
+    status: str
+    last_referral_date: Optional[date]
+
+
+# =====================================================
 # PRODUCT METADATA REPORTS
 # =====================================================
 
@@ -1130,6 +1153,16 @@ class SuppliersReceivingsSummaryReportResponseReadBase(ReportResponseReadBase):
         description="List of supplier receiving summary items"
     )
     total_items: int = Field(0, description="Total number of summary items")
+    totals: Optional[dict] = Field(default_factory=dict, description="Aggregated totals and statistics")
+
+
+class AffiliatesSummaryReportResponseReadBase(ReportResponseReadBase):
+    """Affiliates summary report response"""
+    summary_items: List[AffiliateSummaryItemReadBase] = Field(
+        default_factory=list,
+        description="List of affiliate summary items"
+    )
+    total_items: int = Field(0, description="Total number of affiliates")
     totals: Optional[dict] = Field(default_factory=dict, description="Aggregated totals and statistics")
 
 
@@ -1691,135 +1724,157 @@ Use this guide to find which DTOs are used by which endpoints:
    → DetailedReportResponseReadBase
    → Contains: List[ExpiringItemReadBase]
 
-7. INVOICE REPORTS
-   GET /reports/invoices/summary (when implemented)
-   → SummaryReportResponseReadBase
-   → Contains: List[InvoiceSummaryItemReadBase]
+7. INVOICE REPORTS (dedicated response types – returns only invoice data, like inventory)
+   GET /reports/invoices/summary
+   → InvoicesSummaryReportResponseReadBase
+   → summary_items: List[InvoiceSummaryItemReadBase] (total_invoices, total_amount, paid_amount, outstanding_amount, overdue_amount, average_invoice_value, invoices_by_status)
 
-   GET /reports/invoices/detailed (when implemented)
-   → DetailedReportResponseReadBase
-   → Contains: List[InvoiceDetailedItemReadBase]
+   GET /reports/invoices/detailed
+   → InvoicesDetailedReportResponseReadBase
+   → items: List[InvoiceDetailedItemReadBase] (invoice_id, invoice_number, invoice_date, due_date, customer_name, total_amount, paid_amount, balance_amount, status, days_overdue, items_count)
 
-   GET /reports/invoices/aging (when implemented)
-   → DetailedReportResponseReadBase
-   → Contains: List[InvoiceAgingItemReadBase]
+   GET /reports/invoices/aging
+   → InvoiceAgingReportResponseReadBase
+   → items: List[InvoiceAgingItemReadBase] (customer_id, customer_name, invoice_id, invoice_number, invoice_date, due_date, days_overdue, amount, status)
 
-8. PAYMENT REPORTS
-   GET /reports/payments/summary (when implemented)
-   → SummaryReportResponseReadBase
-   → Contains: List[PaymentSummaryItemReadBase]
+8. PAYMENT REPORTS (dedicated response types)
+   GET /reports/payments/summary
+   → PaymentsSummaryReportResponseReadBase
+   → summary_items: List[PaymentSummaryItemReadBase] (total_payments, total_amount, payments_by_method, payments_by_status, average_payment_amount, refunds_count, refunds_amount)
 
-   GET /reports/payments/detailed (when implemented)
-   → DetailedReportResponseReadBase
-   → Contains: List[PaymentDetailedItemReadBase]
+   GET /reports/payments/detailed
+   → PaymentsDetailedReportResponseReadBase
+   → items: List[PaymentDetailedItemReadBase] (payment_id, sale_id, invoice_id, payment_date, payment_method, amount, status, reference_number, customer_name)
 
-   GET /reports/payments/graphical (when implemented)
-   → GraphicalReportResponseReadBase
-   → Contains: List[PaymentGraphItemReadBase]
+   GET /reports/payments/graphical
+   → PaymentsGraphicalReportResponseReadBase
+   → graph_data: List[PaymentGraphItemReadBase]
 
-9. PRICING RULE REPORTS
-   GET /reports/pricing-rules/summary (when implemented)
-   → SummaryReportResponseReadBase
-   → Contains: List[PricingRuleSummaryItemReadBase]
+9. PRICING RULE REPORTS (dedicated response types)
+   GET /reports/pricing-rules/summary
+   → PricingRulesSummaryReportResponseReadBase
+   → summary_items: List[PricingRuleSummaryItemReadBase]
 
-   GET /reports/pricing-rules/detailed (when implemented)
-   → DetailedReportResponseReadBase
-   → Contains: List[PricingRuleDetailedItemReadBase]
+   GET /reports/pricing-rules/detailed
+   → PricingRulesDetailedReportResponseReadBase
+   → items: List[PricingRuleDetailedItemReadBase]
 
-10. RECEIVING/PURCHASE REPORTS
-    GET /reports/receivings/summary (when implemented)
-    → SummaryReportResponseReadBase
-    → Contains: List[ReceivingSummaryItemReadBase]
+10. RECEIVING/PURCHASE REPORTS (dedicated response types)
+    GET /reports/receivings/summary
+    → ReceivingsSummaryReportResponseReadBase
+    → summary_items: List[ReceivingSummaryItemReadBase]
 
-    GET /reports/receivings/detailed (when implemented)
-    → DetailedReportResponseReadBase
-    → Contains: List[ReceivingDetailedItemReadBase]
+    GET /reports/receivings/detailed
+    → ReceivingsDetailedReportResponseReadBase
+    → items: List[ReceivingDetailedItemReadBase]
 
-    GET /reports/receivings/summary-categories (when implemented)
-    → DetailedReportResponseReadBase
-    → Contains: List[ReceivingCategoryItemReadBase]
+    GET /reports/receivings/summary-categories
+    → ReceivingsSummaryCategoriesReportResponseReadBase
+    → items: List[ReceivingCategoryItemReadBase]
 
-    GET /reports/receivings/summary-taxes (when implemented)
-    → GraphicalReportResponseReadBase or DetailedReportResponseReadBase
-    → Contains: List[ReceivingTaxItemReadBase]
+    GET /reports/receivings/suspended
+    → ReceivingsSuspendedReportResponseReadBase
+    → items: List[ReceivingDetailedItemReadBase]
 
-    GET /reports/receivings/graphical-taxes (when implemented)
-    → GraphicalReportResponseReadBase
-    → Contains: List[ReceivingTaxItemReadBase]
+    GET /reports/receivings/deleted
+    → ReceivingsDeletedReportResponseReadBase
+    → items: List[ReceivingDetailedItemReadBase]
 
-    GET /reports/receivings/cheapest-supplier (when implemented)
-    → DetailedReportResponseReadBase
-    → Contains: List[CheapestSupplierItemReadBase]
+    GET /reports/receivings/summary-taxes
+    → ReceivingsSummaryTaxesReportResponseReadBase
+    → items: List[ReceivingTaxItemReadBase]
 
-    GET /reports/receivings/items/summary (when implemented)
-    → SummaryReportResponseReadBase
-    → Contains: List[SummaryItemReadBase]
+    GET /reports/receivings/graphical-taxes
+    → ReceivingsGraphicalTaxesReportResponseReadBase
+    → graph_data: List[ReceivingTaxItemReadBase]
 
-    GET /reports/receivings/items/graphical (when implemented)
-    → GraphicalReportResponseReadBase
-    → Contains: List[GraphDataPointReadBase]
+    GET /reports/receivings/cheapest-supplier
+    → CheapestSupplierReportResponseReadBase
+    → items: List[CheapestSupplierItemReadBase]
 
-    GET /reports/receivings/payments/summary (when implemented)
-    → SummaryReportResponseReadBase
-    → Contains: List[PaymentSummaryItemReadBase]
+    GET /reports/receivings/items/summary
+    → ReceivingsItemsSummaryReportResponseReadBase
+    → summary_items: List[SummaryItemReadBase]
 
-    GET /reports/receivings/payments/graphical (when implemented)
-    → GraphicalReportResponseReadBase
-    → Contains: List[PaymentGraphItemReadBase]
+    GET /reports/receivings/items/graphical
+    → ReceivingsItemsGraphicalReportResponseReadBase
+    → graph_data: List[GraphDataPointReadBase]
 
-    GET /reports/receivings/payments/detailed (when implemented)
-    → DetailedReportResponseReadBase
-    → Contains: List[PaymentDetailedItemReadBase]
+    GET /reports/receivings/payments/summary
+    → ReceivingsPaymentsSummaryReportResponseReadBase
+    → summary_items: List[PaymentSummaryItemReadBase]
 
-11. SUPPLIER REPORTS
-    GET /reports/suppliers/summary (when implemented)
-    → SummaryReportResponseReadBase
-    → Contains: List[SupplierSummaryItemReadBase]
+    GET /reports/receivings/payments/graphical
+    → ReceivingsPaymentsGraphicalReportResponseReadBase
+    → graph_data: List[PaymentGraphItemReadBase]
 
-    GET /reports/suppliers/detailed (when implemented)
-    → DetailedReportResponseReadBase
-    → Contains: List[SupplierDetailedItemReadBase]
+    GET /reports/receivings/payments/detailed
+    → ReceivingsPaymentsDetailedReportResponseReadBase
+    → items: List[PaymentDetailedItemReadBase]
 
-    GET /reports/suppliers/summary-items (when implemented)
-    → SummaryReportResponseReadBase
-    → Contains: List[SummaryItemReadBase]
+11. SUPPLIER REPORTS (dedicated response types)
+    GET /reports/suppliers/graphical
+    → SuppliersGraphicalReportResponseReadBase
+    → graph_data: List[GraphDataPointReadBase]
 
-    GET /reports/suppliers/receivings/summary (when implemented)
-    → SummaryReportResponseReadBase
-    → Contains: List[ReceivingSummaryItemReadBase]
+    GET /reports/suppliers/summary
+    → SuppliersSummaryReportResponseReadBase
+    → summary_items: List[SupplierSummaryItemReadBase]
 
-    GET /reports/suppliers/receivings/graphical (when implemented)
-    → GraphicalReportResponseReadBase
-    → Contains: List[GraphDataPointReadBase]
+    GET /reports/suppliers/detailed
+    → SuppliersDetailedReportResponseReadBase
+    → items: List[SupplierDetailedItemReadBase]
 
-    GET /reports/suppliers/receivings/detailed (when implemented)
-    → DetailedReportResponseReadBase
-    → Contains: List[ReceivingDetailedItemReadBase]
+    GET /reports/suppliers/summary-items
+    → SuppliersSummaryItemsReportResponseReadBase
+    → summary_items: List[SummaryItemReadBase]
 
-    GET /reports/suppliers/tax-by-payments (when implemented)
-    → DetailedReportResponseReadBase
-    → Contains: List[TaxByPaymentItemReadBase]
+    GET /reports/suppliers/receivings/graphical
+    → SuppliersReceivingsGraphicalReportResponseReadBase
+    → graph_data: List[GraphDataPointReadBase]
 
-    GET /reports/suppliers/graphical (when implemented)
-    → GraphicalReportResponseReadBase
-    → Contains: List[GraphDataPointReadBase]
+    GET /reports/suppliers/receivings/summary
+    → SuppliersReceivingsSummaryReportResponseReadBase
+    → summary_items: List[ReceivingSummaryItemReadBase]
 
-12. OTHER REPORTS
-    GET /reports/product-prices/summary (when implemented)
-    → SummaryReportResponseReadBase
-    → Contains: List[ProductPriceSummaryItemReadBase]
+    GET /reports/suppliers/receivings/detailed
+    → SuppliersReceivingsDetailedReportResponseReadBase
+    → items: List[ReceivingDetailedItemReadBase]
 
-    GET /reports/product-prices/graphical (when implemented)
-    → GraphicalReportResponseReadBase
-    → Contains: List[ProductPriceGraphItemReadBase]
+    GET /reports/suppliers/tax-by-payments
+    → SuppliersTaxByPaymentsReportResponseReadBase
+    → items: List[TaxByPaymentItemReadBase]
 
-    GET /reports/tax/summary (when implemented)
-    → SummaryReportResponseReadBase
-    → Contains: List[TaxSummaryItemReadBase]
+12. AFFILIATE REPORTS (dedicated response types)
+    GET /reports/affiliates/summary
+    → AffiliatesSummaryReportResponseReadBase
+    → summary_items: List[AffiliateSummaryItemReadBase] (affiliate_id, affiliate_code, affiliate_name, total_referrals, total_conversions, total_commission_earned, total_commission_paid, commission_outstanding, conversion_rate, average_commission_per_conversion, status, last_referral_date)
 
-    GET /reports/tax-rules/summary (when implemented)
-    → SummaryReportResponseReadBase
-    → Contains: List[TaxRuleSummaryItemReadBase]
+13. PRODUCT-PRICES, TAX, TAX-RULES, SALES (dedicated response types)
+    GET /reports/product-prices/summary
+    → ProductPricesSummaryReportResponseReadBase
+    → summary_items: List[ProductPriceSummaryItemReadBase]
+
+    GET /reports/product-prices/graphical
+    → ProductPricesGraphicalReportResponseReadBase
+    → graph_data: List[ProductPriceGraphItemReadBase]
+
+    GET /reports/tax/summary
+    → TaxSummaryReportResponseReadBase
+    → summary_items: List[TaxSummaryItemReadBase]
+
+    GET /reports/tax-rules/summary
+    → TaxRulesSummaryReportResponseReadBase
+    → summary_items: List[TaxRuleSummaryItemReadBase]
+
+    GET /reports/sales/product-gross-profit
+    → ProductGrossProfitReportResponseReadBase
+
+    GET /reports/sales/product-net-profit
+    → ProductNetProfitReportResponseReadBase
+
+    GET /reports/sales/location-performance
+    → LocationPerformanceReportResponseReadBase
 
 NOTE: All endpoints return Respons[T] where T is one of the Response DTOs above.
 The Respons wrapper has: success (bool), detail (str), data (List[T]), error (Optional[str])

@@ -156,6 +156,22 @@
                                 if item.base_selling_price is not None:
                                     item_update_fields.append("base_selling_price = %s")
                                     item_params.append(item.base_selling_price)
+                                if item.product_size is not None:
+                                    item_update_fields.append("product_size = %s")
+                                    item_params.append(item.product_size)
+                                if item.unit_of_measure_id is not None:
+                                    cursor.execute(
+                                        f"""SELECT id FROM {db_settings.CORE_PLATFORM_UNIT_OF_MEASURE_TABLE}
+                                        WHERE tenant_id = %s AND id = %s""",
+                                        (tenant_id, item.unit_of_measure_id),
+                                    )
+                                    if not cursor.fetchone():
+                                        raise ValueError(f"Unit of measure {item.unit_of_measure_id} not found")
+                                    item_update_fields.append("unit_of_measure_id = %s")
+                                    item_params.append(item.unit_of_measure_id)
+                                if item.product_expiry_date is not None:
+                                    item_update_fields.append("product_expiry_date = %s")
+                                    item_params.append(item.product_expiry_date)
 
                                 if item_update_fields:
                                     item_params.extend([item.item_id, tenant_id, org_id, bus_id, purchase_order_id])
@@ -196,20 +212,33 @@
                             if cursor.fetchone():
                                 raise ValueError(f"Product {item.product_id} already exists in this purchase order")
 
+                            if getattr(item, 'unit_of_measure_id', None):
+                                cursor.execute(
+                                    f"""SELECT id FROM {db_settings.CORE_PLATFORM_UNIT_OF_MEASURE_TABLE}
+                                    WHERE tenant_id = %s AND id = %s""",
+                                    (tenant_id, item.unit_of_measure_id),
+                                )
+                                if not cursor.fetchone():
+                                    raise ValueError(f"Unit of measure {item.unit_of_measure_id} not found")
+
                             item_id = Helper.generate_unique_identifier(prefix="poi")
                             qty_received = 0
                             qty_remaining = item.qty_ordered
                             cursor.execute(
                                 f"""INSERT INTO {db_settings.MSG_PURCHASE_ORDER_ITEMS_TABLE}
                                 (id, tenant_id, org_id, bus_id, purchase_order_id, product_id,
-                                 qty_ordered, qty_received, qty_remaining, currency_id, cost_price, base_selling_price)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                 qty_ordered, qty_received, qty_remaining, currency_id, cost_price, base_selling_price,
+                                 product_size, unit_of_measure_id, product_expiry_date)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                                 RETURNING *""",
                                 (
                                     item_id, tenant_id, org_id, bus_id, purchase_order_id,
                                     item.product_id, item.qty_ordered,
                                     qty_received, qty_remaining,
-                                    item.currency_id, item.cost_price, item.base_selling_price
+                                    item.currency_id, item.cost_price, item.base_selling_price,
+                                    getattr(item, 'product_size', None) or None,
+                                    getattr(item, 'unit_of_measure_id', None) or None,
+                                    getattr(item, 'product_expiry_date', None) or None,
                                 ),
                             )
 

@@ -29,6 +29,7 @@ from src.entities.reports.reports_read_dto import (
     SuppliersSummaryReportResponseReadBase,
     SuppliersSummaryItemsReportResponseReadBase,
     SuppliersReceivingsSummaryReportResponseReadBase,
+    AffiliatesSummaryReportResponseReadBase,
     ProductPricesSummaryReportResponseReadBase,
     TaxSummaryReportResponseReadBase,
     TaxRulesSummaryReportResponseReadBase,
@@ -125,6 +126,9 @@ from src.entities.reports.reports_read_dto import (
     SupplierSummaryItemReadBase,
     SupplierDetailedItemReadBase,
     
+    # Affiliate Reports
+    AffiliateSummaryItemReadBase,
+    
     # Product Metadata Reports
     ProductMetadataSummaryItemReadBase,
     ProductMetadataGraphItemReadBase,
@@ -181,6 +185,7 @@ __all__ = [
     "SuppliersSummaryReportResponseReadBase",
     "SuppliersSummaryItemsReportResponseReadBase",
     "SuppliersReceivingsSummaryReportResponseReadBase",
+    "AffiliatesSummaryReportResponseReadBase",
     "ProductPricesSummaryReportResponseReadBase",
     "TaxSummaryReportResponseReadBase",
     "TaxRulesSummaryReportResponseReadBase",
@@ -276,6 +281,9 @@ __all__ = [
     # Supplier Reports
     "SupplierSummaryItemReadBase",
     "SupplierDetailedItemReadBase",
+    
+    # Affiliate Reports
+    "AffiliateSummaryItemReadBase",
     
     # Product Metadata Reports
     "ProductMetadataSummaryItemReadBase",

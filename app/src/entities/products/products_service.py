@@ -272,7 +272,8 @@ class ProductsService:
             LEFT JOIN {db_settings.CORE_PLATFORM_USERS_TABLE} deleter 
                 ON pm.deleted_by = deleter.id AND pm.tenant_id = deleter.tenant_id
             WHERE pm.tenant_id = %s AND pm.org_id = %s AND pm.bus_id = %s 
-            AND pm.batch_id = %s AND (pm.location_type = 'SYSTEM' OR pm.location_type IS NULL)
+            AND pm.batch_id = %s
+            AND (pm.location_type IS NULL OR pm.location_type IN ('SYSTEM', 'STORE', 'WAREHOUSE'))
             ORDER BY pm.cdatetime DESC""",
             (tenant_id, org_id, bus_id, batch_id),
         )

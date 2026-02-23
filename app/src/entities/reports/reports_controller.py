@@ -837,54 +837,92 @@ def get_expiring_items_report(
 # 7. INVOICE REPORTS
 # =====================================================
 
-@reports_router.get("/invoices/summary", response_model=Respons[SummaryReportResponseReadBase])
+@reports_router.get("/invoices/summary", response_model=Respons[InvoicesSummaryReportResponseReadBase])
 def get_invoices_summary_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None),
+    to_date: Optional[date] = Query(None),
+    loc_id: Optional[str] = Query(None),
+    location_ids: Optional[List[str]] = Query(None),
+    status: Optional[str] = Query(None, description="Filter by invoice status: DRAFT, COMPLETED, PARTIALLY_PAID, OVERDUE, CANCELLED"),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
-    """Get invoices summary report"""
+    """Get invoices summary report. Returns report_type, report_format, generated_at, period_start, period_end, filters_applied, summary_items (List[InvoiceSummaryItemReadBase]), total_items, totals."""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
     
-    return Respons(
-        success=False,
-        detail="Invoices summary report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = InvoicesSummaryReportRequestWriteDto(
+        from_date=from_date,
+        to_date=to_date,
+        loc_id=loc_id,
+        location_ids=location_ids,
+        status=status,
+    )
+    
+    return ReportsService.get_invoices_summary_report(
+        tenant_id=current_user.data[0].tenant_id,
+        org_id=org_bus_loc["org_id"],
+        bus_id=org_bus_loc["bus_id"],
+        data=data,
     )
 
 
-@reports_router.get("/invoices/detailed", response_model=Respons[DetailedReportResponseReadBase])
+@reports_router.get("/invoices/detailed", response_model=Respons[InvoicesDetailedReportResponseReadBase])
 def get_invoices_detailed_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None),
+    to_date: Optional[date] = Query(None),
+    loc_id: Optional[str] = Query(None),
+    location_ids: Optional[List[str]] = Query(None),
+    page: int = Query(1, ge=1),
+    size: int = Query(100, ge=1, le=1000),
+    customer_id: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    min_amount: Optional[float] = Query(None),
+    max_amount: Optional[float] = Query(None),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
-    """Get invoices detailed report"""
+    """Get invoices detailed report."""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
-    
-    return Respons(
-        success=False,
-        detail="Invoices detailed report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = InvoicesDetailedReportRequestWriteDto(
+        from_date=from_date, to_date=to_date, loc_id=loc_id, location_ids=location_ids,
+        page=page, size=size, customer_id=customer_id, status=status,
+        min_amount=min_amount, max_amount=max_amount,
+    )
+    return ReportsService.get_invoices_detailed_report(
+        tenant_id=current_user.data[0].tenant_id,
+        org_id=org_bus_loc["org_id"],
+        bus_id=org_bus_loc["bus_id"],
+        data=data,
     )
 
 
-@reports_router.get("/invoices/aging", response_model=Respons[DetailedReportResponseReadBase])
+@reports_router.get("/invoices/aging", response_model=Respons[InvoiceAgingReportResponseReadBase])
 def get_invoice_aging_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None),
+    to_date: Optional[date] = Query(None),
+    loc_id: Optional[str] = Query(None),
+    location_ids: Optional[List[str]] = Query(None),
+    page: int = Query(1, ge=1),
+    size: int = Query(100, ge=1, le=1000),
+    include_paid: bool = Query(False),
+    customer_id: Optional[str] = Query(None),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
-    """Get invoice aging report"""
+    """Get invoice aging report."""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
-    
-    return Respons(
-        success=False,
-        detail="Invoice aging report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = InvoiceAgingReportRequestWriteDto(
+        from_date=from_date, to_date=to_date, loc_id=loc_id, location_ids=location_ids,
+        page=page, size=size, include_paid=include_paid, customer_id=customer_id,
+    )
+    return ReportsService.get_invoice_aging_report(
+        tenant_id=current_user.data[0].tenant_id,
+        org_id=org_bus_loc["org_id"],
+        bus_id=org_bus_loc["bus_id"],
+        data=data,
     )
 
 
@@ -892,9 +930,14 @@ def get_invoice_aging_report(
 # 8. PAYMENT REPORTS
 # =====================================================
 
-@reports_router.get("/payments/summary", response_model=Respons[SummaryReportResponseReadBase])
+@reports_router.get("/payments/summary", response_model=Respons[PaymentsSummaryReportResponseReadBase])
 def get_payments_summary_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None),
+    to_date: Optional[date] = Query(None),
+    loc_id: Optional[str] = Query(None),
+    location_ids: Optional[List[str]] = Query(None),
+    payment_method: Optional[str] = Query(None),
+    status: Optional[str] = Query(None, description="Filter by payment status: SUCCESS, FAILED, PENDING, REFUNDED"),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
@@ -902,16 +945,34 @@ def get_payments_summary_report(
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
     
-    return Respons(
-        success=False,
-        detail="Payments summary report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = PaymentsSummaryReportRequestWriteDto(
+        from_date=from_date,
+        to_date=to_date,
+        loc_id=loc_id,
+        location_ids=location_ids,
+        payment_method=payment_method,
+        status=status,
+    )
+    return ReportsService.get_payments_summary_report(
+        tenant_id=current_user.data[0].tenant_id,
+        org_id=org_bus_loc["org_id"],
+        bus_id=org_bus_loc["bus_id"],
+        data=data,
     )
 
 
-@reports_router.get("/payments/detailed", response_model=Respons[DetailedReportResponseReadBase])
+@reports_router.get("/payments/detailed", response_model=Respons[PaymentsDetailedReportResponseReadBase])
 def get_payments_detailed_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None),
+    to_date: Optional[date] = Query(None),
+    loc_id: Optional[str] = Query(None),
+    location_ids: Optional[List[str]] = Query(None),
+    page: int = Query(1, ge=1),
+    size: int = Query(100, ge=1, le=1000),
+    payment_method: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    sale_id: Optional[str] = Query(None),
+    invoice_id: Optional[str] = Query(None),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
@@ -919,16 +980,33 @@ def get_payments_detailed_report(
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
     
-    return Respons(
-        success=False,
-        detail="Payments detailed report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = PaymentsDetailedReportRequestWriteDto(
+        from_date=from_date,
+        to_date=to_date,
+        loc_id=loc_id,
+        location_ids=location_ids,
+        page=page,
+        size=size,
+        payment_method=payment_method,
+        status=status,
+        sale_id=sale_id,
+        invoice_id=invoice_id,
+    )
+    return ReportsService.get_payments_detailed_report(
+        tenant_id=current_user.data[0].tenant_id,
+        org_id=org_bus_loc["org_id"],
+        bus_id=org_bus_loc["bus_id"],
+        data=data,
     )
 
 
-@reports_router.get("/payments/graphical", response_model=Respons[GraphicalReportResponseReadBase])
+@reports_router.get("/payments/graphical", response_model=Respons[PaymentsGraphicalReportResponseReadBase])
 def get_payments_graphical_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None),
+    to_date: Optional[date] = Query(None),
+    loc_id: Optional[str] = Query(None),
+    location_ids: Optional[List[str]] = Query(None),
+    group_by: str = Query("MONTH", description="DAY, WEEK, MONTH, YEAR"),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
@@ -936,10 +1014,18 @@ def get_payments_graphical_report(
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
     
-    return Respons(
-        success=False,
-        detail="Payments graphical report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = PaymentsGraphicalReportRequestWriteDto(
+        from_date=from_date,
+        to_date=to_date,
+        loc_id=loc_id,
+        location_ids=location_ids,
+        group_by=group_by,
+    )
+    return ReportsService.get_payments_graphical_report(
+        tenant_id=current_user.data[0].tenant_id,
+        org_id=org_bus_loc["org_id"],
+        bus_id=org_bus_loc["bus_id"],
+        data=data,
     )
 
 
@@ -947,9 +1033,10 @@ def get_payments_graphical_report(
 # 9. PRICING RULE REPORTS
 # =====================================================
 
-@reports_router.get("/pricing-rules/summary", response_model=Respons[SummaryReportResponseReadBase])
+@reports_router.get("/pricing-rules/summary", response_model=Respons[PricingRulesSummaryReportResponseReadBase])
 def get_pricing_rules_summary_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None),
+    to_date: Optional[date] = Query(None),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
@@ -957,16 +1044,24 @@ def get_pricing_rules_summary_report(
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
     
-    return Respons(
-        success=False,
-        detail="Pricing rules summary report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = PricingRulesSummaryReportRequestWriteDto(
+        from_date=from_date,
+        to_date=to_date,
+    )
+    return ReportsService.get_pricing_rules_summary_report(
+        tenant_id=current_user.data[0].tenant_id,
+        org_id=org_bus_loc["org_id"],
+        bus_id=org_bus_loc["bus_id"],
+        data=data,
     )
 
 
-@reports_router.get("/pricing-rules/detailed", response_model=Respons[DetailedReportResponseReadBase])
+@reports_router.get("/pricing-rules/detailed", response_model=Respons[PricingRulesDetailedReportResponseReadBase])
 def get_pricing_rules_detailed_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None),
+    to_date: Optional[date] = Query(None),
+    page: int = Query(1, ge=1),
+    size: int = Query(100, ge=1, le=1000),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
@@ -974,10 +1069,17 @@ def get_pricing_rules_detailed_report(
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
     
-    return Respons(
-        success=False,
-        detail="Pricing rules detailed report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = PricingRulesDetailedReportRequestWriteDto(
+        from_date=from_date,
+        to_date=to_date,
+        page=page,
+        size=size,
+    )
+    return ReportsService.get_pricing_rules_detailed_report(
+        tenant_id=current_user.data[0].tenant_id,
+        org_id=org_bus_loc["org_id"],
+        bus_id=org_bus_loc["bus_id"],
+        data=data,
     )
 
 
@@ -985,224 +1087,213 @@ def get_pricing_rules_detailed_report(
 # 10. RECEIVING / PURCHASE REPORTS
 # =====================================================
 
-@reports_router.get("/receivings/summary", response_model=Respons[SummaryReportResponseReadBase])
+@reports_router.get("/receivings/summary", response_model=Respons[ReceivingsSummaryReportResponseReadBase])
 def get_receivings_summary_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None), to_date: Optional[date] = Query(None),
+    supplier_id: Optional[str] = Query(None), status: Optional[str] = Query(None),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
     """Get receivings summary report"""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
-    
-    return Respons(
-        success=False,
-        detail="Receivings summary report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = ReceivingSummaryReportRequestWriteDto(from_date=from_date, to_date=to_date, supplier_id=supplier_id, status=status)
+    return ReportsService.get_receivings_summary_report(
+        tenant_id=current_user.data[0].tenant_id, org_id=org_bus_loc["org_id"], bus_id=org_bus_loc["bus_id"], data=data,
     )
 
 
-@reports_router.get("/receivings/detailed", response_model=Respons[DetailedReportResponseReadBase])
+@reports_router.get("/receivings/detailed", response_model=Respons[ReceivingsDetailedReportResponseReadBase])
 def get_receivings_detailed_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None), to_date: Optional[date] = Query(None),
+    page: int = Query(1, ge=1), size: int = Query(100, ge=1, le=1000),
+    supplier_id: Optional[str] = Query(None), purchase_order_id: Optional[str] = Query(None), status: Optional[str] = Query(None),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
     """Get receivings detailed report"""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
-    
-    return Respons(
-        success=False,
-        detail="Receivings detailed report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = ReceivingDetailedReportRequestWriteDto(from_date=from_date, to_date=to_date, page=page, size=size, supplier_id=supplier_id, purchase_order_id=purchase_order_id, status=status)
+    return ReportsService.get_receivings_detailed_report(
+        tenant_id=current_user.data[0].tenant_id, org_id=org_bus_loc["org_id"], bus_id=org_bus_loc["bus_id"], data=data,
     )
 
 
-@reports_router.get("/receivings/summary-categories", response_model=Respons[DetailedReportResponseReadBase])
+@reports_router.get("/receivings/summary-categories", response_model=Respons[ReceivingsSummaryCategoriesReportResponseReadBase])
 def get_receivings_summary_categories_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None), to_date: Optional[date] = Query(None),
+    supplier_id: Optional[str] = Query(None),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
     """Get receivings summary by categories report"""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
-    
-    return Respons(
-        success=False,
-        detail="Receivings summary categories report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = ReceivingSummaryCategoriesReportRequestWriteDto(from_date=from_date, to_date=to_date, supplier_id=supplier_id)
+    return ReportsService.get_receivings_summary_categories_report(
+        tenant_id=current_user.data[0].tenant_id, org_id=org_bus_loc["org_id"], bus_id=org_bus_loc["bus_id"], data=data,
     )
 
 
-@reports_router.get("/receivings/suspended", response_model=Respons[DetailedReportResponseReadBase])
+@reports_router.get("/receivings/suspended", response_model=Respons[ReceivingsSuspendedReportResponseReadBase])
 def get_suspended_receivings_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None), to_date: Optional[date] = Query(None),
+    page: int = Query(1, ge=1), size: int = Query(100, ge=1, le=1000),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
     """Get suspended receivings report"""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
-    
-    return Respons(
-        success=False,
-        detail="Suspended receivings report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = SuspendedReceivingsReportRequestWriteDto(from_date=from_date, to_date=to_date, page=page, size=size)
+    return ReportsService.get_suspended_receivings_report(
+        tenant_id=current_user.data[0].tenant_id, org_id=org_bus_loc["org_id"], bus_id=org_bus_loc["bus_id"], data=data,
     )
 
 
-@reports_router.get("/receivings/deleted", response_model=Respons[DetailedReportResponseReadBase])
+@reports_router.get("/receivings/deleted", response_model=Respons[ReceivingsDeletedReportResponseReadBase])
 def get_deleted_receivings_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None), to_date: Optional[date] = Query(None),
+    page: int = Query(1, ge=1), size: int = Query(100, ge=1, le=1000),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
     """Get deleted receivings report"""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
-    
-    return Respons(
-        success=False,
-        detail="Deleted receivings report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = DeletedReceivingsReportRequestWriteDto(from_date=from_date, to_date=to_date, page=page, size=size)
+    return ReportsService.get_deleted_receivings_report(
+        tenant_id=current_user.data[0].tenant_id, org_id=org_bus_loc["org_id"], bus_id=org_bus_loc["bus_id"], data=data,
     )
 
 
-@reports_router.get("/receivings/summary-taxes", response_model=Respons[DetailedReportResponseReadBase])
+@reports_router.get("/receivings/summary-taxes", response_model=Respons[ReceivingsSummaryTaxesReportResponseReadBase])
 def get_receivings_summary_taxes_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None), to_date: Optional[date] = Query(None),
+    supplier_id: Optional[str] = Query(None), tax_id: Optional[str] = Query(None),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
     """Get receivings summary taxes report"""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
-    
-    return Respons(
-        success=False,
-        detail="Receivings summary taxes report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = ReceivingSummaryTaxesReportRequestWriteDto(from_date=from_date, to_date=to_date, supplier_id=supplier_id, tax_id=tax_id)
+    return ReportsService.get_receivings_summary_taxes_report(
+        tenant_id=current_user.data[0].tenant_id, org_id=org_bus_loc["org_id"], bus_id=org_bus_loc["bus_id"], data=data,
     )
 
 
-@reports_router.get("/receivings/graphical-taxes", response_model=Respons[GraphicalReportResponseReadBase])
+@reports_router.get("/receivings/graphical-taxes", response_model=Respons[ReceivingsGraphicalTaxesReportResponseReadBase])
 def get_receivings_graphical_taxes_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None), to_date: Optional[date] = Query(None),
+    group_by: str = Query("MONTH"), supplier_id: Optional[str] = Query(None),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
     """Get receivings graphical taxes report"""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
-    
-    return Respons(
-        success=False,
-        detail="Receivings graphical taxes report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = ReceivingGraphicalTaxesReportRequestWriteDto(from_date=from_date, to_date=to_date, group_by=group_by, supplier_id=supplier_id)
+    return ReportsService.get_receivings_graphical_taxes_report(
+        tenant_id=current_user.data[0].tenant_id, org_id=org_bus_loc["org_id"], bus_id=org_bus_loc["bus_id"], data=data,
     )
 
 
-@reports_router.get("/receivings/cheapest-supplier", response_model=Respons[DetailedReportResponseReadBase])
+@reports_router.get("/receivings/cheapest-supplier", response_model=Respons[CheapestSupplierReportResponseReadBase])
 def get_cheapest_supplier_report(
-    # data parameter removed - using Query params instead
+    product_id: Optional[str] = Query(None), product_ids: Optional[List[str]] = Query(None),
+    min_purchases: int = Query(1, ge=1),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
     """Get cheapest supplier report"""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
-    
-    return Respons(
-        success=False,
-        detail="Cheapest supplier report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = CheapestSupplierReportRequestWriteDto(product_id=product_id, product_ids=product_ids, min_purchases=min_purchases)
+    return ReportsService.get_cheapest_supplier_report(
+        tenant_id=current_user.data[0].tenant_id, org_id=org_bus_loc["org_id"], bus_id=org_bus_loc["bus_id"], data=data,
     )
 
 
-@reports_router.get("/receivings/items/graphical", response_model=Respons[GraphicalReportResponseReadBase])
+@reports_router.get("/receivings/items/graphical", response_model=Respons[ReceivingsItemsGraphicalReportResponseReadBase])
 def get_receivings_items_graphical_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None), to_date: Optional[date] = Query(None),
+    group_by: str = Query("PRODUCT"), supplier_id: Optional[str] = Query(None),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
     """Get receivings items graphical report"""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
-    
-    return Respons(
-        success=False,
-        detail="Receivings items graphical report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = ReceivingItemsGraphicalReportRequestWriteDto(from_date=from_date, to_date=to_date, group_by=group_by, supplier_id=supplier_id)
+    return ReportsService.get_receivings_items_graphical_report(
+        tenant_id=current_user.data[0].tenant_id, org_id=org_bus_loc["org_id"], bus_id=org_bus_loc["bus_id"], data=data,
     )
 
 
-@reports_router.get("/receivings/items/summary", response_model=Respons[SummaryReportResponseReadBase])
+@reports_router.get("/receivings/items/summary", response_model=Respons[ReceivingsItemsSummaryReportResponseReadBase])
 def get_receivings_items_summary_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None), to_date: Optional[date] = Query(None),
+    supplier_id: Optional[str] = Query(None), product_id: Optional[str] = Query(None), group_by: str = Query("PRODUCT"),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
     """Get receivings items summary report"""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
-    
-    return Respons(
-        success=False,
-        detail="Receivings items summary report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = ReceivingItemsSummaryReportRequestWriteDto(from_date=from_date, to_date=to_date, supplier_id=supplier_id, product_id=product_id, group_by=group_by)
+    return ReportsService.get_receivings_items_summary_report(
+        tenant_id=current_user.data[0].tenant_id, org_id=org_bus_loc["org_id"], bus_id=org_bus_loc["bus_id"], data=data,
     )
 
 
-@reports_router.get("/receivings/payments/graphical", response_model=Respons[GraphicalReportResponseReadBase])
+@reports_router.get("/receivings/payments/graphical", response_model=Respons[ReceivingsPaymentsGraphicalReportResponseReadBase])
 def get_receivings_payments_graphical_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None), to_date: Optional[date] = Query(None),
+    group_by: str = Query("MONTH"), supplier_id: Optional[str] = Query(None),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
     """Get receivings payments graphical report"""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
-    
-    return Respons(
-        success=False,
-        detail="Receivings payments graphical report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = ReceivingPaymentsGraphicalReportRequestWriteDto(from_date=from_date, to_date=to_date, group_by=group_by, supplier_id=supplier_id)
+    return ReportsService.get_receivings_payments_graphical_report(
+        tenant_id=current_user.data[0].tenant_id, org_id=org_bus_loc["org_id"], bus_id=org_bus_loc["bus_id"], data=data,
     )
 
 
-@reports_router.get("/receivings/payments/summary", response_model=Respons[SummaryReportResponseReadBase])
+@reports_router.get("/receivings/payments/summary", response_model=Respons[ReceivingsPaymentsSummaryReportResponseReadBase])
 def get_receivings_payments_summary_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None), to_date: Optional[date] = Query(None),
+    supplier_id: Optional[str] = Query(None), payment_method: Optional[str] = Query(None),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
     """Get receivings payments summary report"""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
-    
-    return Respons(
-        success=False,
-        detail="Receivings payments summary report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = ReceivingPaymentsSummaryReportRequestWriteDto(from_date=from_date, to_date=to_date, supplier_id=supplier_id, payment_method=payment_method)
+    return ReportsService.get_receivings_payments_summary_report(
+        tenant_id=current_user.data[0].tenant_id, org_id=org_bus_loc["org_id"], bus_id=org_bus_loc["bus_id"], data=data,
     )
 
 
-@reports_router.get("/receivings/payments/detailed", response_model=Respons[DetailedReportResponseReadBase])
+@reports_router.get("/receivings/payments/detailed", response_model=Respons[ReceivingsPaymentsDetailedReportResponseReadBase])
 def get_receivings_payments_detailed_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None), to_date: Optional[date] = Query(None),
+    page: int = Query(1, ge=1), size: int = Query(100, ge=1, le=1000),
+    supplier_id: Optional[str] = Query(None), payment_method: Optional[str] = Query(None),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
     """Get receivings payments detailed report"""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
-    
-    return Respons(
-        success=False,
-        detail="Receivings payments detailed report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = ReceivingPaymentsDetailedReportRequestWriteDto(from_date=from_date, to_date=to_date, page=page, size=size, supplier_id=supplier_id, payment_method=payment_method)
+    return ReportsService.get_receivings_payments_detailed_report(
+        tenant_id=current_user.data[0].tenant_id, org_id=org_bus_loc["org_id"], bus_id=org_bus_loc["bus_id"], data=data,
     )
 
 
@@ -1210,144 +1301,163 @@ def get_receivings_payments_detailed_report(
 # 11. SUPPLIER REPORTS
 # =====================================================
 
-@reports_router.get("/suppliers/graphical", response_model=Respons[GraphicalReportResponseReadBase])
+@reports_router.get("/suppliers/graphical", response_model=Respons[SuppliersGraphicalReportResponseReadBase])
 def get_suppliers_graphical_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None), to_date: Optional[date] = Query(None),
+    group_by: str = Query("SUPPLIER"), metric: str = Query("revenue"),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
     """Get suppliers graphical report"""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
-    
-    return Respons(
-        success=False,
-        detail="Suppliers graphical report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = SuppliersGraphicalReportRequestWriteDto(from_date=from_date, to_date=to_date, group_by=group_by, metric=metric)
+    return ReportsService.get_suppliers_graphical_report(
+        tenant_id=current_user.data[0].tenant_id, org_id=org_bus_loc["org_id"], bus_id=org_bus_loc["bus_id"], data=data,
     )
 
 
-@reports_router.get("/suppliers/summary", response_model=Respons[SummaryReportResponseReadBase])
+@reports_router.get("/suppliers/summary", response_model=Respons[SuppliersSummaryReportResponseReadBase])
 def get_suppliers_summary_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None), to_date: Optional[date] = Query(None),
+    supplier_id: Optional[str] = Query(None), min_purchases: Optional[int] = Query(None), min_amount: Optional[float] = Query(None),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
     """Get suppliers summary report"""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
-    
-    return Respons(
-        success=False,
-        detail="Suppliers summary report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = SuppliersSummaryReportRequestWriteDto(from_date=from_date, to_date=to_date, supplier_id=supplier_id, min_purchases=min_purchases, min_amount=min_amount)
+    return ReportsService.get_suppliers_summary_report(
+        tenant_id=current_user.data[0].tenant_id, org_id=org_bus_loc["org_id"], bus_id=org_bus_loc["bus_id"], data=data,
     )
 
 
-@reports_router.get("/suppliers/detailed", response_model=Respons[DetailedReportResponseReadBase])
+@reports_router.get("/suppliers/detailed", response_model=Respons[SuppliersDetailedReportResponseReadBase])
 def get_suppliers_detailed_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None), to_date: Optional[date] = Query(None),
+    page: int = Query(1, ge=1), size: int = Query(100, ge=1, le=1000),
+    supplier_id: Optional[str] = Query(None), include_inactive: bool = Query(False),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
     """Get suppliers detailed report"""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
-    
-    return Respons(
-        success=False,
-        detail="Suppliers detailed report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = SuppliersDetailedReportRequestWriteDto(from_date=from_date, to_date=to_date, page=page, size=size, supplier_id=supplier_id, include_inactive=include_inactive)
+    return ReportsService.get_suppliers_detailed_report(
+        tenant_id=current_user.data[0].tenant_id, org_id=org_bus_loc["org_id"], bus_id=org_bus_loc["bus_id"], data=data,
     )
 
 
-@reports_router.get("/suppliers/summary-items", response_model=Respons[SummaryReportResponseReadBase])
+@reports_router.get("/suppliers/summary-items", response_model=Respons[SuppliersSummaryItemsReportResponseReadBase])
 def get_suppliers_summary_items_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None), to_date: Optional[date] = Query(None),
+    supplier_id: Optional[str] = Query(None), product_id: Optional[str] = Query(None),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
     """Get suppliers summary items report"""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
-    
-    return Respons(
-        success=False,
-        detail="Suppliers summary items report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = SuppliersSummaryItemsReportRequestWriteDto(from_date=from_date, to_date=to_date, supplier_id=supplier_id, product_id=product_id)
+    return ReportsService.get_suppliers_summary_items_report(
+        tenant_id=current_user.data[0].tenant_id, org_id=org_bus_loc["org_id"], bus_id=org_bus_loc["bus_id"], data=data,
     )
 
 
-@reports_router.get("/suppliers/receivings/graphical", response_model=Respons[GraphicalReportResponseReadBase])
+@reports_router.get("/suppliers/receivings/graphical", response_model=Respons[SuppliersReceivingsGraphicalReportResponseReadBase])
 def get_suppliers_receivings_graphical_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None), to_date: Optional[date] = Query(None),
+    supplier_id: Optional[str] = Query(None), group_by: str = Query("MONTH"),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
     """Get suppliers receivings graphical report"""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
-    
-    return Respons(
-        success=False,
-        detail="Suppliers receivings graphical report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = SuppliersGraphicalReceivingsReportRequestWriteDto(from_date=from_date, to_date=to_date, supplier_id=supplier_id, group_by=group_by)
+    return ReportsService.get_suppliers_receivings_graphical_report(
+        tenant_id=current_user.data[0].tenant_id, org_id=org_bus_loc["org_id"], bus_id=org_bus_loc["bus_id"], data=data,
     )
 
 
-@reports_router.get("/suppliers/receivings/summary", response_model=Respons[SummaryReportResponseReadBase])
+@reports_router.get("/suppliers/receivings/summary", response_model=Respons[SuppliersReceivingsSummaryReportResponseReadBase])
 def get_suppliers_receivings_summary_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None), to_date: Optional[date] = Query(None),
+    supplier_id: Optional[str] = Query(None),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
     """Get suppliers receivings summary report"""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
-    
-    return Respons(
-        success=False,
-        detail="Suppliers receivings summary report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = SuppliersSummaryReceivingsReportRequestWriteDto(from_date=from_date, to_date=to_date, supplier_id=supplier_id)
+    return ReportsService.get_suppliers_receivings_summary_report(
+        tenant_id=current_user.data[0].tenant_id, org_id=org_bus_loc["org_id"], bus_id=org_bus_loc["bus_id"], data=data,
     )
 
 
-@reports_router.get("/suppliers/receivings/detailed", response_model=Respons[DetailedReportResponseReadBase])
+@reports_router.get("/suppliers/receivings/detailed", response_model=Respons[SuppliersReceivingsDetailedReportResponseReadBase])
 def get_suppliers_receivings_detailed_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None), to_date: Optional[date] = Query(None),
+    page: int = Query(1, ge=1), size: int = Query(100, ge=1, le=1000),
+    supplier_id: Optional[str] = Query(None),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
     """Get suppliers receivings detailed report"""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
-    
-    return Respons(
-        success=False,
-        detail="Suppliers receivings detailed report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = SuppliersDetailedReceivingsReportRequestWriteDto(from_date=from_date, to_date=to_date, page=page, size=size, supplier_id=supplier_id)
+    return ReportsService.get_suppliers_receivings_detailed_report(
+        tenant_id=current_user.data[0].tenant_id, org_id=org_bus_loc["org_id"], bus_id=org_bus_loc["bus_id"], data=data,
     )
 
 
-@reports_router.get("/suppliers/tax-by-payments", response_model=Respons[DetailedReportResponseReadBase])
+@reports_router.get("/suppliers/tax-by-payments", response_model=Respons[SuppliersTaxByPaymentsReportResponseReadBase])
 def get_suppliers_tax_by_payments_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None), to_date: Optional[date] = Query(None),
+    page: int = Query(1, ge=1), size: int = Query(100, ge=1, le=1000),
+    supplier_id: Optional[str] = Query(None),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
     """Get suppliers tax by payments received report"""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
-    
-    return Respons(
-        success=False,
-        detail="Suppliers tax by payments report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = SuppliersTaxByPaymentsReportRequestWriteDto(from_date=from_date, to_date=to_date, page=page, size=size, supplier_id=supplier_id)
+    return ReportsService.get_suppliers_tax_by_payments_report(
+        tenant_id=current_user.data[0].tenant_id, org_id=org_bus_loc["org_id"], bus_id=org_bus_loc["bus_id"], data=data,
     )
 
 
 # =====================================================
-# 12. OTHER REPORTS (Product Metadata, Product Prices, Pricing Rules, Tax, Tax Rule)
+# 12. AFFILIATE REPORTS
+# =====================================================
+
+@reports_router.get("/affiliates/summary", response_model=Respons[AffiliatesSummaryReportResponseReadBase])
+def get_affiliates_summary_report(
+    from_date: Optional[date] = Query(None),
+    to_date: Optional[date] = Query(None),
+    status: Optional[str] = Query(None, description="Filter by status: ACTIVE, INACTIVE, SUSPENDED"),
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
+):
+    """Get affiliates summary report."""
+    if not check_report_permission(current_user, "permission-msg-reports-get"):
+        raise HTTPException(status_code=403, detail="Unauthorized access")
+    data = AffiliatesSummaryReportRequestWriteDto(from_date=from_date, to_date=to_date, status=status)
+    return ReportsService.get_affiliates_summary_report(
+        tenant_id=current_user.data[0].tenant_id,
+        org_id=org_bus_loc["org_id"],
+        bus_id=org_bus_loc["bus_id"],
+        data=data,
+    )
+
+
+# =====================================================
+# 13. OTHER REPORTS (Product Metadata, Product Prices, Pricing Rules, Tax, Tax Rule)
 # =====================================================
 
 @reports_router.get("/product-prices/summary", response_model=Respons[ProductPricesSummaryReportResponseReadBase])
@@ -1426,37 +1536,44 @@ def get_product_prices_graphical_report(
     )
 
 
-@reports_router.get("/tax/summary", response_model=Respons[SummaryReportResponseReadBase])
+@reports_router.get("/tax/summary", response_model=Respons[TaxSummaryReportResponseReadBase])
 def get_tax_summary_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None),
+    to_date: Optional[date] = Query(None),
+    tax_id: Optional[str] = Query(None),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
     """Get tax summary report"""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
-    
-    return Respons(
-        success=False,
-        detail="Tax summary report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = TaxSummaryReportRequestWriteDto(from_date=from_date, to_date=to_date, tax_id=tax_id)
+    return ReportsService.get_tax_summary_report(
+        tenant_id=current_user.data[0].tenant_id,
+        org_id=org_bus_loc["org_id"],
+        bus_id=org_bus_loc["bus_id"],
+        data=data,
     )
 
 
-@reports_router.get("/tax-rules/summary", response_model=Respons[SummaryReportResponseReadBase])
+@reports_router.get("/tax-rules/summary", response_model=Respons[TaxRulesSummaryReportResponseReadBase])
 def get_tax_rules_summary_report(
-    # data parameter removed - using Query params instead
+    from_date: Optional[date] = Query(None),
+    to_date: Optional[date] = Query(None),
+    rule_id: Optional[str] = Query(None),
+    is_active: Optional[bool] = Query(None),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
     """Get tax rules summary report"""
     if not check_report_permission(current_user, "permission-msg-reports-get"):
         raise HTTPException(status_code=403, detail="Unauthorized access")
-    
-    return Respons(
-        success=False,
-        detail="Tax rules summary report - implementation in progress",
-        error="NOT_IMPLEMENTED",
+    data = TaxRuleSummaryReportRequestWriteDto(from_date=from_date, to_date=to_date, rule_id=rule_id, is_active=is_active)
+    return ReportsService.get_tax_rules_summary_report(
+        tenant_id=current_user.data[0].tenant_id,
+        org_id=org_bus_loc["org_id"],
+        bus_id=org_bus_loc["bus_id"],
+        data=data,
     )
 
 

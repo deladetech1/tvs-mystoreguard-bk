@@ -228,7 +228,17 @@ def get_user_group_ids(tenant_id: str, user_id: str) -> List[str]:
         '''
         
         results = DatabaseManager.execute_query(query, (tenant_id, user_id))
-        return [row['group_id'] for row in results] if results else []
+        if not results:
+            return []
+        # Support dict-like and attribute access; normalize key case
+        ids = []
+        for row in results:
+            gid = row.get("group_id") if hasattr(row, "get") else getattr(row, "group_id", None)
+            if gid is None and hasattr(row, "get"):
+                gid = row.get("GROUP_ID")  # some drivers return uppercase
+            if gid is not None:
+                ids.append(str(gid))
+        return ids
     except Exception as e:
         logger.error(
             f"Error fetching user groups: {str(e)}",
@@ -284,10 +294,9 @@ def verify_app_deployment_to_location(
             # Fail securely - deny access when we can't verify
             return False
         
-        # IMPORTANT: We MUST check tenant_id, org_id, bus_id, and loc_id to ensure
-        # the app is deployed to the specific business context, preventing cross-business access.
-        # Logic: If org_id/bus_id is NULL, it applies to all orgs/businesses.
-        #        If org_id/bus_id has a value, it must match the request's org_id/bus_id.
+        # Do not filter by org_id/bus_id: if the app is deployed to this (tenant, loc_id, app_id),
+        # allow access regardless of request headers. This avoids denial when frontend sends
+        # different org-id/bus-id and matches location access behavior.
         query = f'''
             SELECT COUNT(*) as deployment_count
             FROM {db_settings.CORE_PLATFORM_BUSINESS_APP_LOCATIONS_TABLE}
@@ -297,101 +306,23 @@ def verify_app_deployment_to_location(
             AND is_active = true
             AND delete_status = 'NOT_DELETED'
         '''
-        
         params = [tenant_id, loc_id, app_id]
-        
-        # Add org_id filter: match if org_id equals request org_id OR org_id is NULL (applies to all orgs)
-        if org_id:
-            query += " AND (org_id = %s OR org_id IS NULL)"
-            params.append(org_id)
-        else:
-            # If org_id not provided, only match deployments with NULL org_id
-            query += " AND org_id IS NULL"
-        
-        # Add bus_id filter: match if bus_id equals request bus_id OR bus_id is NULL (applies to all businesses)
-        if bus_id:
-            query += " AND (bus_id = %s OR bus_id IS NULL)"
-            params.append(bus_id)
-        else:
-            # If bus_id not provided, only match deployments with NULL bus_id
-            query += " AND bus_id IS NULL"
-        
         count = DatabaseManager.execute_scalar(query, tuple(params))
         is_deployed = count > 0 if count is not None else False
         
-        # Diagnostic: Check if app is deployed to location without org_id/bus_id filters
-        diagnostic_deployment_query = f'''
-            SELECT COUNT(*) as diagnostic_deployment_count
-            FROM {db_settings.CORE_PLATFORM_BUSINESS_APP_LOCATIONS_TABLE}
-            WHERE tenant_id = %s
-            AND loc_id = %s
-            AND app_id = %s
-            AND is_active = true
-            AND delete_status = 'NOT_DELETED'
-        '''
-        diagnostic_deployment_count = DatabaseManager.execute_scalar(
-            diagnostic_deployment_query, 
-            (tenant_id, loc_id, app_id)
-        )
-        
-        # Get deployment details to see what org_id/bus_id values exist
-        deployment_details_query = f'''
-            SELECT DISTINCT org_id, bus_id
-            FROM {db_settings.CORE_PLATFORM_BUSINESS_APP_LOCATIONS_TABLE}
-            WHERE tenant_id = %s
-            AND loc_id = %s
-            AND app_id = %s
-            AND is_active = true
-            AND delete_status = 'NOT_DELETED'
-            LIMIT 5
-        '''
-        deployment_details = DatabaseManager.execute_query(
-            deployment_details_query, 
-            (tenant_id, loc_id, app_id)
-        )
-        
         if not is_deployed:
-            if diagnostic_deployment_count and diagnostic_deployment_count > 0:
-                # App is deployed to location but org_id/bus_id don't match
-                # Allow it but log warning
-                logger.warning(
-                    "App is deployed to location but org_id/bus_id context mismatch - allowing access",
-                    extra={
-                        "extra_fields": {
-                            "tenant_id": tenant_id,
-                            "loc_id": loc_id,
-                            "app_id": app_id,
-                            "org_id": org_id,
-                            "bus_id": bus_id,
-                            "strict_deployment_count": count,
-                            "diagnostic_deployment_count": diagnostic_deployment_count,
-                            "deployment_details": [{"org_id": row.get("org_id"), "bus_id": row.get("bus_id")} for row in deployment_details] if deployment_details else [],
-                            "request_org_id": org_id,
-                            "request_bus_id": bus_id,
-                            "action": "allowing_deployment_despite_mismatch",
-                        }
-                    },
-                )
-                # Allow deployment but note the mismatch
-                is_deployed = True
-            else:
-                # App is NOT deployed to location at all
-                logger.warning(
-                    "App not deployed to location for the given business context",
-                    extra={
-                        "extra_fields": {
-                            "tenant_id": tenant_id,
-                            "loc_id": loc_id,
-                            "app_id": app_id,
-                            "org_id": org_id,
-                            "bus_id": bus_id,
-                            "strict_deployment_count": count,
-                            "diagnostic_deployment_count": diagnostic_deployment_count,
-                            "deployment_details": [{"org_id": row.get("org_id"), "bus_id": row.get("bus_id")} for row in deployment_details] if deployment_details else [],
-                            "reason": "No app deployment found at all",
-                        }
-                    },
-                )
+            logger.warning(
+                "App not deployed to location",
+                extra={
+                    "extra_fields": {
+                        "tenant_id": tenant_id,
+                        "loc_id": loc_id,
+                        "app_id": app_id,
+                        "org_id": org_id,
+                        "bus_id": bus_id,
+                    }
+                },
+            )
         
         return is_deployed
         
@@ -452,8 +383,15 @@ def verify_location_access(
             )
             return False, "Invalid user data"
         
-        tenant_id = current_user.data[0].tenant_id
-        user_id = current_user.data[0].user_id
+        # Prefer JWT-derived values (set by get_current_user); role DTOs can have user_id=None for group roles
+        tenant_id = getattr(current_user, "tenant_id", None) or (current_user.data[0].tenant_id if current_user.data else None)
+        user_id = getattr(current_user, "user_id", None) or (current_user.data[0].user_id if current_user.data else None)
+        if not user_id or not tenant_id:
+            logger.warning(
+                "verify_location_access: Missing user_id or tenant_id",
+                extra={"extra_fields": {"loc_id": loc_id, "user_id": user_id, "tenant_id": tenant_id}}
+            )
+            return False, "Invalid user data"
         
         # Get user's group IDs
         group_ids = get_user_group_ids(tenant_id, user_id)
@@ -486,21 +424,9 @@ def verify_location_access(
         query_parts.append(user_query)
         params.extend([tenant_id, loc_id, user_id])
         
-        # Add org_id filter: match if bal.org_id equals request org_id OR bal.org_id is NULL (applies to all orgs)
-        if org_id:
-            query_parts[-1] += " AND (bal.org_id = %s OR bal.org_id IS NULL)"
-            params.append(org_id)
-        else:
-            # If org_id not provided, only match assignments with NULL org_id
-            query_parts[-1] += " AND bal.org_id IS NULL"
-        
-        # Add bus_id filter: match if bal.bus_id equals request bus_id OR bal.bus_id is NULL (applies to all businesses)
-        if bus_id:
-            query_parts[-1] += " AND (bal.bus_id = %s OR bal.bus_id IS NULL)"
-            params.append(bus_id)
-        else:
-            # If bus_id not provided, only match assignments with NULL bus_id
-            query_parts[-1] += " AND bal.bus_id IS NULL"
+        # Do not filter by org_id/bus_id for direct user assignment: if the user has
+        # any assignment to this (tenant, loc_id), they have access. This avoids
+        # "location unauthorized" when the frontend sends a different org-id/bus-id.
         
         # Build group assignment query part if user has groups
         if group_ids:
@@ -522,21 +448,7 @@ def verify_location_access(
             query_parts.append(group_query)
             params.extend([tenant_id, loc_id] + group_ids)
             
-            # Add org_id filter for group assignments: match if bal.org_id equals request org_id OR bal.org_id is NULL
-            if org_id:
-                query_parts[-1] += " AND (bal.org_id = %s OR bal.org_id IS NULL)"
-                params.append(org_id)
-            else:
-                # If org_id not provided, only match assignments with NULL org_id
-                query_parts[-1] += " AND bal.org_id IS NULL"
-            
-            # Add bus_id filter for group assignments: match if bal.bus_id equals request bus_id OR bal.bus_id is NULL
-            if bus_id:
-                query_parts[-1] += " AND (bal.bus_id = %s OR bal.bus_id IS NULL)"
-                params.append(bus_id)
-            else:
-                # If bus_id not provided, only match assignments with NULL bus_id
-                query_parts[-1] += " AND bal.bus_id IS NULL"
+            # Do not filter by org_id/bus_id for group assignment (same as direct assignment).
         
         # Combine query parts with UNION and wrap in COUNT
         query = f'''
@@ -546,118 +458,39 @@ def verify_location_access(
             ) AS location_access
         '''
         
-        count = DatabaseManager.execute_scalar(query, tuple(params))
-        has_user_access = count > 0 if count is not None else False
+        raw_count = DatabaseManager.execute_scalar(query, tuple(params))
+        # Coerce to int (DB may return Decimal or str)
+        try:
+            access_count = int(raw_count) if raw_count is not None else 0
+        except (TypeError, ValueError):
+            access_count = 0
+        has_user_access = access_count > 0
         
-        # Diagnostic: Check if user has ANY access to this location (without org_id/bus_id filters)
-        # This helps us understand if the issue is with org_id/bus_id matching or no access at all
-        diagnostic_query = f'''
-            SELECT COUNT(*) as diagnostic_count
-            FROM (
-                SELECT ul.id
-                FROM {db_settings.CORE_PLATFORM_USER_LOCATIONS_TABLE} ul
-                INNER JOIN {db_settings.CORE_PLATFORM_BUSINESS_APP_LOCATIONS_TABLE} bal
-                    ON ul.bus_app_loc_id = bal.id
-                    AND ul.tenant_id = bal.tenant_id
-                WHERE ul.tenant_id = %s
-                AND bal.loc_id = %s
-                AND ul.user_id = %s
-                AND ul.is_active = true
-                AND ul.delete_status = 'NOT_DELETED'
-                AND bal.is_active = true
-                AND bal.delete_status = 'NOT_DELETED'
-        '''
-        diagnostic_params = [tenant_id, loc_id, user_id]
-        
-        if group_ids:
-            placeholders = ','.join(['%s'] * len(group_ids))
-            diagnostic_query += f'''
-                UNION
-                SELECT gl.id
-                FROM {db_settings.CORE_PLATFORM_GROUP_LOCATIONS_TABLE} gl
-                INNER JOIN {db_settings.CORE_PLATFORM_BUSINESS_APP_LOCATIONS_TABLE} bal
-                    ON gl.bus_app_loc_id = bal.id
-                    AND gl.tenant_id = bal.tenant_id
-                WHERE gl.tenant_id = %s
-                AND bal.loc_id = %s
-                AND gl.group_id IN ({placeholders})
-                AND gl.is_active = true
-                AND gl.delete_status = 'NOT_DELETED'
-                AND bal.is_active = true
-                AND bal.delete_status = 'NOT_DELETED'
-            '''
-            diagnostic_params.extend([tenant_id, loc_id] + group_ids)
-        
-        diagnostic_query += ") AS diagnostic_access"
-        
-        diagnostic_count = DatabaseManager.execute_scalar(diagnostic_query, tuple(diagnostic_params))
-        
-        # Also check what org_id/bus_id values exist in the assignments
-        assignment_details_query = f'''
-            SELECT DISTINCT bal.org_id, bal.bus_id
-            FROM {db_settings.CORE_PLATFORM_USER_LOCATIONS_TABLE} ul
-            INNER JOIN {db_settings.CORE_PLATFORM_BUSINESS_APP_LOCATIONS_TABLE} bal
-                ON ul.bus_app_loc_id = bal.id
-                AND ul.tenant_id = bal.tenant_id
-            WHERE ul.tenant_id = %s
-            AND bal.loc_id = %s
-            AND ul.user_id = %s
-            AND ul.is_active = true
-            AND ul.delete_status = 'NOT_DELETED'
-            AND bal.is_active = true
-            AND bal.delete_status = 'NOT_DELETED'
-            LIMIT 5
-        '''
-        assignment_details = DatabaseManager.execute_query(assignment_details_query, (tenant_id, loc_id, user_id))
-        
-        # If strict check fails but user has ANY access to location, log warning but allow
-        # This helps us understand the data structure while maintaining functionality
         if not has_user_access:
-            if diagnostic_count and diagnostic_count > 0:
-                # User has access to location but org_id/bus_id don't match
-                # This might be a data issue - log it but allow access for now
-                logger.warning(
-                    "User has location access but org_id/bus_id context mismatch - allowing access",
-                    extra={
-                        "extra_fields": {
-                            "user_id": user_id,
-                            "tenant_id": tenant_id,
-                            "loc_id": loc_id,
-                            "org_id": org_id,
-                            "bus_id": bus_id,
-                            "app_id": app_id,
-                            "strict_access_count": count,
-                            "diagnostic_count": diagnostic_count,
-                            "assignment_details": [{"org_id": row.get("org_id"), "bus_id": row.get("bus_id")} for row in assignment_details] if assignment_details else [],
-                            "request_org_id": org_id,
-                            "request_bus_id": bus_id,
-                            "action": "allowing_access_despite_mismatch",
-                        }
-                    },
-                )
-                # Allow access but note the mismatch
-                has_user_access = True
-            else:
-                # User has NO access to location at all
-                logger.warning(
-                    "User location access denied - no assignment found",
-                    extra={
-                        "extra_fields": {
-                            "user_id": user_id,
-                            "tenant_id": tenant_id,
-                            "loc_id": loc_id,
-                            "org_id": org_id,
-                            "bus_id": bus_id,
-                            "app_id": app_id,
-                            "user_group_count": len(group_ids),
-                            "strict_access_count": count,
-                            "diagnostic_count": diagnostic_count,
-                            "assignment_details": [{"org_id": row.get("org_id"), "bus_id": row.get("bus_id")} for row in assignment_details] if assignment_details else [],
-                            "reason": "No location assignment found at all",
-                        }
-                    },
-                )
-                return False, f"You do not have permission to access this location (loc_id: {loc_id}, org_id: {org_id}, bus_id: {bus_id})"
+            # Log key values in message so they appear in stdout (e.g. Azure logs)
+            logger.info(
+                "User location access denied | user_id=%s tenant_id=%s loc_id=%s app_id=%s access_count=%s group_count=%s group_ids=%s",
+                user_id,
+                tenant_id,
+                loc_id,
+                app_id,
+                access_count,
+                len(group_ids),
+                group_ids,
+                extra={
+                    "extra_fields": {
+                        "user_id": user_id,
+                        "tenant_id": tenant_id,
+                        "loc_id": loc_id,
+                        "org_id": org_id,
+                        "bus_id": bus_id,
+                        "user_group_count": len(group_ids),
+                        "group_ids": group_ids,
+                        "access_count": access_count,
+                    }
+                },
+            )
+            return False, "You do not have permission to access this location"
         
         # Now verify app is deployed to this location
         is_app_deployed = verify_app_deployment_to_location(
@@ -806,8 +639,8 @@ def get_org_bus_loc_with_permission(
     )
     
     if not has_access:
-        user_id = current_user.data[0].user_id if current_user.data else "unknown"
-        tenant_id = current_user.data[0].tenant_id if current_user.data else "unknown"
+        user_id = getattr(current_user, "user_id", None) or (current_user.data[0].user_id if current_user.data else None) or "unknown"
+        tenant_id = getattr(current_user, "tenant_id", None) or (current_user.data[0].tenant_id if current_user.data else None) or "unknown"
         
         # Get location name for logging purposes
         location_name = get_location_name(tenant_id=tenant_id, loc_id=loc_id)
@@ -835,10 +668,10 @@ def get_org_bus_loc_with_permission(
             },
         )
         
-        # Return simple error message to client (detailed info logged above)
+        # Return distinct message so client/logs can tell location denial from permission denial
         raise HTTPException(
             status_code=403,
-            detail="Unauthorized access"
+            detail="Location access denied. You do not have access to this location, or the app is not deployed here."
         )
     
     return {
@@ -1099,8 +932,9 @@ def verify_subscription_active(
             detail="Invalid user data"
         )
     
-    tenant_id = current_user.data[0].tenant_id
-    user_id = current_user.data[0].user_id
+    # Prefer JWT-derived values (set by get_current_user); role DTOs can have user_id=None for group roles
+    tenant_id = getattr(current_user, "tenant_id", None) or (current_user.data[0].tenant_id if current_user.data else None)
+    user_id = getattr(current_user, "user_id", None) or (current_user.data[0].user_id if current_user.data else None)
     
     logger.debug(
         "Checking subscription status",
