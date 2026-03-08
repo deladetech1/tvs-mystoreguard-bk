@@ -16,4 +16,5 @@ class WarehouseConfigBase(BaseModel):
     manager_id: Optional[str] = Field(None, description="Warehouse manager user ID")
     openning_time: Optional[time] = Field(None, description="Warehouse opening time")
     closing_time: Optional[time] = Field(None, description="Warehouse closing time")
+    change_to_card: bool = Field(default=False, description="Show products in card form when true, table form when false")
 

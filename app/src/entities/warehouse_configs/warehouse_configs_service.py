@@ -90,6 +90,8 @@ class WarehouseConfigsService:
                     # Fields with defaults - always update (they will always have values)
                     update_fields.append("is_active = %s")
                     params.append(data.is_active)
+                    update_fields.append("change_to_card = %s")
+                    params.append(data.change_to_card)
 
                     update_fields.append("updated_by = %s")
                     params.append(user_id)
@@ -187,15 +189,15 @@ class WarehouseConfigsService:
                         f"""INSERT INTO {db_settings.MSG_WAREHOUSE_CONFIGS_TABLE}
                         (id, tenant_id, org_id, bus_id, loc_id, warehouse_name, description,
                          aadress, is_active, manager_id,
-                         openning_time, closing_time,
+                         openning_time, closing_time, change_to_card,
                          cdate, ctime, cdatetime, created_by)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         RETURNING *""",
                         (
                             config_id, tenant_id, org_id, bus_id, loc_id,
                             data.warehouse_name, data.description,
                             data.aadress, data.is_active, data.manager_id,
-                            data.openning_time, data.closing_time,
+                            data.openning_time, data.closing_time, data.change_to_card,
                             cdate, ctime, cdatetime, user_id
                         ),
                     )

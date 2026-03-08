@@ -213,6 +213,8 @@ class StoreConfigsService:
                     params.append(data.enable_daily_reports)
                     update_fields.append("lock_based_on_closing_time = %s")
                     params.append(data.lock_based_on_closing_time)
+                    update_fields.append("change_to_card = %s")
+                    params.append(data.change_to_card)
 
                     update_fields.append("updated_by = %s")
                     params.append(user_id)
@@ -343,16 +345,16 @@ class StoreConfigsService:
                         (id, tenant_id, org_id, bus_id, loc_id, store_name, description,
                          is_visible_on_ecommerce, address, is_active, manager_id,
                          enable_auto_stock_take, num_of_days_to_take_stock,
-                         enable_daily_reports, openning_time, closing_time, lock_based_on_closing_time,
+                         enable_daily_reports, openning_time, closing_time, lock_based_on_closing_time, change_to_card,
                          cdate, ctime, cdatetime, created_by)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         RETURNING *""",
                         (
                             config_id, tenant_id, org_id, bus_id, loc_id,
                             data.store_name, data.description,
                             data.is_visible_on_ecommerce, data.address, data.is_active, data.manager_id,
                             data.enable_auto_stock_take, data.num_of_days_to_take_stock,
-                            data.enable_daily_reports, data.openning_time, data.closing_time, data.lock_based_on_closing_time,
+                            data.enable_daily_reports, data.openning_time, data.closing_time, data.lock_based_on_closing_time, data.change_to_card,
                             cdate, ctime, cdatetime, user_id
                         ),
                     )

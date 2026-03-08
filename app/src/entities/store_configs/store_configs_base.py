@@ -21,4 +21,5 @@ class StoreConfigBase(BaseModel):
     openning_time: Optional[time] = Field(None, description="Store opening time")
     closing_time: Optional[time] = Field(None, description="Store closing time")
     lock_based_on_closing_time: bool = Field(default=False, description="Whether to lock based on closing time")
+    change_to_card: bool = Field(default=False, description="Show products in card form when true, table form when false")
 
