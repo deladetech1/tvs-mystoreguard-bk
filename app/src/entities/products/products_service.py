@@ -1270,6 +1270,7 @@ class ProductsService:
         bus_id: str,
         is_active: Optional[bool] = None,
         search: Optional[str] = None,
+        metadata_ids: Optional[List[str]] = None,
         page: int = 1,
         size: int = 10,
     ) -> Respons[list[GetProductsServiceReadDto]]:
@@ -1281,6 +1282,7 @@ class ProductsService:
                     "tenant_id": tenant_id,
                     "is_active": is_active,
                     "search": search,
+                    "metadata_ids": metadata_ids,
                     "page": page,
                     "size": size,
                 }
@@ -1308,6 +1310,18 @@ class ProductsService:
                     )
                     search_pattern = f"%{search}%"
                     params.extend([search_pattern, search_pattern, search_pattern, search_pattern])
+
+                if metadata_ids:
+                    placeholders = ", ".join(["%s"] * len(metadata_ids))
+                    where_conditions.append(
+                        f"""EXISTS (
+                            SELECT 1 FROM {db_settings.MSG_ASSIGN_METADATA_TO_PRODUCTS_TABLE} amp
+                            WHERE amp.product_id = p.id AND amp.tenant_id = p.tenant_id
+                            AND amp.org_id = p.org_id AND amp.bus_id = p.bus_id
+                            AND amp.product_metadata_id IN ({placeholders})
+                        )"""
+                    )
+                    params.extend(metadata_ids)
 
                 where_clause = " AND ".join(where_conditions)
 

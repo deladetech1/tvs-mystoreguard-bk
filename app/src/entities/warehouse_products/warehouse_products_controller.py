@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from typing import Optional
+from typing import Optional, List
 from src.utils.auth import CustomAuthService, get_org_bus_loc_with_permission, verify_subscription_active
 from src.entities.warehouse_products.warehouse_products_service import WarehouseProductsService
 from src.entities.warehouse_products.warehouse_products_write_dto import (
@@ -373,6 +373,7 @@ def get_warehouse_products(
     product_id: Optional[str] = Query(None, description="Filter by product ID"),
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
     search: Optional[str] = Query(None, description="Search by product name, description, location name, or barcode"),
+    metadata_ids: Optional[List[str]] = Query(None, description="Filter by product metadata IDs (e.g. category, tag, brand). Product must have at least one of these metadata"),
     page: int = Query(1, ge=1, description="Page number"),
     size: int = Query(10, ge=1, le=100, description="Page size (max 100)"),
     current_user: dict = Depends(CustomAuthService.get_current_user),
@@ -395,6 +396,7 @@ def get_warehouse_products(
                         "product_id": product_id,
                         "is_active": is_active,
                         "search": search,
+                        "metadata_ids": metadata_ids,
                         "page": page,
                         "size": size,
                     },
@@ -429,6 +431,7 @@ def get_warehouse_products(
             product_id=product_id,
             is_active=is_active,
             search=search,
+            metadata_ids=metadata_ids,
             page=page,
             size=size,
         )

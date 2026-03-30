@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from typing import Optional
+from typing import Optional, List
 from src.utils.auth import CustomAuthService, get_org_bus_loc_with_permission, verify_subscription_active
 from src.entities.products.products_service import ProductsService
 from src.entities.products.products_write_dto import (
@@ -276,6 +276,7 @@ def get_product(
 def get_products(
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
     search: Optional[str] = Query(None, description="Search by name, description, SKU, or barcode"),
+    metadata_ids: Optional[List[str]] = Query(None, description="Filter by product metadata IDs (e.g. category, tag, brand). Product must have at least one of these metadata"),
     page: int = Query(1, ge=1, description="Page number"),
     size: int = Query(10, ge=1, le=100, description="Page size (max 100)"),
     current_user: dict = Depends(CustomAuthService.get_current_user),
@@ -295,6 +296,7 @@ def get_products(
                     "filters": {
                         "is_active": is_active,
                         "search": search,
+                        "metadata_ids": metadata_ids,
                         "page": page,
                         "size": size,
                     },
@@ -327,6 +329,7 @@ def get_products(
             bus_id=org_bus_loc["bus_id"],
             is_active=is_active,
             search=search,
+            metadata_ids=metadata_ids,
             page=page,
             size=size,
         )

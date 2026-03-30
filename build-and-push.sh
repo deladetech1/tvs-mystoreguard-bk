@@ -10,7 +10,7 @@
 set -e  # Exit on error
 
 # Configuration - Update these variables
-ACR_NAME="${ACR_NAME:-trovesuiteprodacr}"  # Azure Container Registry name
+ACR_NAME="${ACR_NAME:-trovesuitedevacr}"  # Azure Container Registry name
 IMAGE_NAME="${IMAGE_NAME:-mystoreguard}"  # Image name (e.g., core-platform, loandrift, mystoreguard)
 IMAGE_TAG="${IMAGE_TAG:-latest}"           # Image tag
 DOCKERFILE_PATH="${DOCKERFILE_PATH:-./app/Dockerfile}"  # Path to Dockerfile
