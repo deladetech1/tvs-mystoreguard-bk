@@ -2175,7 +2175,7 @@ class StoreProductsService:
                     success=True,
                     detail="Store products retrieved successfully",
                     data=sp_list,
-                    meta=pagination_meta,
+                    pagination=pagination_meta,
                 )
 
         except Exception as e:

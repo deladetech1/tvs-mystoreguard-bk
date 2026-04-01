@@ -153,6 +153,9 @@ logger = get_logger("reports_service")
 class ReportsService:
     """Service class for reports operations"""
 
+    _SUMMARY_PRODUCT_ID = "__summary__"
+    _SUMMARY_PRODUCT_NAME = "All products (totals)"
+
     @staticmethod
     def _get_base_where_conditions(
         tenant_id: str,
@@ -206,6 +209,41 @@ class ReportsService:
             conditions.append(f"{date_field} <= %s")
             params.append(to_date)
         return conditions, params
+
+    @staticmethod
+    def _product_profit_report_filters_applied(data: Any, *, net: bool) -> Dict[str, Any]:
+        """Explains how SUMMARY/DETAILED figures are built so clients do not confuse them with catalog or bank P&L."""
+        fa: Dict[str, Any] = {
+            "revenue_basis": (
+                "Sum of sale line line_total. Sales: sale_date in range, deleted_by IS NULL, status != CANCELLED."
+            ),
+            "cogs_basis": "Sum of (quantity × purchase_batch.cost_price) for each included sale line.",
+            "gross_profit": "Total revenue_basis minus total cogs_basis.",
+        }
+        if data.from_date:
+            fa["from_date"] = str(data.from_date)
+        if data.to_date:
+            fa["to_date"] = str(data.to_date)
+        if getattr(data, "location_ids", None):
+            fa["location_ids"] = data.location_ids
+        if getattr(data, "product_ids", None):
+            fa["product_ids"] = data.product_ids
+        if getattr(data, "group_by_location", None):
+            fa["group_by_location"] = data.group_by_location
+        if net:
+            fa["expense_basis"] = (
+                "Sum of expense history amounts where DATE(cdate) is in the same date range; "
+                "scoped to tenant/org/bus/location like sales. Not tied to individual sale lines."
+            )
+            fa["net_profit_summary_row"] = (
+                "When format=SUMMARY and group_by_location=false, one row is returned; "
+                "allocated_expenses is the full period expense total (all overhead for the range), "
+                "and net_profit = gross_profit − that total. This is merchandise margin minus recorded expenses, not cash movement."
+            )
+            em = getattr(data, "expense_allocation_method", None)
+            if em is not None:
+                fa["expense_allocation_method"] = em
+        return fa
 
     @staticmethod
     def _quantize_decimal(value: Any, places: int = 2) -> Decimal:
@@ -4485,13 +4523,18 @@ class ReportsService:
         bus_id: str,
         data: ProductGrossProfitReportRequestWriteDto,
     ) -> Respons[ProductGrossProfitReportResponseReadBase]:
-        """Get product gross profit report - shows gross profit per product"""
+        """Get product gross profit report - SUMMARY: one rolled-up total; DETAILED: per product"""
         logger.info("Generating product gross profit report", extra={
             "extra_fields": {"tenant_id": tenant_id, "from_date": str(data.from_date), "to_date": str(data.to_date)}
         })
 
         try:
             with DatabaseManager.transaction() as cursor:
+                if data.format == "SUMMARY":
+                    return ReportsService._get_product_gross_profit_report_summary(
+                        cursor, tenant_id, org_id, bus_id, data
+                    )
+
                 # Build base conditions for sales
                 sales_conditions, sales_params = ReportsService._get_base_where_conditions(
                     tenant_id, org_id, bus_id, None, data.location_ids, table_alias="s"
@@ -4500,6 +4543,7 @@ class ReportsService:
                     sales_conditions, sales_params, data.from_date, data.to_date, "s.sale_date"
                 )
                 sales_conditions.append("s.deleted_by IS NULL")
+                sales_conditions.append("s.status != 'CANCELLED'")
                 sales_where = " AND ".join(sales_conditions)
 
                 # Build product filter
@@ -4557,7 +4601,6 @@ class ReportsService:
                     WHERE {sales_where}
                     {product_filter}
                     GROUP BY {group_by_clause}
-                    HAVING COALESCE(SUM(si.line_total), 0) - COALESCE(SUM(si.quantity * pb.cost_price), 0) > 0
                     ORDER BY gross_profit DESC
                     LIMIT %s OFFSET %s
                 """
@@ -4610,7 +4653,6 @@ class ReportsService:
                         WHERE {sales_where}
                         {product_filter}
                         GROUP BY si.product_id
-                        HAVING COALESCE(SUM(si.line_total), 0) - COALESCE(SUM(si.quantity * pb.cost_price), 0) > 0
                     ) as product_counts
                 """
                 cursor.execute(count_query, tuple(sales_params[:-2]))  # Remove LIMIT and OFFSET
@@ -4623,6 +4665,7 @@ class ReportsService:
                     generated_at=datetime.now(),
                     period_start=data.from_date,
                     period_end=data.to_date,
+                    filters_applied=ReportsService._product_profit_report_filters_applied(data, net=False),
                     items=items,
                     total_items=total_count,
                     pagination={
@@ -4647,19 +4690,358 @@ class ReportsService:
             )
 
     @staticmethod
+    def _get_product_gross_profit_report_summary(
+        cursor,
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: ProductGrossProfitReportRequestWriteDto,
+    ) -> Respons[ProductGrossProfitReportResponseReadBase]:
+        """Single total (or one row per location) — no per-product breakdown."""
+        sales_conditions, sales_params = ReportsService._get_base_where_conditions(
+            tenant_id, org_id, bus_id, None, data.location_ids, table_alias="s"
+        )
+        sales_conditions, sales_params = ReportsService._add_date_filters(
+            sales_conditions, sales_params, data.from_date, data.to_date, "s.sale_date"
+        )
+        sales_conditions.append("s.deleted_by IS NULL")
+        sales_conditions.append("s.status != 'CANCELLED'")
+        sales_where = " AND ".join(sales_conditions)
+
+        product_filter = ""
+        if data.product_ids:
+            placeholders = ','.join(['%s'] * len(data.product_ids))
+            product_filter = f"AND si.product_id IN ({placeholders})"
+            sales_params.extend(data.product_ids)
+
+        if data.group_by_location:
+            query = f"""
+                SELECT 
+                    s.loc_id,
+                    l.loc_name as location_name,
+                    COALESCE(SUM(si.quantity), 0) as total_quantity_sold,
+                    COALESCE(SUM(si.line_total), 0) as total_revenue,
+                    COALESCE(SUM(si.quantity * pb.cost_price), 0) as total_cost,
+                    COALESCE(SUM(si.line_total), 0) - COALESCE(SUM(si.quantity * pb.cost_price), 0) as gross_profit,
+                    CASE 
+                        WHEN COALESCE(SUM(si.line_total), 0) > 0 
+                        THEN ((COALESCE(SUM(si.line_total), 0) - COALESCE(SUM(si.quantity * pb.cost_price), 0)) / COALESCE(SUM(si.line_total), 0)) * 100
+                        ELSE 0
+                    END as gross_profit_margin
+                FROM {db_settings.MSG_SALES_ITEMS_TABLE} si
+                INNER JOIN {db_settings.MSG_SALES_TABLE} s
+                    ON si.sale_id = s.id
+                    AND si.tenant_id = s.tenant_id
+                    AND si.org_id = s.org_id
+                    AND si.bus_id = s.bus_id
+                    AND si.loc_id = s.loc_id
+                INNER JOIN {db_settings.MSG_PRODUCTS_TABLE} p
+                    ON si.product_id = p.id
+                    AND si.tenant_id = p.tenant_id
+                    AND si.org_id = p.org_id
+                    AND si.bus_id = p.bus_id
+                INNER JOIN {db_settings.MSG_PURCHASE_BATCHES_TABLE} pb
+                    ON si.batch_id = pb.id
+                    AND si.tenant_id = pb.tenant_id
+                    AND si.org_id = pb.org_id
+                    AND si.bus_id = pb.bus_id
+                LEFT JOIN {db_settings.CORE_PLATFORM_LOCATIONS_TABLE} l
+                    ON s.loc_id = l.id
+                    AND s.tenant_id = l.tenant_id
+                WHERE {sales_where}
+                {product_filter}
+                GROUP BY s.loc_id, l.loc_name
+                ORDER BY gross_profit DESC
+            """
+            cursor.execute(query, tuple(sales_params))
+            rows = cursor.fetchall()
+        else:
+            query = f"""
+                SELECT 
+                    COALESCE(SUM(si.quantity), 0) as total_quantity_sold,
+                    COALESCE(SUM(si.line_total), 0) as total_revenue,
+                    COALESCE(SUM(si.quantity * pb.cost_price), 0) as total_cost,
+                    COALESCE(SUM(si.line_total), 0) - COALESCE(SUM(si.quantity * pb.cost_price), 0) as gross_profit
+                FROM {db_settings.MSG_SALES_ITEMS_TABLE} si
+                INNER JOIN {db_settings.MSG_SALES_TABLE} s
+                    ON si.sale_id = s.id
+                    AND si.tenant_id = s.tenant_id
+                    AND si.org_id = s.org_id
+                    AND si.bus_id = s.bus_id
+                    AND si.loc_id = s.loc_id
+                INNER JOIN {db_settings.MSG_PRODUCTS_TABLE} p
+                    ON si.product_id = p.id
+                    AND si.tenant_id = p.tenant_id
+                    AND si.org_id = p.org_id
+                    AND si.bus_id = p.bus_id
+                INNER JOIN {db_settings.MSG_PURCHASE_BATCHES_TABLE} pb
+                    ON si.batch_id = pb.id
+                    AND si.tenant_id = pb.tenant_id
+                    AND si.org_id = pb.org_id
+                    AND si.bus_id = pb.bus_id
+                WHERE {sales_where}
+                {product_filter}
+            """
+            cursor.execute(query, tuple(sales_params))
+            one = cursor.fetchone()
+            rows = [one] if one else []
+
+        items: List[ProductGrossProfitItemReadBase] = []
+        for row in rows:
+            if not row:
+                continue
+            gross_profit = ReportsService._quantize_decimal(row.get('gross_profit', 0))
+            rev = ReportsService._quantize_decimal(row.get('total_revenue', 0))
+            margin = (
+                ReportsService._quantize_decimal(row['gross_profit_margin'])
+                if 'gross_profit_margin' in row and row.get('gross_profit_margin') is not None
+                else ((gross_profit / rev * 100) if rev > 0 else Decimal('0'))
+            )
+            if data.min_gross_profit and gross_profit < Decimal(str(data.min_gross_profit)):
+                continue
+            if data.min_gross_profit_margin and margin < Decimal(str(data.min_gross_profit_margin)):
+                continue
+            items.append(ProductGrossProfitItemReadBase(
+                product_id=ReportsService._SUMMARY_PRODUCT_ID,
+                product_name=ReportsService._SUMMARY_PRODUCT_NAME,
+                total_quantity_sold=ReportsService._quantize_decimal(row.get('total_quantity_sold', 0)),
+                total_revenue=rev,
+                total_cost=ReportsService._quantize_decimal(row.get('total_cost', 0)),
+                gross_profit=gross_profit,
+                gross_profit_margin=ReportsService._quantize_decimal(margin),
+                location_id=row.get('loc_id') if data.group_by_location else None,
+                location_name=row.get('location_name') if data.group_by_location else None,
+            ))
+
+        offset = (data.page - 1) * data.size
+        total_count = len(items)
+        paginated = items[offset:offset + data.size]
+        response = ProductGrossProfitReportResponseReadBase(
+            report_type="product_gross_profit",
+            report_format=data.format,
+            generated_at=datetime.now(),
+            period_start=data.from_date,
+            period_end=data.to_date,
+            filters_applied=ReportsService._product_profit_report_filters_applied(data, net=False),
+            items=paginated,
+            total_items=total_count,
+            pagination={
+                "page": data.page,
+                "size": data.size,
+                "total_pages": (total_count + data.size - 1) // data.size if data.size > 0 else 0,
+            }
+        )
+        return Respons(
+            success=True,
+            detail="Product gross profit report generated successfully",
+            data=[response],
+        )
+
+    @staticmethod
+    def _get_product_net_profit_report_summary(
+        cursor,
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: ProductNetProfitReportRequestWriteDto,
+    ) -> Respons[ProductNetProfitReportResponseReadBase]:
+        """One rolled-up net profit row (or per location); expenses applied once to totals."""
+        sales_conditions, sales_params = ReportsService._get_base_where_conditions(
+            tenant_id, org_id, bus_id, None, data.location_ids, table_alias="s"
+        )
+        sales_conditions, sales_params = ReportsService._add_date_filters(
+            sales_conditions, sales_params, data.from_date, data.to_date, "s.sale_date"
+        )
+        sales_conditions.append("s.deleted_by IS NULL")
+        sales_conditions.append("s.status != 'CANCELLED'")
+        sales_where = " AND ".join(sales_conditions)
+
+        product_filter = ""
+        if data.product_ids:
+            placeholders = ','.join(['%s'] * len(data.product_ids))
+            product_filter = f"AND si.product_id IN ({placeholders})"
+            sales_params.extend(data.product_ids)
+
+        if data.group_by_location:
+            gross_query = f"""
+                SELECT 
+                    s.loc_id,
+                    l.loc_name as location_name,
+                    COALESCE(SUM(si.quantity), 0) as total_quantity_sold,
+                    COALESCE(SUM(si.line_total), 0) as total_revenue,
+                    COALESCE(SUM(si.quantity * pb.cost_price), 0) as total_cost,
+                    COALESCE(SUM(si.line_total), 0) - COALESCE(SUM(si.quantity * pb.cost_price), 0) as gross_profit
+                FROM {db_settings.MSG_SALES_ITEMS_TABLE} si
+                INNER JOIN {db_settings.MSG_SALES_TABLE} s
+                    ON si.sale_id = s.id
+                    AND si.tenant_id = s.tenant_id
+                    AND si.org_id = s.org_id
+                    AND si.bus_id = s.bus_id
+                    AND si.loc_id = s.loc_id
+                INNER JOIN {db_settings.MSG_PRODUCTS_TABLE} p
+                    ON si.product_id = p.id
+                    AND si.tenant_id = p.tenant_id
+                    AND si.org_id = p.org_id
+                    AND si.bus_id = p.bus_id
+                INNER JOIN {db_settings.MSG_PURCHASE_BATCHES_TABLE} pb
+                    ON si.batch_id = pb.id
+                    AND si.tenant_id = pb.tenant_id
+                    AND si.org_id = pb.org_id
+                    AND si.bus_id = pb.bus_id
+                LEFT JOIN {db_settings.CORE_PLATFORM_LOCATIONS_TABLE} l
+                    ON s.loc_id = l.id
+                    AND s.tenant_id = l.tenant_id
+                WHERE {sales_where}
+                {product_filter}
+                GROUP BY s.loc_id, l.loc_name
+            """
+            cursor.execute(gross_query, tuple(sales_params))
+            gross_rows = cursor.fetchall()
+        else:
+            gross_query = f"""
+                SELECT 
+                    COALESCE(SUM(si.quantity), 0) as total_quantity_sold,
+                    COALESCE(SUM(si.line_total), 0) as total_revenue,
+                    COALESCE(SUM(si.quantity * pb.cost_price), 0) as total_cost,
+                    COALESCE(SUM(si.line_total), 0) - COALESCE(SUM(si.quantity * pb.cost_price), 0) as gross_profit
+                FROM {db_settings.MSG_SALES_ITEMS_TABLE} si
+                INNER JOIN {db_settings.MSG_SALES_TABLE} s
+                    ON si.sale_id = s.id
+                    AND si.tenant_id = s.tenant_id
+                    AND si.org_id = s.org_id
+                    AND si.bus_id = s.bus_id
+                    AND si.loc_id = s.loc_id
+                INNER JOIN {db_settings.MSG_PRODUCTS_TABLE} p
+                    ON si.product_id = p.id
+                    AND si.tenant_id = p.tenant_id
+                    AND si.org_id = p.org_id
+                    AND si.bus_id = p.bus_id
+                INNER JOIN {db_settings.MSG_PURCHASE_BATCHES_TABLE} pb
+                    ON si.batch_id = pb.id
+                    AND si.tenant_id = pb.tenant_id
+                    AND si.org_id = pb.org_id
+                    AND si.bus_id = pb.bus_id
+                WHERE {sales_where}
+                {product_filter}
+            """
+            cursor.execute(gross_query, tuple(sales_params))
+            one = cursor.fetchone()
+            gross_rows = [one] if one else []
+
+        expense_conditions, expense_params = ReportsService._get_base_where_conditions(
+            tenant_id, org_id, bus_id, None, data.location_ids, table_alias="e"
+        )
+        expense_conditions, expense_params = ReportsService._add_date_filters(
+            expense_conditions, expense_params, data.from_date, data.to_date, "DATE(e.cdate)"
+        )
+        expense_conditions.append("e.delete_status = 'NOT_DELETED'")
+        expense_where = " AND ".join(expense_conditions)
+        cursor.execute(
+            f"""
+            SELECT COALESCE(SUM(amount), 0) as total_expenses
+            FROM {db_settings.CP_EXPENSES_HISTORY_TABLE} e
+            WHERE {expense_where}
+            """,
+            tuple(expense_params),
+        )
+        expenses_result = cursor.fetchone()
+        total_expenses = ReportsService._quantize_decimal(
+            expenses_result.get("total_expenses", 0) if expenses_result else 0
+        )
+
+        total_revenue_for_alloc = sum(
+            ReportsService._quantize_decimal(r.get("total_revenue", 0)) for r in gross_rows if r
+        )
+        num_rows = len([r for r in gross_rows if r])
+
+        items: List[ProductNetProfitItemReadBase] = []
+        for row in gross_rows:
+            if not row:
+                continue
+            product_revenue = ReportsService._quantize_decimal(row.get("total_revenue", 0))
+            gross_profit = ReportsService._quantize_decimal(row.get("gross_profit", 0))
+            if data.group_by_location:
+                if data.expense_allocation_method == "revenue" and total_revenue_for_alloc > 0:
+                    allocated_expenses = (product_revenue / total_revenue_for_alloc) * total_expenses
+                else:
+                    n = num_rows if num_rows > 0 else 1
+                    allocated_expenses = total_expenses / Decimal(str(n))
+            else:
+                allocated_expenses = total_expenses
+            allocated_expenses = ReportsService._quantize_decimal(allocated_expenses)
+            net_profit = gross_profit - allocated_expenses
+            gross_profit_margin = (
+                (gross_profit / product_revenue * 100) if product_revenue > 0 else Decimal("0")
+            )
+            net_profit_margin = (
+                (net_profit / product_revenue * 100) if product_revenue > 0 else Decimal("0")
+            )
+            if data.min_net_profit and net_profit < Decimal(str(data.min_net_profit)):
+                continue
+            if data.min_net_profit_margin and net_profit_margin < Decimal(str(data.min_net_profit_margin)):
+                continue
+
+            items.append(
+                ProductNetProfitItemReadBase(
+                    product_id=ReportsService._SUMMARY_PRODUCT_ID,
+                    product_name=ReportsService._SUMMARY_PRODUCT_NAME,
+                    total_quantity_sold=ReportsService._quantize_decimal(row.get("total_quantity_sold", 0)),
+                    total_revenue=product_revenue,
+                    total_cost=ReportsService._quantize_decimal(row.get("total_cost", 0)),
+                    gross_profit=gross_profit,
+                    allocated_expenses=allocated_expenses,
+                    net_profit=net_profit,
+                    gross_profit_margin=ReportsService._quantize_decimal(gross_profit_margin),
+                    net_profit_margin=ReportsService._quantize_decimal(net_profit_margin),
+                    location_id=row.get("loc_id") if data.group_by_location else None,
+                    location_name=row.get("location_name") if data.group_by_location else None,
+                )
+            )
+
+        items.sort(key=lambda x: x.net_profit, reverse=True)
+        offset = (data.page - 1) * data.size
+        total_count = len(items)
+        paginated = items[offset : offset + data.size]
+        response = ProductNetProfitReportResponseReadBase(
+            report_type="product_net_profit",
+            report_format=data.format,
+            generated_at=datetime.now(),
+            period_start=data.from_date,
+            period_end=data.to_date,
+            filters_applied=ReportsService._product_profit_report_filters_applied(data, net=True),
+            items=paginated,
+            total_items=total_count,
+            pagination={
+                "page": data.page,
+                "size": data.size,
+                "total_pages": (total_count + data.size - 1) // data.size if data.size > 0 else 0,
+            },
+        )
+        return Respons(
+            success=True,
+            detail="Product net profit report generated successfully",
+            data=[response],
+        )
+
+    @staticmethod
     def get_product_net_profit_report(
         tenant_id: str,
         org_id: str,
         bus_id: str,
         data: ProductNetProfitReportRequestWriteDto,
     ) -> Respons[ProductNetProfitReportResponseReadBase]:
-        """Get product net profit report - shows net profit per product (gross profit - allocated expenses)"""
+        """SUMMARY: one total net/gross for the period; DETAILED: per product with allocated expenses"""
         logger.info("Generating product net profit report", extra={
             "extra_fields": {"tenant_id": tenant_id, "from_date": str(data.from_date), "to_date": str(data.to_date)}
         })
 
         try:
             with DatabaseManager.transaction() as cursor:
+                if data.format == "SUMMARY":
+                    return ReportsService._get_product_net_profit_report_summary(
+                        cursor, tenant_id, org_id, bus_id, data
+                    )
+
                 # First get product gross profit (same as above)
                 sales_conditions, sales_params = ReportsService._get_base_where_conditions(
                     tenant_id, org_id, bus_id, None, data.location_ids, table_alias="s"
@@ -4668,6 +5050,7 @@ class ReportsService:
                     sales_conditions, sales_params, data.from_date, data.to_date, "s.sale_date"
                 )
                 sales_conditions.append("s.deleted_by IS NULL")
+                sales_conditions.append("s.status != 'CANCELLED'")
                 sales_where = " AND ".join(sales_conditions)
 
                 product_filter = ""
@@ -4717,7 +5100,6 @@ class ReportsService:
                     WHERE {sales_where}
                     {product_filter}
                     GROUP BY {group_by_clause}
-                    HAVING COALESCE(SUM(si.line_total), 0) - COALESCE(SUM(si.quantity * pb.cost_price), 0) > 0
                 """
                 cursor.execute(gross_profit_query, tuple(sales_params))
                 gross_profit_results = cursor.fetchall()
@@ -4743,17 +5125,46 @@ class ReportsService:
                 expenses_result = cursor.fetchone()
                 total_expenses = ReportsService._quantize_decimal(expenses_result.get('total_expenses', 0))
 
-                # Calculate total revenue for expense allocation
-                total_revenue = sum(ReportsService._quantize_decimal(row.get('total_revenue', 0)) for row in gross_profit_results)
-                
+                # Revenue share must use all qualifying sales lines (same filters), not only rows returned after GROUP BY,
+                # otherwise loss-making SKUs skew the denominator and over-allocate overhead to profitable lines.
+                cursor.execute(
+                    f"""
+                    SELECT COALESCE(SUM(si.line_total), 0) as total_revenue_all
+                    FROM {db_settings.MSG_SALES_ITEMS_TABLE} si
+                    INNER JOIN {db_settings.MSG_SALES_TABLE} s
+                        ON si.sale_id = s.id
+                        AND si.tenant_id = s.tenant_id
+                        AND si.org_id = s.org_id
+                        AND si.bus_id = s.bus_id
+                        AND si.loc_id = s.loc_id
+                    INNER JOIN {db_settings.MSG_PRODUCTS_TABLE} p
+                        ON si.product_id = p.id
+                        AND si.tenant_id = p.tenant_id
+                        AND si.org_id = p.org_id
+                        AND si.bus_id = p.bus_id
+                    INNER JOIN {db_settings.MSG_PURCHASE_BATCHES_TABLE} pb
+                        ON si.batch_id = pb.id
+                        AND si.tenant_id = pb.tenant_id
+                        AND si.org_id = pb.org_id
+                        AND si.bus_id = pb.bus_id
+                    WHERE {sales_where}
+                    {product_filter}
+                    """,
+                    tuple(sales_params),
+                )
+                tr_row = cursor.fetchone()
+                total_revenue_for_allocation = ReportsService._quantize_decimal(
+                    tr_row.get("total_revenue_all", 0) if tr_row else 0
+                )
+
                 items = []
                 for row in gross_profit_results:
                     product_revenue = ReportsService._quantize_decimal(row.get('total_revenue', 0))
                     gross_profit = ReportsService._quantize_decimal(row.get('gross_profit', 0))
                     
                     # Allocate expenses based on method
-                    if data.expense_allocation_method == 'revenue' and total_revenue > 0:
-                        allocated_expenses = (product_revenue / total_revenue) * total_expenses
+                    if data.expense_allocation_method == 'revenue' and total_revenue_for_allocation > 0:
+                        allocated_expenses = (product_revenue / total_revenue_for_allocation) * total_expenses
                     else:
                         # Equal allocation
                         num_products = len(gross_profit_results) if gross_profit_results else 1
@@ -4799,6 +5210,7 @@ class ReportsService:
                     generated_at=datetime.now(),
                     period_start=data.from_date,
                     period_end=data.to_date,
+                    filters_applied=ReportsService._product_profit_report_filters_applied(data, net=True),
                     items=paginated_items,
                     total_items=len(items),
                     pagination={
@@ -4844,6 +5256,7 @@ class ReportsService:
                     sales_conditions, sales_params, data.from_date, data.to_date, "s.sale_date"
                 )
                 sales_conditions.append("s.deleted_by IS NULL")
+                sales_conditions.append("s.status != 'CANCELLED'")
                 sales_where = " AND ".join(sales_conditions)
 
                 # Get location performance metrics

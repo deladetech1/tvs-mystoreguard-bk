@@ -20,6 +20,7 @@ from src.configs.settings import db_settings
 from src.configs.database import DatabaseManager
 from src.configs.logging import get_logger
 from trovesuite.utils import Helper
+from psycopg2 import DatabaseError, IntegrityError
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -370,6 +371,9 @@ class WarehouseTransfersService:
                         loc_id=source_loc_id,
                         cursor=cursor
                     )
+                except (DatabaseError, IntegrityError) as log_db_err:
+                    logger.error(f"Database error during activity logging: {log_db_err}", exc_info=True)
+                    raise
                 except Exception as log_err:
                     logger.warning(f"Activity log failed: {log_err}", exc_info=True)
 
@@ -826,6 +830,9 @@ class WarehouseTransfersService:
                         loc_id=transfer['source_id'],
                         cursor=cursor
                     )
+                except (DatabaseError, IntegrityError) as log_db_err:
+                    logger.error(f"Database error during activity logging: {log_db_err}", exc_info=True)
+                    raise
                 except Exception as log_err:
                     logger.warning(f"Activity log failed: {log_err}", exc_info=True)
 
@@ -1373,6 +1380,9 @@ class WarehouseTransfersService:
                         loc_id=transfer['source_id'],
                         cursor=cursor
                     )
+                except (DatabaseError, IntegrityError) as log_db_err:
+                    logger.error(f"Database error during activity logging: {log_db_err}", exc_info=True)
+                    raise
                 except Exception as log_err:
                     logger.warning(f"Activity log failed: {log_err}", exc_info=True)
 
@@ -1473,6 +1483,9 @@ class WarehouseTransfersService:
                         loc_id=transfer['source_id'],
                         cursor=cursor
                     )
+                except (DatabaseError, IntegrityError) as log_db_err:
+                    logger.error(f"Database error during activity logging: {log_db_err}", exc_info=True)
+                    raise
                 except Exception as log_err:
                     logger.warning(f"Activity log failed: {log_err}", exc_info=True)
 

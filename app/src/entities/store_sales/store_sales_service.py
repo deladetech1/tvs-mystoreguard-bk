@@ -1590,6 +1590,9 @@ class StoreSalesService:
                         bus_id=bus_id,
                         cursor=cursor
                     )
+                except (DatabaseError, IntegrityError) as log_db_err:
+                    logger.error(f"Database error during activity logging: {log_db_err}", exc_info=True)
+                    raise
                 except Exception as log_err:
                     logger.warning(f"Activity log failed: {log_err}", exc_info=True)
 
@@ -2442,6 +2445,9 @@ class StoreSalesService:
                         bus_id=bus_id,
                         cursor=cursor
                     )
+                except (DatabaseError, IntegrityError) as log_db_err:
+                    logger.error(f"Database error during activity logging: {log_db_err}", exc_info=True)
+                    raise
                 except Exception as log_err:
                     logger.warning(f"Activity log failed: {log_err}", exc_info=True)
 
@@ -2639,6 +2645,9 @@ class StoreSalesService:
                         bus_id=bus_id,
                         cursor=cursor
                     )
+                except (DatabaseError, IntegrityError) as log_db_err:
+                    logger.error(f"Database error during activity logging: {log_db_err}", exc_info=True)
+                    raise
                 except Exception as log_err:
                     logger.warning(f"Activity log failed: {log_err}", exc_info=True)
 
@@ -3079,7 +3088,7 @@ class StoreSalesService:
                     try:
                         ActivityLogService.log_activity(
                             tenant_id=tenant_id,
-                            resource_type="rt-store-sales-payments",
+                            resource_type="rt-store-sales",
                             resource_id=payment_id,
                             action="create",
                             old_data=None,
@@ -3090,8 +3099,16 @@ class StoreSalesService:
                             bus_id=bus_id,
                             cursor=cursor
                         )
+                    except (DatabaseError, IntegrityError) as log_db_err:
+                        # Do not swallow DB errors from shared transaction cursor.
+                        # The transaction is already marked aborted, so re-raise and rollback.
+                        logger.error(
+                            f"Database error while logging activity for payment {payment_id}: {log_db_err}",
+                            exc_info=True
+                        )
+                        raise
                     except Exception as log_err:
-                        # If logging fails due to transaction being aborted, log warning but don't fail payment
+                        # Non-database logging failures should not block payment creation.
                         logger.warning(f"Activity log failed for payment {payment_id}: {log_err}", exc_info=True)
 
                 # Update sale status based on total payments (only once after all payments are created)
@@ -3406,7 +3423,7 @@ class StoreSalesService:
                 try:
                     ActivityLogService.log_activity(
                         tenant_id=tenant_id,
-                        resource_type="rt-store-sales-payments",
+                        resource_type="rt-store-sales",
                         resource_id=payment_id,
                         action="update",
                         old_data=old_data,
@@ -3417,6 +3434,9 @@ class StoreSalesService:
                         bus_id=bus_id,
                         cursor=cursor
                     )
+                except (DatabaseError, IntegrityError) as log_db_err:
+                    logger.error(f"Database error during activity logging: {log_db_err}", exc_info=True)
+                    raise
                 except Exception as log_err:
                     logger.warning(f"Activity log failed: {log_err}", exc_info=True)
 
@@ -3530,7 +3550,7 @@ class StoreSalesService:
                 try:
                     ActivityLogService.log_activity(
                         tenant_id=tenant_id,
-                        resource_type="rt-store-sales-payments",
+                        resource_type="rt-store-sales",
                         resource_id=data.payment_id,
                         action="refund",
                         old_data=old_data,
@@ -3541,6 +3561,9 @@ class StoreSalesService:
                         bus_id=bus_id,
                         cursor=cursor
                     )
+                except (DatabaseError, IntegrityError) as log_db_err:
+                    logger.error(f"Database error during activity logging: {log_db_err}", exc_info=True)
+                    raise
                 except Exception as log_err:
                     logger.warning(f"Activity log failed: {log_err}", exc_info=True)
 
@@ -3826,6 +3849,9 @@ class StoreSalesService:
                         loc_id=loc_id,
                         cursor=cursor
                     )
+                except (DatabaseError, IntegrityError) as log_db_err:
+                    logger.error(f"Database error during activity logging: {log_db_err}", exc_info=True)
+                    raise
                 except Exception as log_err:
                     logger.warning(f"Activity log failed: {log_err}", exc_info=True)
 

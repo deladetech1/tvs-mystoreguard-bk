@@ -15,7 +15,8 @@ RUN pip install poetry
 # Configure Poetry: Don't create virtual environment, install dependencies globally
 ENV POETRY_NO_INTERACTION=1 \
     POETRY_VENV_IN_PROJECT=0 \
-    POETRY_CACHE_DIR=/tmp/poetry_cache
+    POETRY_CACHE_DIR=/tmp/poetry_cache \
+    POETRY_REQUESTS_TIMEOUT=120
 
 # Set work directory
 WORKDIR /app
@@ -24,8 +25,9 @@ WORKDIR /app
 COPY app/pyproject.toml app/poetry.lock ./
 
 # Install dependencies (including dev dependencies for non-prod)
+# Retry to tolerate transient network timeouts from package indexes.
 RUN poetry config virtualenvs.create false && \
-    poetry install && \
+    for i in 1 2 3; do poetry install && break || (echo "poetry install failed, retry $i/3" && sleep 10); done && \
     rm -rf $POETRY_CACHE_DIR
 
 # Copy application code from app directory

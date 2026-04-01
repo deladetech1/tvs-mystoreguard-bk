@@ -1950,7 +1950,7 @@ class PurchaseOrdersService:
                     success=True,
                     detail="Purchase orders retrieved successfully",
                     data=po_list,
-                    meta=pagination_meta,
+                    pagination=pagination_meta,
                 )
 
         except Exception as e:
@@ -2436,7 +2436,7 @@ class PurchaseOrdersService:
                     success=True,
                     detail="Purchase receipts retrieved successfully",
                     data=receipts_list,
-                    meta=pagination_meta,
+                    pagination=pagination_meta,
                 )
 
         except Exception as e:

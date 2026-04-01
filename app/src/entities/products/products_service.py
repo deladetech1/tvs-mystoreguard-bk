@@ -1522,7 +1522,7 @@ class ProductsService:
                     success=True,
                     detail="Products retrieved successfully",
                     data=product_list,
-                    meta=pagination_meta,
+                    pagination=pagination_meta,
                 )
 
         except Exception as e:

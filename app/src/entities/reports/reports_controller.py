@@ -1586,7 +1586,7 @@ def get_product_gross_profit_report(
     from_date: Optional[date] = Query(None, description="Start date for the report (YYYY-MM-DD)"),
     to_date: Optional[date] = Query(None, description="End date for the report (YYYY-MM-DD)"),
     location_ids: Optional[List[str]] = Query(None, description="List of location IDs to filter by. Can provide multiple values like ?location_ids=loc1&location_ids=loc2&location_ids=loc3"),
-    format: str = Query("DETAILED", description="Report format: SUMMARY, DETAILED, or GRAPHICAL"),
+    format: str = Query("SUMMARY", description="SUMMARY: one total (or per location); DETAILED: per product; GRAPHICAL: unchanged"),
     page: int = Query(1, ge=1, description="Page number for pagination"),
     size: int = Query(100, ge=1, le=1000, description="Page size for pagination"),
     product_ids: Optional[List[str]] = Query(None, description="Filter by list of product IDs. Can provide multiple values like ?product_ids=prod1&product_ids=prod2"),
@@ -1599,10 +1599,10 @@ def get_product_gross_profit_report(
 ):
     """
     Get product gross profit report.
-    
-    Shows gross profit per product calculated as: Revenue - Cost of Goods Sold (COGS)
-    Can filter by date range, locations (one or more), and specific products.
-    Supports grouping by location.
+
+    Default SUMMARY returns one rolled-up row (total revenue, cost, gross profit, margins) for the filter.
+    Use format=DETAILED for gross profit broken down by product.
+    Gross profit = Revenue - Cost of Goods Sold (COGS). Filters: date range, locations, products.
     
     To filter by multiple locations, use: ?location_ids=loc1&location_ids=loc2&location_ids=loc3
     To filter by multiple products, use: ?product_ids=prod1&product_ids=prod2&product_ids=prod3
@@ -1643,7 +1643,7 @@ def get_product_net_profit_report(
     from_date: Optional[date] = Query(None, description="Start date for the report (YYYY-MM-DD)"),
     to_date: Optional[date] = Query(None, description="End date for the report (YYYY-MM-DD)"),
     location_ids: Optional[List[str]] = Query(None, description="List of location IDs to filter by. Can provide multiple values like ?location_ids=loc1&location_ids=loc2&location_ids=loc3"),
-    format: str = Query("DETAILED", description="Report format: SUMMARY, DETAILED, or GRAPHICAL"),
+    format: str = Query("SUMMARY", description="SUMMARY: one total net/gross (or per location); DETAILED: per product"),
     page: int = Query(1, ge=1, description="Page number for pagination"),
     size: int = Query(100, ge=1, le=1000, description="Page size for pagination"),
     product_ids: Optional[List[str]] = Query(None, description="Filter by list of product IDs. Can provide multiple values like ?product_ids=prod1&product_ids=prod2"),
@@ -1657,11 +1657,10 @@ def get_product_net_profit_report(
 ):
     """
     Get product net profit report.
-    
-    Shows net profit per product calculated as: Gross Profit - Allocated Expenses
-    Expenses can be allocated proportionally by revenue or equally across products.
-    Can filter by date range, locations (one or more), and specific products.
-    Supports grouping by location.
+
+    Default SUMMARY returns one rolled-up row: totals after subtracting period expenses (net = gross - expenses).
+    Use format=DETAILED for net profit per product with allocated expenses.
+    Expenses: revenue-weighted or equal split when using group_by_location with SUMMARY.
     
     To filter by multiple locations, use: ?location_ids=loc1&location_ids=loc2&location_ids=loc3
     To filter by multiple products, use: ?product_ids=prod1&product_ids=prod2&product_ids=prod3

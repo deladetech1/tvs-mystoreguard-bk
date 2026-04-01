@@ -32,6 +32,7 @@ from src.configs.logging import get_logger
 from src.entities.filemanager.fmg_service import FileUploadService
 from src.utils.product_price_calculator import ProductPriceCalculator
 from trovesuite.utils import Helper
+from psycopg2 import DatabaseError, IntegrityError
 
 logger = get_logger("warehouse_products_service")
 
@@ -698,6 +699,9 @@ class WarehouseProductsService:
                         bus_id=bus_id,
                         cursor=cursor
                     )
+                except (DatabaseError, IntegrityError) as log_db_err:
+                    logger.error(f"Database error during activity logging: {log_db_err}", exc_info=True)
+                    raise
                 except Exception as log_err:
                     logger.warning(f"Activity log failed: {log_err}", exc_info=True)
 
@@ -1111,6 +1115,9 @@ class WarehouseProductsService:
                         bus_id=bus_id,
                         cursor=cursor
                     )
+                except (DatabaseError, IntegrityError) as log_db_err:
+                    logger.error(f"Database error during activity logging: {log_db_err}", exc_info=True)
+                    raise
                 except Exception as log_err:
                     logger.warning(f"Activity log failed: {log_err}", exc_info=True)
 
@@ -1419,6 +1426,9 @@ class WarehouseProductsService:
                         bus_id=bus_id,
                         cursor=cursor
                     )
+                except (DatabaseError, IntegrityError) as log_db_err:
+                    logger.error(f"Database error during activity logging: {log_db_err}", exc_info=True)
+                    raise
                 except Exception as log_err:
                     logger.warning(f"Activity log failed: {log_err}", exc_info=True)
 
@@ -2147,7 +2157,7 @@ class WarehouseProductsService:
                     success=True,
                     detail="Warehouse products retrieved successfully",
                     data=sp_list,
-                    meta=pagination_meta,
+                    pagination=pagination_meta,
                 )
 
         except Exception as e:
@@ -2276,6 +2286,9 @@ class WarehouseProductsService:
                         bus_id=bus_id,
                         cursor=cursor
                     )
+                except (DatabaseError, IntegrityError) as log_db_err:
+                    logger.error(f"Database error during activity logging: {log_db_err}", exc_info=True)
+                    raise
                 except Exception as log_err:
                     logger.warning(f"Activity log failed: {log_err}", exc_info=True)
 
@@ -2428,6 +2441,9 @@ class WarehouseProductsService:
                         bus_id=bus_id,
                         cursor=cursor
                     )
+                except (DatabaseError, IntegrityError) as log_db_err:
+                    logger.error(f"Database error during activity logging: {log_db_err}", exc_info=True)
+                    raise
                 except Exception as log_err:
                     logger.warning(f"Activity log failed: {log_err}", exc_info=True)
 
@@ -2656,6 +2672,9 @@ class WarehouseProductsService:
                         bus_id=bus_id,
                         cursor=cursor
                     )
+                except (DatabaseError, IntegrityError) as log_db_err:
+                    logger.error(f"Database error during activity logging: {log_db_err}", exc_info=True)
+                    raise
                 except Exception as log_err:
                     logger.warning(f"Activity log failed: {log_err}", exc_info=True)
 
