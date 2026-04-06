@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional
 from src.utils.auth import CustomAuthService, get_org_bus_loc_with_permission, verify_subscription_active
+from src.utils.backdate import resolve_backdate
 from src.entities.store_sales.store_sales_service import StoreSalesService
 from src.entities.store_sales.store_sales_write_dto import (
     CreateSaleControllerWriteDto,
@@ -76,6 +77,7 @@ def create_sale(
             )
             raise HTTPException(status_code=403, detail="Unauthorized access")
 
+        resolved_dt = resolve_backdate(getattr(data, "occurred_at", None), current_user)
         service_result = StoreSalesService.create_sale(
             data=data,
             tenant_id=current_user.data[0].tenant_id,
@@ -83,6 +85,7 @@ def create_sale(
             bus_id=org_bus_loc["bus_id"],
             loc_id=org_bus_loc["loc_id"],
             created_by=current_user.data[0].user_id,
+            occurred_at=resolved_dt,
         )
 
         if service_result.success:

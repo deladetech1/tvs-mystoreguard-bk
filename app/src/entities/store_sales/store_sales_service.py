@@ -232,7 +232,8 @@ class StoreSalesService:
         org_id: str,
         bus_id: str,
         loc_id: str,
-        created_by: str
+        created_by: str,
+        occurred_at: Optional[dict] = None,
     ) -> Respons[CreateSaleServiceReadDto]:
         """Create a new sale with FIFO inventory deduction"""
         logger.info(
@@ -249,9 +250,10 @@ class StoreSalesService:
             },
         )
 
-        cdate = Helper.current_date_time()["cdate"]
-        ctime = Helper.current_date_time()["ctime"]
-        cdatetime = Helper.current_date_time()["cdatetime"]
+        dt = occurred_at if occurred_at is not None else Helper.current_date_time()
+        cdate = dt["cdate"]
+        ctime = dt["ctime"]
+        cdatetime = dt["cdatetime"]
 
         try:
             with DatabaseManager.transaction() as cursor:

@@ -36,6 +36,8 @@ class CreateSaleWriteBase(BaseModel):
     verified_promo_code_id: Optional[str] = Field(None, description="Promo code ID from verify_price")
     verified_gift_card_id: Optional[str] = Field(None, description="Gift card ID from verify_price")
     verified_affiliate_id: Optional[str] = Field(None, description="Affiliate ID from verify_price")
+    # Backdating: owners, admins, and mystoreguard admins only
+    occurred_at: Optional[str] = Field(None, description="Backdate the sale to this datetime (owners, admins, and mystoreguard admins only). Accepts ISO format (2025-01-02T10:00:00), date only (2025-01-02), or natural language (2 January 2025). Ignored for users without the required role.")
 
 
 class CreateSaleControllerWriteDto(CreateSaleWriteBase):
