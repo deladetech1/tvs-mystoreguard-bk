@@ -2,6 +2,22 @@
   "IsEncrypted": false,
   "Values": {
     "FUNCTIONS_WORKER_RUNTIME": "python",
-    "AzureWebJobsStorage": "UseDevelopmentStorage=true"
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "DB_URL": "postgresql://user:password@host:5432/dbname",
+    "MAIL_SENDER_EMAIL": "",
+    "MAIL_SENDER_PWD": "",
+    "MSG_STORE_CONFIGS_TABLE": "mystoreguard.msg_store_configs",
+    "MSG_WAREHOUSE_CONFIGS_TABLE": "mystoreguard.msg_warehouse_configs",
+    "MSG_STORE_PRODUCTS_TABLE": "mystoreguard.msg_store_products",
+    "MSG_WAREHOUSE_PRODUCTS_TABLE": "mystoreguard.msg_warehouse_products",
+    "MSG_PRODUCTS_TABLE": "mystoreguard.msg_products",
+    "MSG_SALES_TABLE": "mystoreguard.msg_sales",
+    "MSG_SALES_ITEMS_TABLE": "mystoreguard.msg_sales_items",
+    "MSG_SALES_PAYMENTS_TABLE": "mystoreguard.msg_sales_payments",
+    "MSG_CUSTOMERS_TABLE": "mystoreguard.msg_customers",
+    "CP_NOTIFICATION_EMAIL_CREDENTIALS_TABLE": "core_platform.cp_notification_email_credentials",
+    "CP_LOCATIONS_TABLE": "core_platform.cp_locations",
+    "CP_USERS_TABLE": "core_platform.cp_users",
+    "CP_ASSIGN_ROLES_TABLE": "core_platform.cp_assign_roles"
   }
 }

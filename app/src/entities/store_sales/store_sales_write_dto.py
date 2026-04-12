@@ -16,7 +16,7 @@ from src.entities.store_sales.store_sales_base import (
 class CreateSaleWriteBase(BaseModel):
     """Base write DTO for creating a sale"""
     customer_id: Optional[str] = Field(None, description="Customer ID (optional)")
-    sale_date: str = Field(..., description="Sale date (YYYY-MM-DD)")
+    sale_date: Optional[str] = Field(None, description="Sale date (YYYY-MM-DD). If omitted and occurred_at is provided, defaults to the date portion of occurred_at.")
     status: Optional[SaleStatusType] = Field(None, description="Sale status. If not provided, will be determined automatically based on sale_mode and payments. If ON_HOLD is explicitly provided, no payments will be processed and inventory will not be deducted.")
     sale_mode: str = Field(default='INSTANT', description="Sale mode: INSTANT, DEPOSIT, or CREDIT")
     description: Optional[str] = Field(None, description="Sale description/notes")

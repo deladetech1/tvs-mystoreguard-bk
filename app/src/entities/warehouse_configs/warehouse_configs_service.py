@@ -93,6 +93,17 @@ class WarehouseConfigsService:
                     update_fields.append("change_to_card = %s")
                     params.append(data.change_to_card)
 
+                    update_fields.append("enable_out_of_stock_notification = %s")
+                    params.append(data.enable_out_of_stock_notification)
+
+                    # Optional fields - only update if not None
+                    if data.out_of_stock_notification_email is not None:
+                        update_fields.append("out_of_stock_notification_email = %s")
+                        params.append(data.out_of_stock_notification_email)
+                    if data.out_of_stock_notification_occurrence is not None:
+                        update_fields.append("out_of_stock_notification_occurrence = %s")
+                        params.append(data.out_of_stock_notification_occurrence)
+
                     update_fields.append("updated_by = %s")
                     params.append(user_id)
                     params.extend([tenant_id, org_id, bus_id, loc_id])
@@ -190,14 +201,16 @@ class WarehouseConfigsService:
                         (id, tenant_id, org_id, bus_id, loc_id, warehouse_name, description,
                          aadress, is_active, manager_id,
                          openning_time, closing_time, change_to_card,
+                         enable_out_of_stock_notification, out_of_stock_notification_email, out_of_stock_notification_occurrence,
                          cdate, ctime, cdatetime, created_by)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         RETURNING *""",
                         (
                             config_id, tenant_id, org_id, bus_id, loc_id,
                             data.warehouse_name, data.description,
                             data.aadress, data.is_active, data.manager_id,
                             data.openning_time, data.closing_time, data.change_to_card,
+                            data.enable_out_of_stock_notification, data.out_of_stock_notification_email, data.out_of_stock_notification_occurrence,
                             cdate, ctime, cdatetime, user_id
                         ),
                     )

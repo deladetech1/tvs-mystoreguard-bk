@@ -1,10 +1,13 @@
 from typing import Optional
+from datetime import date, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 from src.entities.customers.customers_read_dto import (
     CreateCustomerServiceReadDto,
     UpdateCustomerServiceReadDto,
     DeleteCustomerServiceReadDto,
     GetCustomerServiceReadDto,
     GetCustomersServiceReadDto,
+    CustomerStatsOverviewReadDto,
 )
 from src.entities.customers.customers_write_dto import (
     CreateCustomerServiceWriteDto,
@@ -594,6 +597,51 @@ class CustomersService:
             return Respons(
                 success=False,
                 detail=f"Failed to delete customer: {str(e)}",
+                error="INTERNAL_ERROR",
+            )
+
+    @staticmethod
+    def get_stats_overview(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+    ) -> Respons[CustomerStatsOverviewReadDto]:
+        """Get customer overview statistics"""
+        try:
+            with DatabaseManager.transaction() as cursor:
+                cursor.execute(
+                    f"""SELECT
+                        COUNT(*) as total_customers,
+                        COUNT(*) FILTER (WHERE is_active = true) as active_customers,
+                        COUNT(*) FILTER (WHERE is_active = false) as inactive_customers,
+                        COUNT(*) FILTER (WHERE cdate >= %s) as recently_added
+                    FROM {db_settings.MSG_CUSTOMERS_TABLE}
+                    WHERE tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                    (
+                        (date.today() - timedelta(days=30)).isoformat(),
+                        tenant_id, org_id, bus_id,
+                    ),
+                )
+                row = cursor.fetchone()
+
+                stats = CustomerStatsOverviewReadDto(
+                    total_customers=row['total_customers'] if row else 0,
+                    active_customers=row['active_customers'] if row else 0,
+                    inactive_customers=row['inactive_customers'] if row else 0,
+                    recently_added=row['recently_added'] if row else 0,
+                )
+
+                return Respons(
+                    success=True,
+                    detail="Customer statistics retrieved successfully",
+                    data=[stats],
+                )
+
+        except Exception as e:
+            logger.error(f"Error getting customer stats: {str(e)}", exc_info=True)
+            return Respons(
+                success=False,
+                detail=f"Failed to get customer stats: {str(e)}",
                 error="INTERNAL_ERROR",
             )
 

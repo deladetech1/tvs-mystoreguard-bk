@@ -21,10 +21,30 @@ from src.configs.database import DatabaseManager
 from src.configs.logging import get_logger
 from trovesuite.utils import Helper
 import smtplib
+import threading
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 logger = get_logger("store_transfers_service")
+
+
+def _do_send_email(to_email: str, subject: str, body: str, mail_sender_email: str, mail_sender_pwd: str):
+    """Actually send the email via SMTP (runs in background thread)"""
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = mail_sender_email
+        msg['To'] = to_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'html'))
+
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(mail_sender_email, mail_sender_pwd)
+        server.send_message(msg)
+        server.quit()
+        logger.info(f"Email sent successfully to {to_email}")
+    except Exception as e:
+        logger.error(f"Failed to send email: {str(e)}", exc_info=True)
 
 
 def _send_email_notification(
@@ -33,12 +53,12 @@ def _send_email_notification(
     body: str,
     tenant_id: str
 ) -> bool:
-    """Send email notification to approver"""
+    """Send email notification to approver in a background thread"""
     try:
         if not to_email:
             logger.warning("No email address provided for notification")
             return False
-            
+
         logger.info(
             f"Sending email notification",
             extra={
@@ -49,29 +69,20 @@ def _send_email_notification(
                 }
             }
         )
-        
+
         # Get email credentials (tenant-specific or system default)
         mail_sender_email, mail_sender_pwd = Helper.get_email_credentials(tenant_id)
-        
-        # If email credentials are available, send email
+
+        # If email credentials are available, send email in background thread
         if mail_sender_email and mail_sender_pwd:
-            try:
-                msg = MIMEMultipart()
-                msg['From'] = mail_sender_email
-                msg['To'] = to_email
-                msg['Subject'] = subject
-                msg.attach(MIMEText(body, 'html'))
-                
-                server = smtplib.SMTP('smtp.gmail.com', 587)
-                server.starttls()
-                server.login(mail_sender_email, mail_sender_pwd)
-                server.send_message(msg)
-                server.quit()
-                logger.info(f"Email sent successfully to {to_email}")
-                return True
-            except Exception as e:
-                logger.error(f"Failed to send email: {str(e)}", exc_info=True)
-                return False
+            thread = threading.Thread(
+                target=_do_send_email,
+                args=(to_email, subject, body, mail_sender_email, mail_sender_pwd),
+                daemon=True
+            )
+            thread.start()
+            logger.info(f"Email notification queued for {to_email}")
+            return True
         else:
             logger.warning(
                 "Email credentials not configured. Email notification not sent.",
@@ -309,8 +320,8 @@ class StoreTransfersService:
                     f"""INSERT INTO {db_settings.MSG_PRODUCT_TRANSFERS_TABLE}
                     (id, tenant_id, org_id, bus_id, source, source_id, destination, destination_id,
                      product_id, qty, status, transfer_number, person_to_approve_id, description,
-                     cdatetime, created_by)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     cdate, ctime, cdatetime, created_by)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING *""",
                     (
                         transfer_id, tenant_id, org_id, bus_id,
@@ -318,7 +329,7 @@ class StoreTransfersService:
                         data.destination_type, data.destination_id,
                         data.product_id, data.qty, 'PENDING_APPROVAL', transfer_number,
                         data.person_to_approve_id, data.description,
-                        cdatetime, created_by
+                        cdate, ctime, cdatetime, created_by
                     ),
                 )
                 transfer = cursor.fetchone()

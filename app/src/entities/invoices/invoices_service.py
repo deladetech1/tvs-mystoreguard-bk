@@ -639,19 +639,6 @@ class InvoicesService:
                                 (float(new_batch_qty), batch_location_id, tenant_id, org_id, bus_id),
                             )
                             
-                            # Recalculate purchase batch qty_remaining from batch_locations
-                            cursor.execute(
-                                f"""UPDATE {db_settings.MSG_PURCHASE_BATCHES_TABLE}
-                                SET qty_remaining = (
-                                    SELECT COALESCE(SUM(qty), 0)
-                                    FROM {db_settings.MSG_BATCH_LOCATIONS_TABLE}
-                                    WHERE purchase_batche_id = %s 
-                                    AND tenant_id = %s AND org_id = %s AND bus_id = %s
-                                ), updated_by = %s
-                                WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
-                                (batch_id, tenant_id, org_id, bus_id, created_by, batch_id, tenant_id, org_id, bus_id),
-                            )
-                            
                             batch_allocations.append({
                                 'batch_id': batch_id,
                                 'qty_deducted': float(qty_to_deduct)
@@ -1087,19 +1074,6 @@ class InvoicesService:
                                     (float(quantity), batch_id, tenant_id, org_id, bus_id, loc_id),
                                 )
                                 
-                                # Recalculate purchase batch qty_remaining from batch_locations to ensure consistency
-                                cursor.execute(
-                                    f"""UPDATE {db_settings.MSG_PURCHASE_BATCHES_TABLE}
-                                    SET qty_remaining = (
-                                        SELECT COALESCE(SUM(qty), 0)
-                                        FROM {db_settings.MSG_BATCH_LOCATIONS_TABLE}
-                                        WHERE purchase_batche_id = %s 
-                                        AND tenant_id = %s AND org_id = %s AND bus_id = %s
-                                    ), updated_by = %s
-                                    WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
-                                    (batch_id, tenant_id, org_id, bus_id, updated_by, batch_id, tenant_id, org_id, bus_id),
-                                )
-                            
                             # Restore store product current_qty
                             cursor.execute(
                                 f"""UPDATE {db_settings.MSG_STORE_PRODUCTS_TABLE}
@@ -1360,19 +1334,6 @@ class InvoicesService:
                                     SET qty = %s
                                     WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
                                     (float(new_batch_qty), batch_location_id, tenant_id, org_id, bus_id),
-                                )
-                                
-                                # Recalculate purchase batch qty_remaining from batch_locations
-                                cursor.execute(
-                                    f"""UPDATE {db_settings.MSG_PURCHASE_BATCHES_TABLE}
-                                    SET qty_remaining = (
-                                        SELECT COALESCE(SUM(qty), 0)
-                                        FROM {db_settings.MSG_BATCH_LOCATIONS_TABLE}
-                                        WHERE purchase_batche_id = %s 
-                                        AND tenant_id = %s AND org_id = %s AND bus_id = %s
-                                    ), updated_by = %s
-                                    WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
-                                    (batch_id, tenant_id, org_id, bus_id, updated_by, batch_id, tenant_id, org_id, bus_id),
                                 )
                                 
                                 batch_allocations.append({
@@ -2094,19 +2055,6 @@ class InvoicesService:
                                 (float(quantity), batch_id, tenant_id, org_id, bus_id, loc_id),
                             )
                             
-                            # Recalculate purchase batch qty_remaining from batch_locations to ensure consistency
-                        cursor.execute(
-                            f"""UPDATE {db_settings.MSG_PURCHASE_BATCHES_TABLE}
-                            SET qty_remaining = (
-                                SELECT COALESCE(SUM(qty), 0)
-                                FROM {db_settings.MSG_BATCH_LOCATIONS_TABLE}
-                                WHERE purchase_batche_id = %s 
-                                AND tenant_id = %s AND org_id = %s AND bus_id = %s
-                            ), updated_by = %s
-                            WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
-                            (batch_id, tenant_id, org_id, bus_id, deleted_by, batch_id, tenant_id, org_id, bus_id),
-                        )
-
                         # Restore store product current_qty
                         cursor.execute(
                             f"""UPDATE {db_settings.MSG_STORE_PRODUCTS_TABLE}

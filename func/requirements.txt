@@ -5,3 +5,4 @@
 azure-functions
 azure-storage-queue
 psycopg2-binary
+reportlab
