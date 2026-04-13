@@ -154,7 +154,7 @@ jobs:
           subscription-id: ${{ steps.env.outputs.subscription_id }}
 
       - name: Deploy Azure Functions
-        uses: azure/functions-action@v2
+        uses: azure/functions-action@v1
         with:
           app-name: ${{ steps.env.outputs.function_app_name }}
           package: func
