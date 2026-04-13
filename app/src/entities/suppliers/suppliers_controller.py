@@ -13,6 +13,7 @@ from src.entities.suppliers.suppliers_read_dto import (
     DeleteSupplierControllerReadDto,
     GetSupplierControllerReadDto,
     GetSuppliersControllerReadDto,
+    SupplierStatsOverviewReadDto,
 )
 from src.entities.shared.sh_response import Respons
 from src.configs.logging import get_logger
@@ -397,6 +398,54 @@ def delete_supplier(
             org_id=org_bus_loc["org_id"],
             bus_id=org_bus_loc["bus_id"],
             deleted_by=current_user.data[0].user_id,
+        )
+
+        return service_result
+
+
+# 6. Supplier Stats
+@suppliers_router.get("/stats", response_model=Respons[SupplierStatsOverviewReadDto])
+def get_supplier_stats(
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
+):
+    """Get supplier statistics: total, active, inactive, recently added"""
+    with LogContext(
+        "suppliers",
+        "get_supplier_stats",
+        tenant_id=current_user.data[0].tenant_id,
+    ):
+        logger.info(
+            "Processing supplier stats request",
+            extra={
+                "extra_fields": {
+                    "endpoint": "/suppliers/stats",
+                }
+            },
+        )
+
+        is_authorized = AuthService.has_any_permission(
+            user_roles=current_user.data,
+            required_permissions=["permission-msg-suppliers-get"]
+        )
+
+        if not is_authorized:
+            logger.warning(
+                "Supplier stats failed - unauthorized access",
+                extra={
+                    "extra_fields": {
+                        "endpoint": "/suppliers/stats",
+                        "error": "Unauthorized access",
+                        "status": "failed",
+                    }
+                },
+            )
+            raise HTTPException(status_code=403, detail="Unauthorized access")
+
+        service_result = SuppliersService.get_stats_overview(
+            tenant_id=current_user.data[0].tenant_id,
+            org_id=org_bus_loc["org_id"],
+            bus_id=org_bus_loc["bus_id"],
         )
 
         return service_result

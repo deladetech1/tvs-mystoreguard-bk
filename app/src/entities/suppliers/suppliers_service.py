@@ -1,10 +1,13 @@
 from typing import Optional
+from datetime import date, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 from src.entities.suppliers.suppliers_read_dto import (
     CreateSupplierServiceReadDto,
     UpdateSupplierServiceReadDto,
     DeleteSupplierServiceReadDto,
     GetSupplierServiceReadDto,
     GetSuppliersServiceReadDto,
+    SupplierStatsOverviewReadDto,
 )
 from src.entities.suppliers.suppliers_write_dto import (
     CreateSupplierServiceWriteDto,
@@ -617,6 +620,51 @@ class SuppliersService:
             return Respons(
                 success=False,
                 detail=f"Failed to delete supplier: {str(e)}",
+                error="INTERNAL_ERROR",
+            )
+
+    @staticmethod
+    def get_stats_overview(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+    ) -> Respons[SupplierStatsOverviewReadDto]:
+        """Get supplier overview statistics"""
+        try:
+            with DatabaseManager.transaction() as cursor:
+                cursor.execute(
+                    f"""SELECT
+                        COUNT(*) as total_suppliers,
+                        COUNT(*) FILTER (WHERE is_active = true) as active_suppliers,
+                        COUNT(*) FILTER (WHERE is_active = false) as inactive_suppliers,
+                        COUNT(*) FILTER (WHERE cdate >= %s) as recently_added
+                    FROM {db_settings.MSG_SUPPLIERS_TABLE}
+                    WHERE tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                    (
+                        (date.today() - timedelta(days=30)).isoformat(),
+                        tenant_id, org_id, bus_id,
+                    ),
+                )
+                row = cursor.fetchone()
+
+                stats = SupplierStatsOverviewReadDto(
+                    total_suppliers=row['total_suppliers'] if row else 0,
+                    active_suppliers=row['active_suppliers'] if row else 0,
+                    inactive_suppliers=row['inactive_suppliers'] if row else 0,
+                    recently_added=row['recently_added'] if row else 0,
+                )
+
+                return Respons(
+                    success=True,
+                    detail="Supplier statistics retrieved successfully",
+                    data=[stats],
+                )
+
+        except Exception as e:
+            logger.error(f"Error getting supplier stats: {str(e)}", exc_info=True)
+            return Respons(
+                success=False,
+                detail=f"Failed to get supplier stats: {str(e)}",
                 error="INTERNAL_ERROR",
             )
 

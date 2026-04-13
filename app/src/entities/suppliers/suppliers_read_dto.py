@@ -1,5 +1,6 @@
-from typing import Optional
-from datetime import datetime
+from typing import Optional, List
+from datetime import datetime, date
+from decimal import Decimal
 from pydantic import BaseModel, Field
 from src.entities.suppliers.suppliers_base import (
     SupplierBase,
@@ -79,4 +80,16 @@ class DeleteSupplierControllerReadDto(DeleteSupplierReadBase):
 class DeleteSupplierServiceReadDto(DeleteSupplierReadBase):
     """Service DTO for delete supplier read operations"""
     pass
+
+
+# =====================================================
+# SUPPLIER STATISTICS READ DTOs
+# =====================================================
+
+class SupplierStatsOverviewReadDto(BaseModel):
+    """Overview statistics for suppliers"""
+    total_suppliers: int = 0
+    active_suppliers: int = 0
+    inactive_suppliers: int = 0
+    recently_added: int = 0
 

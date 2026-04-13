@@ -209,12 +209,26 @@ class StoreConfigsService:
                     params.append(data.enable_auto_stock_take)
                     update_fields.append("num_of_days_to_take_stock = %s")
                     params.append(data.num_of_days_to_take_stock)
-                    update_fields.append("enable_daily_reports = %s")
-                    params.append(data.enable_daily_reports)
+                    update_fields.append("enable_daily_sales_reports = %s")
+                    params.append(data.enable_daily_sales_reports)
                     update_fields.append("lock_based_on_closing_time = %s")
                     params.append(data.lock_based_on_closing_time)
                     update_fields.append("change_to_card = %s")
                     params.append(data.change_to_card)
+
+                    update_fields.append("enable_out_of_stock_notification = %s")
+                    params.append(data.enable_out_of_stock_notification)
+
+                    # Optional fields - only update if not None
+                    if data.out_of_stock_notification_email is not None:
+                        update_fields.append("out_of_stock_notification_email = %s")
+                        params.append(data.out_of_stock_notification_email)
+                    if data.out_of_stock_notification_occurrence is not None:
+                        update_fields.append("out_of_stock_notification_occurrence = %s")
+                        params.append(data.out_of_stock_notification_occurrence)
+                    if data.sales_items_notification_email is not None:
+                        update_fields.append("sales_notification_emails = %s")
+                        params.append(data.sales_items_notification_email)
 
                     update_fields.append("updated_by = %s")
                     params.append(user_id)
@@ -270,6 +284,7 @@ class StoreConfigsService:
                         config_dict['manager'] = None
                         config_dict['next_stock_take_datetime'] = None
 
+                    config_dict['sales_items_notification_email'] = config_dict.pop('sales_notification_emails', None)
                     config_read = CreateOrUpdateStoreConfigServiceReadDto(**config_dict)
 
                     # Log activity
@@ -345,16 +360,20 @@ class StoreConfigsService:
                         (id, tenant_id, org_id, bus_id, loc_id, store_name, description,
                          is_visible_on_ecommerce, address, is_active, manager_id,
                          enable_auto_stock_take, num_of_days_to_take_stock,
-                         enable_daily_reports, openning_time, closing_time, lock_based_on_closing_time, change_to_card,
+                         enable_daily_sales_reports, openning_time, closing_time, lock_based_on_closing_time, change_to_card,
+                         enable_out_of_stock_notification, out_of_stock_notification_email, out_of_stock_notification_occurrence,
+                         sales_notification_emails,
                          cdate, ctime, cdatetime, created_by)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         RETURNING *""",
                         (
                             config_id, tenant_id, org_id, bus_id, loc_id,
                             data.store_name, data.description,
                             data.is_visible_on_ecommerce, data.address, data.is_active, data.manager_id,
                             data.enable_auto_stock_take, data.num_of_days_to_take_stock,
-                            data.enable_daily_reports, data.openning_time, data.closing_time, data.lock_based_on_closing_time, data.change_to_card,
+                            data.enable_daily_sales_reports, data.openning_time, data.closing_time, data.lock_based_on_closing_time, data.change_to_card,
+                            data.enable_out_of_stock_notification, data.out_of_stock_notification_email, data.out_of_stock_notification_occurrence,
+                            data.sales_items_notification_email,
                             cdate, ctime, cdatetime, user_id
                         ),
                     )
@@ -403,6 +422,7 @@ class StoreConfigsService:
                         config_dict['manager'] = None
                         config_dict['next_stock_take_datetime'] = None
 
+                    config_dict['sales_items_notification_email'] = config_dict.pop('sales_notification_emails', None)
                     # Create DTO
                     try:
                         config_read = CreateOrUpdateStoreConfigServiceReadDto(**config_dict)
@@ -546,6 +566,7 @@ class StoreConfigsService:
                 config_dict['deleted_by'] = config_dict.get('deleted_by') or None
                 config_dict['manager'] = config_dict.get('manager') or None
                 config_dict['next_stock_take_datetime'] = config_dict.get('next_stock_take_datetime') or None
+                config_dict['sales_items_notification_email'] = config_dict.pop('sales_notification_emails', None)
                 config_read = GetStoreConfigServiceReadDto(**config_dict)
 
                 return Respons(

@@ -371,118 +371,101 @@ class ProductPriceCalculator:
             rule_conditions.append(f"({' OR '.join(target_conditions)})")
             where_clause = " AND ".join(rule_conditions)
             
+            # Order by specificity first, then priority within same specificity
+            # Specificity: SKU (1) > PRODUCT (2) > TAG (3) > LABEL (3) > CATEGORY (3) > BRAND (3) > LOCATION (4) > ALL_PRODUCTS (5)
+            # Only the single most specific, highest priority rule is applied
             cursor.execute(
                 f"""SELECT id, name, rule_type, rule_category, rule_target_type, rule_target_id,
                        discount_value, discount_percent,
                        quantity_min, quantity_max, free_qty, stops_other_rules, priority
                 FROM {db_settings.MSG_PRICING_RULES_TABLE}
                 WHERE {where_clause}
-                ORDER BY priority DESC, cdatetime DESC""",
+                ORDER BY
+                    priority DESC,
+                    CASE rule_target_type
+                        WHEN 'SKU' THEN 1
+                        WHEN 'PRODUCT' THEN 2
+                        WHEN 'TAG' THEN 3
+                        WHEN 'LABEL' THEN 3
+                        WHEN 'CATEGORY' THEN 3
+                        WHEN 'BRAND' THEN 3
+                        WHEN 'LOCATION' THEN 4
+                        WHEN 'ALL_PRODUCTS' THEN 5
+                    END,
+                    cdatetime DESC
+                LIMIT 1""",
                 tuple(params)
             )
-            rules = cursor.fetchall()
-            
-            if not rules:
+            rule = cursor.fetchone()
+
+            no_rule_result = {
+                'rule_id': None,
+                'rule_name': None,
+                'rule_type': None,
+                'rule_category': None,
+                'rule_target_type': None,
+                'rule_target_id': None,
+                'price_before': None,
+                'price_after': None,
+                'adjustment': None,
+                'priority': None
+            }
+
+            if not rule:
                 return {
                     'price': round_money(base_price),
-                    'pricing_rule_applied': {
-                        'rule_id': None,
-                        'rule_name': None,
-                        'rule_type': None,
-                        'rule_category': None,
-                        'rule_target_type': None,
-                        'rule_target_id': None,
-                        'price_before': None,
-                        'price_after': None,
-                        'adjustment': None,
-                        'priority': None
-                    }
+                    'pricing_rule_applied': no_rule_result
                 }
-            
-            # Keep full precision during calculations - round only at the end
+
+            # Skip quantity-based rules (they are only applied in SalesPriceCalculator)
+            if rule['rule_category'] == 'QUANTITY_BASED':
+                return {
+                    'price': round_money(base_price),
+                    'pricing_rule_applied': no_rule_result
+                }
+
+            # Apply the single selected rule
             result_price = base_price
-            primary_rule_applied = None
-            
-            for rule in rules:
-                # Skip quantity-based rules (they are only applied in SalesPriceCalculator)
-                # This includes QUANTITY_BASED category and QUANTITY_BREAK rule type
-                if rule['rule_category'] == 'QUANTITY_BASED':
-                    continue
-                
-                rule_type = rule['rule_type']
-                rule_id = rule.get('id')
-                rule_name = rule.get('name')
-                rule_category = rule.get('rule_category')
-                rule_target_type = rule.get('rule_target_type')
-                rule_target_id = rule.get('rule_target_id')
-                price_before_rule = result_price
-                
-                if rule_type == 'FIXED_PRICE':
-                    result_price = max(Decimal('0'), Decimal(str(rule['discount_value'])))
-                
-                elif rule_type == 'FIXED_AMOUNT':
-                    discount = Decimal(str(rule['discount_value']))
-                    result_price = max(Decimal('0'), result_price - discount)
-                
-                elif rule_type == 'PRICE_DISCOUNT':
-                    discount = Decimal(str(rule['discount_value']))
-                    result_price = max(Decimal('0'), result_price - discount)
-                
-                elif rule_type == 'PERCENTAGE_DISCOUNT':
-                    # Use full precision for percentage calculations
-                    discount_percent = Decimal(str(rule['discount_percent']))
-                    discount_amount = (result_price * discount_percent) / Decimal('100')
-                    result_price = max(Decimal('0'), result_price - discount_amount)
-                
-                elif rule_type == 'PRICE_MARKUP':
-                    markup = Decimal(str(rule['discount_value']))
-                    result_price = result_price + markup
-                
-                elif rule_type == 'PERCENTAGE_MARKUP':
-                    # Use full precision for percentage calculations
-                    markup_percent = Decimal(str(rule['discount_percent']))
-                    markup_amount = (result_price * markup_percent) / Decimal('100')
-                    result_price = result_price + markup_amount
-                
-                elif rule_type == 'QUANTITY_BREAK':
-                    # Skip QUANTITY_BREAK rules (they are only applied in SalesPriceCalculator)
-                    continue
-                
-                elif rule_type in ['BUNDLE', 'BOGO']:
-                    continue
-                
-                # Track the first rule that actually changed the price (use rounded values for comparison)
-                if round_money(price_before_rule) != round_money(result_price) and primary_rule_applied is None:
-                    primary_rule_applied = {
-                        'rule_id': rule_id,
-                        'rule_name': rule_name,
-                        'rule_type': rule_type,
-                        'rule_category': rule_category,
-                        'rule_target_type': rule_target_type,
-                        'rule_target_id': rule_target_id,
-                        'price_before': float(round_money(price_before_rule)),
-                        'price_after': float(round_money(result_price)),
-                        'adjustment': float(round_money(result_price - price_before_rule)),
-                        'priority': rule.get('priority', 0)
-                    }
-                
-                if rule.get('stops_other_rules'):
-                    break
-            
-            if primary_rule_applied is None:
-                primary_rule_applied = {
-                    'rule_id': None,
-                    'rule_name': None,
-                    'rule_type': None,
-                    'rule_category': None,
-                    'rule_target_type': None,
-                    'rule_target_id': None,
-                    'price_before': None,
-                    'price_after': None,
-                    'adjustment': None,
-                    'priority': None
-                }
-            
+            rule_type = rule['rule_type']
+
+            if rule_type == 'FIXED_PRICE':
+                result_price = max(Decimal('0'), Decimal(str(rule['discount_value'])))
+
+            elif rule_type == 'FIXED_AMOUNT':
+                discount = Decimal(str(rule['discount_value']))
+                result_price = max(Decimal('0'), result_price - discount)
+
+            elif rule_type == 'PRICE_DISCOUNT':
+                discount = Decimal(str(rule['discount_value']))
+                result_price = max(Decimal('0'), result_price - discount)
+
+            elif rule_type == 'PERCENTAGE_DISCOUNT':
+                discount_percent = Decimal(str(rule['discount_percent']))
+                discount_amount = (result_price * discount_percent) / Decimal('100')
+                result_price = max(Decimal('0'), result_price - discount_amount)
+
+            elif rule_type == 'PRICE_MARKUP':
+                markup = Decimal(str(rule['discount_value']))
+                result_price = result_price + markup
+
+            elif rule_type == 'PERCENTAGE_MARKUP':
+                markup_percent = Decimal(str(rule['discount_percent']))
+                markup_amount = (result_price * markup_percent) / Decimal('100')
+                result_price = result_price + markup_amount
+
+            primary_rule_applied = {
+                'rule_id': rule.get('id'),
+                'rule_name': rule.get('name'),
+                'rule_type': rule_type,
+                'rule_category': rule.get('rule_category'),
+                'rule_target_type': rule.get('rule_target_type'),
+                'rule_target_id': rule.get('rule_target_id'),
+                'price_before': float(round_money(base_price)),
+                'price_after': float(round_money(result_price)),
+                'adjustment': float(round_money(result_price - base_price)),
+                'priority': rule.get('priority', 0)
+            }
+
             # Round only at the end after all calculations
             return {
                 'price': round_money(result_price),
@@ -633,8 +616,20 @@ class ProductPriceCalculator:
             primary_tax_rule_applied = None
             # Keep full precision during calculations - round only at the end
             current_price = base_price
-            
-            # Apply taxes directly (NO CONDITIONS EVALUATION)
+
+            # First pass: compute combined inclusive rate for correct extraction
+            combined_inclusive_rate = Decimal('0')
+            for rule in tax_rules:
+                if rule.get('is_inclusive', False):
+                    combined_inclusive_rate += Decimal(str(rule['rate']))
+
+            # Pre-tax base for inclusive taxes (extract all inclusive taxes together)
+            if combined_inclusive_rate > Decimal('0'):
+                pre_tax_base = base_price / (Decimal('1') + (combined_inclusive_rate / Decimal('100')))
+            else:
+                pre_tax_base = base_price
+
+            # Second pass: calculate individual tax amounts
             for rule in tax_rules:
                 tax_rule_id = rule.get('tax_rule_id')
                 tax_rule_name = rule.get('tax_rule_name')
@@ -644,20 +639,16 @@ class ProductPriceCalculator:
                 tax_rate = Decimal(str(rule['rate']))
                 is_inclusive = rule.get('is_inclusive', False)
                 tax_name = rule.get('tax_name', 'Unknown Tax')
-                
+
                 # Calculate tax amount directly (NO CONDITIONS) - use full precision
-                if is_inclusive:
-                    # Tax is already included in price
-                    # Extract tax: tax_amount = price - (price / (1 + rate/100))
-                    tax_amount = current_price - (current_price / (Decimal('1') + (tax_rate / Decimal('100'))))
-                else:
-                    # Tax is added to price - use current_price with full precision
-                    tax_amount = (current_price * tax_rate) / Decimal('100')
-                
+                # Use pre_tax_base for both inclusive and exclusive taxes so that
+                # exclusive taxes are not charged on embedded inclusive tax
+                tax_amount = (pre_tax_base * tax_rate) / Decimal('100')
+
                 # Keep full precision during calculation
                 tax_amount = max(Decimal('0'), tax_amount)
                 total_tax_amount += tax_amount
-                
+
                 # Track the first tax rule that was actually applied (round only for display)
                 if primary_tax_rule_applied is None and tax_amount > 0:
                     primary_tax_rule_applied = {
@@ -672,7 +663,7 @@ class ProductPriceCalculator:
                         'tax_amount': float(round_money(tax_amount)),
                         'priority': rule.get('priority', 0)
                     }
-                
+
                 taxes_applied.append({
                     'tax_id': tax_id,
                     'tax_name': tax_name,
@@ -680,7 +671,7 @@ class ProductPriceCalculator:
                     'is_inclusive': is_inclusive,
                     'amount': float(round_money(tax_amount))  # Round only for display
                 })
-                
+
                 # Add tax to current price with full precision (no rounding yet)
                 if not is_inclusive:
                     current_price = current_price + tax_amount

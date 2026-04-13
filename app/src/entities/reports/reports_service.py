@@ -255,6 +255,100 @@ class ReportsService:
         return decimal_value.quantize(quantizer, rounding=ROUND_HALF_UP)
 
     @staticmethod
+    def _count_months_in_range(from_date: Optional[date], to_date: Optional[date]) -> int:
+        """Count the number of months (inclusive) spanned by a date range.
+
+        Used to multiply fixed expenses across the reporting period.
+        E.g. Jan 1 – Mar 31 → 3 months, so a fixed expense of 100 becomes 300.
+        """
+        if not from_date or not to_date:
+            return 1
+        # Inclusive month count: (year_diff * 12) + month_diff + 1
+        months = (to_date.year - from_date.year) * 12 + (to_date.month - from_date.month) + 1
+        return max(months, 1)
+
+    @staticmethod
+    def _get_total_expenses(
+        cursor,
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        from_date: Optional[date],
+        to_date: Optional[date],
+        loc_id: Optional[str] = None,
+        location_ids: Optional[List[str]] = None,
+    ) -> Decimal:
+        """Calculate total expenses for a period, properly handling FIXED expenses.
+
+        Non-fixed expenses (ALLOCATED, CONTIGENCY, REIMBURSABLE) are summed as recorded.
+        FIXED expenses are multiplied by the number of months in the date range,
+        since they represent a recurring monthly cost.
+        """
+        expense_conditions, expense_params = ReportsService._get_base_where_conditions(
+            tenant_id, org_id, bus_id, loc_id, location_ids, table_alias="e"
+        )
+        expense_conditions, expense_params = ReportsService._add_date_filters(
+            expense_conditions, expense_params, from_date, to_date, "DATE(e.cdate)"
+        )
+        expense_conditions.append("e.delete_status = 'NOT_DELETED'")
+        expense_where = " AND ".join(expense_conditions)
+
+        cursor.execute(
+            f"""
+            SELECT
+                COALESCE(SUM(amount) FILTER (WHERE source != 'FIXED'), 0) as non_fixed_expenses,
+                COALESCE(SUM(amount) FILTER (WHERE source = 'FIXED'), 0) as fixed_expenses
+            FROM {db_settings.CP_EXPENSES_HISTORY_TABLE} e
+            WHERE {expense_where}
+            """,
+            tuple(expense_params),
+        )
+        result = cursor.fetchone()
+        non_fixed = ReportsService._quantize_decimal(result.get("non_fixed_expenses", 0) if result else 0)
+        fixed_per_month = ReportsService._quantize_decimal(result.get("fixed_expenses", 0) if result else 0)
+        months = ReportsService._count_months_in_range(from_date, to_date)
+        return non_fixed + (fixed_per_month * months)
+
+    @staticmethod
+    def _get_expenses_by_location(
+        cursor,
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        from_date: Optional[date],
+        to_date: Optional[date],
+        location_ids: Optional[List[str]] = None,
+    ) -> Dict[str, Decimal]:
+        """Calculate total expenses grouped by location, properly handling FIXED expenses."""
+        expense_conditions, expense_params = ReportsService._get_base_where_conditions(
+            tenant_id, org_id, bus_id, None, location_ids, table_alias="e"
+        )
+        expense_conditions, expense_params = ReportsService._add_date_filters(
+            expense_conditions, expense_params, from_date, to_date, "DATE(e.cdate)"
+        )
+        expense_conditions.append("e.delete_status = 'NOT_DELETED'")
+        expense_where = " AND ".join(expense_conditions)
+
+        cursor.execute(
+            f"""
+            SELECT
+                loc_id,
+                COALESCE(SUM(amount) FILTER (WHERE source != 'FIXED'), 0) as non_fixed_expenses,
+                COALESCE(SUM(amount) FILTER (WHERE source = 'FIXED'), 0) as fixed_expenses
+            FROM {db_settings.CP_EXPENSES_HISTORY_TABLE} e
+            WHERE {expense_where}
+            GROUP BY loc_id
+            """,
+            tuple(expense_params),
+        )
+        months = ReportsService._count_months_in_range(from_date, to_date)
+        return {
+            row['loc_id']: ReportsService._quantize_decimal(row.get('non_fixed_expenses', 0))
+            + (ReportsService._quantize_decimal(row.get('fixed_expenses', 0)) * months)
+            for row in cursor.fetchall()
+        }
+
+    @staticmethod
     def _get_date_format_for_group_by(group_by: str) -> str:
         """Get SQL date format string for grouping"""
         formats = {
@@ -305,7 +399,7 @@ class ReportsService:
                 
                 if data.group_by == 'PRODUCT':
                     query = f"""
-                        SELECT 
+                        SELECT
                             si.product_id,
                             p.name as product_name,
                             COUNT(DISTINCT s.id) as sale_count,
@@ -325,6 +419,7 @@ class ReportsService:
                             AND si.bus_id = p.bus_id
                         WHERE {where_clause}
                         AND s.deleted_by IS NULL
+                        AND s.status != 'CANCELLED'
                         GROUP BY si.product_id, p.name
                         ORDER BY total_revenue DESC
                         LIMIT %s
@@ -352,7 +447,7 @@ class ReportsService:
                     where_clause = " AND ".join(conditions)
                     
                     query = f"""
-                        SELECT 
+                        SELECT
                             TO_CHAR(s.sale_date, 'YYYY-MM') as period,
                             COUNT(DISTINCT s.id) as sale_count,
                             COALESCE(SUM(si.line_total), 0) as total_revenue
@@ -365,6 +460,7 @@ class ReportsService:
                             AND s.loc_id = si.loc_id
                         WHERE {where_clause}
                         AND s.deleted_by IS NULL
+                        AND s.status != 'CANCELLED'
                         GROUP BY TO_CHAR(s.sale_date, 'YYYY-MM')
                         ORDER BY period DESC
                     """
@@ -431,10 +527,28 @@ class ReportsService:
                 if data.status:
                     conditions.append("s.status = %s")
                     params.append(data.status)
+                if data.min_amount is not None:
+                    conditions.append("s.total_amount >= %s")
+                    params.append(data.min_amount)
+                if data.max_amount is not None:
+                    conditions.append("s.total_amount <= %s")
+                    params.append(data.max_amount)
+                if data.payment_method:
+                    conditions.append(f"""
+                        EXISTS (
+                            SELECT 1 FROM {db_settings.MSG_SALES_PAYMENTS_TABLE} sp
+                            WHERE sp.sale_id = s.id
+                            AND sp.tenant_id = s.tenant_id
+                            AND sp.payment_method = %s
+                            AND sp.payment_status = 'SUCCESS'
+                            AND sp.deleted_at IS NULL
+                        )
+                    """)
+                    params.append(data.payment_method)
 
                 where_clause = " AND ".join(conditions)
 
-                # Get payment methods for each sale
+                # Get paginated sales
                 query = f"""
                     SELECT DISTINCT
                         s.id as sale_id,
@@ -446,7 +560,7 @@ class ReportsService:
                         s.status,
                         s.created_by,
                         c.fullname as customer_name,
-                        (SELECT COUNT(*) FROM {db_settings.MSG_SALES_ITEMS_TABLE} si 
+                        (SELECT COUNT(*) FROM {db_settings.MSG_SALES_ITEMS_TABLE} si
                          WHERE si.sale_id = s.id AND si.tenant_id = s.tenant_id) as items_count
                     FROM {db_settings.MSG_SALES_TABLE} s
                     LEFT JOIN {db_settings.MSG_CUSTOMERS_TABLE} c
@@ -459,16 +573,15 @@ class ReportsService:
                     ORDER BY s.sale_date DESC, s.sale_number DESC
                     LIMIT %s OFFSET %s
                 """
-                
+
                 offset = (data.page - 1) * data.size
-                params.extend([data.size, offset])
-                cursor.execute(query, tuple(params))
+                query_params = list(params) + [data.size, offset]
+                cursor.execute(query, tuple(query_params))
                 sales = cursor.fetchall()
 
                 # Get payment methods for each sale
                 detailed_items = []
                 for sale in sales:
-                    # Get payment methods
                     cursor.execute(
                         f"""
                         SELECT DISTINCT payment_method
@@ -481,13 +594,6 @@ class ReportsService:
                         (sale['sale_id'], tenant_id)
                     )
                     payment_methods = [row['payment_method'] for row in cursor.fetchall()]
-
-                    # Apply amount filters if specified
-                    total_amount = Decimal(str(sale.get('total_amount', 0)))
-                    if data.min_amount and total_amount < Decimal(str(data.min_amount)):
-                        continue
-                    if data.max_amount and total_amount > Decimal(str(data.max_amount)):
-                        continue
 
                     detailed_items.append(DetailedSalesItemReadBase(
                         sale_id=sale['sale_id'],
@@ -503,20 +609,18 @@ class ReportsService:
                         created_by=sale.get('created_by'),
                     ))
 
-                # Get total count
-                count_query = f"""
-                    SELECT COUNT(*) as total
+                # Get total count and grand total amount across all matching sales
+                totals_query = f"""
+                    SELECT COUNT(*) as total, COALESCE(SUM(s.total_amount), 0) as grand_total
                     FROM {db_settings.MSG_SALES_TABLE} s
                     WHERE {where_clause}
                     AND s.deleted_by IS NULL
                 """
-                cursor.execute(count_query, tuple(params[:-2]))  # Remove LIMIT and OFFSET params
-                total_result = cursor.fetchone()
-                total_count = int(total_result['total']) if total_result else 0
+                cursor.execute(totals_query, tuple(params))
+                totals_result = cursor.fetchone()
+                total_count = int(totals_result['total']) if totals_result else 0
+                grand_total = ReportsService._quantize_decimal(totals_result.get('grand_total', 0)) if totals_result else Decimal('0')
 
-                # Calculate total amount
-                total_amount = sum(item.total_amount for item in detailed_items)
-                
                 response = DetailedSalesReportResponseReadBase(
                     report_type="detailed_sales",
                     report_format=data.format,
@@ -525,7 +629,7 @@ class ReportsService:
                     period_end=data.to_date,
                     items=detailed_items,
                     total_items=total_count,
-                    total_amount=ReportsService._quantize_decimal(total_amount),
+                    total_amount=grand_total,
                     pagination={
                         "page": data.page,
                         "size": data.size,
@@ -746,6 +850,7 @@ class ReportsService:
                     AND p.payment_status = 'SUCCESS'
                     AND p.deleted_at IS NULL
                     AND s.deleted_by IS NULL
+                    AND s.status != 'CANCELLED'
                     """,
                     tuple(sales_params)
                 )
@@ -762,7 +867,7 @@ class ReportsService:
 
                 cursor.execute(
                     f"""
-                    SELECT 
+                    SELECT
                         COALESCE(SUM(ii.line_total), 0) as total_revenue
                     FROM {db_settings.MSG_INVOICES_TABLE} i
                     INNER JOIN {db_settings.MSG_INVOICE_ITEMS_TABLE} ii
@@ -773,6 +878,7 @@ class ReportsService:
                         AND i.loc_id = ii.loc_id
                     WHERE {invoice_where}
                     AND i.deleted_by IS NULL
+                    AND i.status != 'CANCELLED'
                     """,
                     tuple(invoice_params)
                 )
@@ -781,7 +887,7 @@ class ReportsService:
                 # Get COGS (Cost of Goods Sold) - from sale items
                 cursor.execute(
                     f"""
-                    SELECT 
+                    SELECT
                         COALESCE(SUM(si.quantity * pb.cost_price), 0) as total_cogs
                     FROM {db_settings.MSG_SALES_ITEMS_TABLE} si
                     INNER JOIN {db_settings.MSG_SALES_TABLE} s
@@ -795,35 +901,21 @@ class ReportsService:
                         AND si.tenant_id = pb.tenant_id
                     WHERE {sales_where}
                     AND s.deleted_by IS NULL
+                    AND s.status != 'CANCELLED'
                     """,
                     tuple(sales_params)
                 )
                 cogs_result = cursor.fetchone()
 
-                # Get expenses
-                expense_conditions, expense_params = ReportsService._get_base_where_conditions(
-                    tenant_id, org_id, bus_id, data.loc_id, data.location_ids, table_alias="e"
+                # Get expenses (fixed expenses multiplied by months in range)
+                total_expenses = ReportsService._get_total_expenses(
+                    cursor, tenant_id, org_id, bus_id,
+                    data.from_date, data.to_date, data.loc_id, data.location_ids,
                 )
-                expense_conditions, expense_params = ReportsService._add_date_filters(
-                    expense_conditions, expense_params, data.from_date, data.to_date, "DATE(e.cdate)"
-                )
-                expense_where = " AND ".join(expense_conditions)
-
-                cursor.execute(
-                    f"""
-                    SELECT COALESCE(SUM(amount), 0) as total_expenses
-                    FROM {db_settings.CP_EXPENSES_HISTORY_TABLE} e
-                    WHERE {expense_where}
-                    AND e.delete_status = 'NOT_DELETED'
-                    """,
-                    tuple(expense_params)
-                )
-                expenses_result = cursor.fetchone()
 
                 total_revenue = ReportsService._quantize_decimal(sales_revenue_result.get('total_revenue')) + \
                                ReportsService._quantize_decimal(invoice_revenue_result.get('total_revenue'))
                 total_cogs = ReportsService._quantize_decimal(cogs_result.get('total_cogs'))
-                total_expenses = ReportsService._quantize_decimal(expenses_result.get('total_expenses'))
                 
                 gross_profit = total_revenue - total_cogs
                 net_profit = gross_profit - total_expenses
@@ -1148,11 +1240,12 @@ class ReportsService:
                 )
                 rows = cursor.fetchall()
                 cursor.execute(
-                    f"SELECT COUNT(*) as cnt FROM {db_settings.MSG_INVOICES_TABLE} i WHERE {where}",
+                    f"SELECT COUNT(*) as cnt, COALESCE(SUM(i.total_amount), 0) as grand_total FROM {db_settings.MSG_INVOICES_TABLE} i WHERE {where}",
                     tuple(params),
                 )
-                total_items = cursor.fetchone()['cnt']
-                total_amount_sum = sum(ReportsService._quantize_decimal(r['total_amount']) for r in rows)
+                totals_row = cursor.fetchone()
+                total_items = totals_row['cnt']
+                total_amount_sum = ReportsService._quantize_decimal(totals_row.get('grand_total', 0))
 
                 items = [
                     InvoiceDetailedItemReadBase(
@@ -1499,19 +1592,20 @@ class ReportsService:
 
                 items.sort(key=lambda x: x.payment_date, reverse=True)
                 items = items[: data.size]
-                total_amount = sum(i.amount for i in items)
 
+                # Get true total counts and grand total from DB
                 cursor.execute(
-                    f"SELECT COUNT(*) FROM {db_settings.MSG_SALES_PAYMENTS_TABLE} sp WHERE {where}",
+                    f"SELECT COUNT(*) as cnt, COALESCE(SUM(sp.paid_amount), 0) as total FROM {db_settings.MSG_SALES_PAYMENTS_TABLE} sp WHERE {where}",
                     tuple(params),
                 )
-                cnt_s = cursor.fetchone()['count']
+                sales_totals = cursor.fetchone()
                 cursor.execute(
-                    f"SELECT COUNT(*) FROM {db_settings.MSG_INVOICE_PAYMENTS_TABLE} ip WHERE {inv_where}",
+                    f"SELECT COUNT(*) as cnt, COALESCE(SUM(ip.paid_amount), 0) as total FROM {db_settings.MSG_INVOICE_PAYMENTS_TABLE} ip WHERE {inv_where}",
                     tuple(inv_params),
                 )
-                cnt_i = cursor.fetchone()['count']
-                total_items = cnt_s + cnt_i
+                inv_totals = cursor.fetchone()
+                total_items = sales_totals['cnt'] + inv_totals['cnt']
+                grand_total = ReportsService._quantize_decimal(sales_totals.get('total', 0)) + ReportsService._quantize_decimal(inv_totals.get('total', 0))
 
                 response = PaymentsDetailedReportResponseReadBase(
                     report_type="payments_detailed",
@@ -1522,7 +1616,7 @@ class ReportsService:
                     filters_applied={},
                     items=items,
                     total_items=total_items,
-                    total_amount=ReportsService._quantize_decimal(total_amount) if items else None,
+                    total_amount=grand_total,
                     pagination={"page": data.page, "size": data.size, "total": total_items},
                 )
                 return Respons(success=True, detail="Payments detailed report generated successfully", data=[response])
@@ -2024,9 +2118,32 @@ class ReportsService:
                         lifetime_value=ReportsService._quantize_decimal(row['lifetime_value']),
                     ))
 
-                # Calculate total revenue
-                total_revenue = sum(item.total_revenue for item in items)
-                
+                # Get grand total count and revenue across all matching customers
+                count_params = list(params[:-4])  # Remove min_purchases, min_revenue, size, offset
+                count_params.extend([data.min_purchases or 0, Decimal(str(data.min_revenue)) if data.min_revenue else Decimal('0')])
+                cursor.execute(
+                    f"""
+                    SELECT COUNT(*) as total_count, COALESCE(SUM(total_revenue), 0) as grand_total
+                    FROM (
+                        SELECT COALESCE(SUM(s.total_amount), 0) as total_revenue
+                        FROM {db_settings.MSG_CUSTOMERS_TABLE} c
+                        LEFT JOIN {db_settings.MSG_SALES_TABLE} s
+                            ON c.id = s.customer_id
+                            AND c.tenant_id = s.tenant_id
+                            AND c.org_id = s.org_id
+                            AND c.bus_id = s.bus_id
+                        WHERE {base_where}
+                        GROUP BY c.id
+                        HAVING COUNT(DISTINCT s.id) >= COALESCE(%s, 0)
+                            AND COALESCE(SUM(s.total_amount), 0) >= COALESCE(%s, 0)
+                    ) sub
+                    """,
+                    tuple(count_params),
+                )
+                totals_row = cursor.fetchone()
+                total_count = int(totals_row['total_count']) if totals_row else len(items)
+                grand_total_revenue = ReportsService._quantize_decimal(totals_row.get('grand_total', 0)) if totals_row else Decimal('0')
+
                 response = CustomersSummaryReportResponseReadBase(
                     report_type="customers_summary",
                     report_format=data.format,
@@ -2034,8 +2151,8 @@ class ReportsService:
                     period_start=data.from_date,
                     period_end=data.to_date,
                     items=items,
-                    total_items=len(items),
-                    total_amount=ReportsService._quantize_decimal(total_revenue),
+                    total_items=total_count,
+                    total_amount=grand_total_revenue,
                 )
 
                 return Respons(
@@ -2129,9 +2246,29 @@ class ReportsService:
                         average_order_value=ReportsService._quantize_decimal(row['avg_order_value']),
                     ))
 
-                # Calculate total spent
-                total_spent = sum(item.total_spent for item in items)
-                
+                # Get grand total count and spent across all matching customers
+                cursor.execute(
+                    f"""
+                    SELECT COUNT(*) as total_count, COALESCE(SUM(sub.total_spent), 0) as grand_total
+                    FROM (
+                        SELECT COALESCE(SUM(s.total_amount), 0) as total_spent
+                        FROM {db_settings.MSG_CUSTOMERS_TABLE} c
+                        LEFT JOIN {db_settings.MSG_SALES_TABLE} s
+                            ON c.id = s.customer_id
+                            AND c.tenant_id = s.tenant_id
+                            AND c.org_id = s.org_id
+                            AND c.bus_id = s.bus_id
+                            AND s.deleted_by IS NULL
+                        WHERE {base_where}
+                        GROUP BY c.id
+                    ) sub
+                    """,
+                    tuple(params[:-2]),  # Remove LIMIT and OFFSET params
+                )
+                totals_row = cursor.fetchone()
+                total_count = int(totals_row['total_count']) if totals_row else len(items)
+                grand_total_spent = ReportsService._quantize_decimal(totals_row.get('grand_total', 0)) if totals_row else Decimal('0')
+
                 response = CustomersDetailedReportResponseReadBase(
                     report_type="customers_detailed",
                     report_format=data.format,
@@ -2139,12 +2276,12 @@ class ReportsService:
                     period_start=data.from_date,
                     period_end=data.to_date,
                     items=items,
-                    total_items=len(items),
-                    total_amount=ReportsService._quantize_decimal(total_spent),
+                    total_items=total_count,
+                    total_amount=grand_total_spent,
                     pagination={
                         "page": data.page,
                         "size": data.size,
-                        "total_pages": (len(items) + data.size - 1) // data.size if data.size > 0 else 0,
+                        "total_pages": (total_count + data.size - 1) // data.size if data.size > 0 else 0,
                     }
                 )
 
@@ -2226,9 +2363,29 @@ class ReportsService:
                         total_spent=ReportsService._quantize_decimal(row['total_spent']),
                     ))
 
-                # Calculate total spent
-                total_spent = sum(item.total_spent for item in items)
-                
+                # Get grand total count and spent across all matching new customers
+                cursor.execute(
+                    f"""
+                    SELECT COUNT(*) as total_count, COALESCE(SUM(sub.total_spent), 0) as grand_total
+                    FROM (
+                        SELECT COALESCE(SUM(s.total_amount), 0) as total_spent
+                        FROM {db_settings.MSG_CUSTOMERS_TABLE} c
+                        LEFT JOIN {db_settings.MSG_SALES_TABLE} s
+                            ON c.id = s.customer_id
+                            AND c.tenant_id = s.tenant_id
+                            AND c.org_id = s.org_id
+                            AND c.bus_id = s.bus_id
+                            AND s.deleted_by IS NULL
+                        WHERE {base_where}
+                        GROUP BY c.id
+                    ) sub
+                    """,
+                    tuple(params[:-2]),  # Remove LIMIT and OFFSET params
+                )
+                totals_row = cursor.fetchone()
+                total_count = int(totals_row['total_count']) if totals_row else len(items)
+                grand_total_spent = ReportsService._quantize_decimal(totals_row.get('grand_total', 0)) if totals_row else Decimal('0')
+
                 response = NewCustomersReportResponseReadBase(
                     report_type="new_customers",
                     report_format=data.format,
@@ -2236,12 +2393,12 @@ class ReportsService:
                     period_start=data.from_date,
                     period_end=data.to_date,
                     items=items,
-                    total_items=len(items),
-                    total_amount=ReportsService._quantize_decimal(total_spent),
+                    total_items=total_count,
+                    total_amount=grand_total_spent,
                     pagination={
                         "page": data.page,
                         "size": data.size,
-                        "total_pages": (len(items) + data.size - 1) // data.size if data.size > 0 else 0,
+                        "total_pages": (total_count + data.size - 1) // data.size if data.size > 0 else 0,
                     }
                 )
 
@@ -2433,9 +2590,19 @@ class ReportsService:
                         created_by=row.get('created_by'),
                     ))
 
-                # Calculate total amount
-                total_amount = sum(item.amount for item in items)
-                
+                # Get grand total count and amount across all matching expenses
+                cursor.execute(
+                    f"""
+                    SELECT COUNT(*) as total_count, COALESCE(SUM(e.amount), 0) as grand_total
+                    FROM {db_settings.CP_EXPENSES_HISTORY_TABLE} e
+                    WHERE {base_where}
+                    """,
+                    tuple(params[:-2]),  # Remove LIMIT and OFFSET params
+                )
+                totals_row = cursor.fetchone()
+                total_count = int(totals_row['total_count']) if totals_row else len(items)
+                grand_total = ReportsService._quantize_decimal(totals_row.get('grand_total', 0)) if totals_row else Decimal('0')
+
                 response = ExpensesDetailedReportResponseReadBase(
                     report_type="expenses_detailed",
                     report_format=data.format,
@@ -2443,12 +2610,12 @@ class ReportsService:
                     period_start=data.from_date,
                     period_end=data.to_date,
                     items=items,
-                    total_items=len(items),
-                    total_amount=ReportsService._quantize_decimal(total_amount),
+                    total_items=total_count,
+                    total_amount=grand_total,
                     pagination={
                         "page": data.page,
                         "size": data.size,
-                        "total_pages": (len(items) + data.size - 1) // data.size if data.size > 0 else 0,
+                        "total_pages": (total_count + data.size - 1) // data.size if data.size > 0 else 0,
                     }
                 )
 
@@ -3332,8 +3499,11 @@ class ReportsService:
                     {product_filter}
                     {qty_filter}
                     ORDER BY l.loc_name, p.name
+                    LIMIT %s OFFSET %s
                 """
-                cursor.execute(query, tuple(params))
+                offset = (data.page - 1) * data.size
+                query_params = list(params) + [data.size, offset]
+                cursor.execute(query, tuple(query_params))
                 results = cursor.fetchall()
 
                 items = []
@@ -3360,9 +3530,44 @@ class ReportsService:
                         last_movement_date=last_movement_date,
                     ))
 
-                total_amount = sum(item.total_value for item in items)
-                offset = (data.page - 1) * data.size
-                paginated_items = items[offset:offset + data.size]
+                # Get grand total count and value across all matching inventory
+                cursor.execute(
+                    f"""
+                    SELECT COUNT(*) as total_count,
+                        COALESCE(SUM(sp.current_qty * COALESCE(batch_costs.avg_cost, 0)), 0) as grand_total
+                    FROM {db_settings.MSG_STORE_PRODUCTS_TABLE} sp
+                    INNER JOIN {db_settings.MSG_PRODUCTS_TABLE} p
+                        ON sp.product_id = p.id
+                        AND sp.tenant_id = p.tenant_id
+                        AND sp.org_id = p.org_id
+                        AND sp.bus_id = p.bus_id
+                    LEFT JOIN (
+                        SELECT bl.loc_id, pb.product_id, bl.tenant_id, bl.org_id, bl.bus_id,
+                               AVG(pb.cost_price) as avg_cost
+                        FROM {db_settings.MSG_BATCH_LOCATIONS_TABLE} bl
+                        INNER JOIN {db_settings.MSG_PURCHASE_BATCHES_TABLE} pb
+                            ON bl.purchase_batche_id = pb.id
+                            AND bl.tenant_id = pb.tenant_id
+                            AND bl.org_id = pb.org_id
+                            AND bl.bus_id = pb.bus_id
+                        WHERE bl.location_type = 'STORE'
+                        GROUP BY bl.loc_id, pb.product_id, bl.tenant_id, bl.org_id, bl.bus_id
+                    ) batch_costs
+                        ON batch_costs.loc_id = sp.loc_id
+                        AND batch_costs.product_id = sp.product_id
+                        AND batch_costs.tenant_id = sp.tenant_id
+                        AND batch_costs.org_id = sp.org_id
+                        AND batch_costs.bus_id = sp.bus_id
+                    WHERE {base_where}
+                    AND p.delete_status = 'NOT_DELETED'
+                    {product_filter}
+                    {qty_filter}
+                    """,
+                    tuple(params),
+                )
+                totals_row = cursor.fetchone()
+                total_count = int(totals_row['total_count']) if totals_row else len(items)
+                grand_total = ReportsService._quantize_decimal(totals_row.get('grand_total', 0)) if totals_row else Decimal('0')
 
                 response = InventoryDetailedReportResponseReadBase(
                     report_type="inventory_detailed",
@@ -3370,13 +3575,13 @@ class ReportsService:
                     generated_at=datetime.now(),
                     period_start=data.from_date,
                     period_end=data.to_date,
-                    items=paginated_items,
-                    total_items=len(items),
-                    total_amount=ReportsService._quantize_decimal(total_amount),
+                    items=items,
+                    total_items=total_count,
+                    total_amount=grand_total,
                     pagination={
                         "page": data.page,
                         "size": data.size,
-                        "total_pages": (len(items) + data.size - 1) // data.size if data.size > 0 else 0,
+                        "total_pages": (total_count + data.size - 1) // data.size if data.size > 0 else 0,
                     }
                 )
 
@@ -4564,17 +4769,33 @@ class ReportsService:
                     # When not grouping by location, use MAX() so location_id/location_name are never null
                     location_select = ",\n                        MAX(s.loc_id) as loc_id,\n                        MAX(l.loc_name) as location_name"
 
+                # Build HAVING clause for min filters
+                having_conditions = []
+                having_params = []
+                if data.min_gross_profit:
+                    having_conditions.append("(COALESCE(SUM(si.line_total), 0) - COALESCE(SUM(si.quantity * pb.cost_price), 0)) >= %s")
+                    having_params.append(Decimal(str(data.min_gross_profit)))
+                if data.min_gross_profit_margin:
+                    having_conditions.append("""
+                        CASE WHEN COALESCE(SUM(si.line_total), 0) > 0
+                            THEN ((COALESCE(SUM(si.line_total), 0) - COALESCE(SUM(si.quantity * pb.cost_price), 0)) / COALESCE(SUM(si.line_total), 0)) * 100
+                            ELSE 0
+                        END >= %s
+                    """)
+                    having_params.append(Decimal(str(data.min_gross_profit_margin)))
+                having_clause = f"HAVING {' AND '.join(having_conditions)}" if having_conditions else ""
+
                 # Query to get product gross profit
                 query = f"""
-                    SELECT 
+                    SELECT
                         si.product_id,
                         p.name as product_name,
                         COALESCE(SUM(si.quantity), 0) as total_quantity_sold,
                         COALESCE(SUM(si.line_total), 0) as total_revenue,
                         COALESCE(SUM(si.quantity * pb.cost_price), 0) as total_cost,
                         COALESCE(SUM(si.line_total), 0) - COALESCE(SUM(si.quantity * pb.cost_price), 0) as gross_profit,
-                        CASE 
-                            WHEN COALESCE(SUM(si.line_total), 0) > 0 
+                        CASE
+                            WHEN COALESCE(SUM(si.line_total), 0) > 0
                             THEN ((COALESCE(SUM(si.line_total), 0) - COALESCE(SUM(si.quantity * pb.cost_price), 0)) / COALESCE(SUM(si.line_total), 0)) * 100
                             ELSE 0
                         END as gross_profit_margin{location_select}
@@ -4601,39 +4822,31 @@ class ReportsService:
                     WHERE {sales_where}
                     {product_filter}
                     GROUP BY {group_by_clause}
+                    {having_clause}
                     ORDER BY gross_profit DESC
                     LIMIT %s OFFSET %s
                 """
-                
+
                 offset = (data.page - 1) * data.size
-                sales_params.extend([data.size, offset])
-                cursor.execute(query, tuple(sales_params))
+                all_query_params = list(sales_params) + having_params + [data.size, offset]
+                cursor.execute(query, tuple(all_query_params))
                 results = cursor.fetchall()
 
                 items = []
                 for row in results:
-                    gross_profit = ReportsService._quantize_decimal(row.get('gross_profit', 0))
-                    gross_profit_margin = ReportsService._quantize_decimal(row.get('gross_profit_margin', 0))
-                    
-                    # Apply filters
-                    if data.min_gross_profit and gross_profit < Decimal(str(data.min_gross_profit)):
-                        continue
-                    if data.min_gross_profit_margin and gross_profit_margin < Decimal(str(data.min_gross_profit_margin)):
-                        continue
-
                     items.append(ProductGrossProfitItemReadBase(
                         product_id=row['product_id'],
                         product_name=row.get('product_name', 'Unknown Product'),
                         total_quantity_sold=ReportsService._quantize_decimal(row.get('total_quantity_sold', 0)),
                         total_revenue=ReportsService._quantize_decimal(row.get('total_revenue', 0)),
                         total_cost=ReportsService._quantize_decimal(row.get('total_cost', 0)),
-                        gross_profit=gross_profit,
-                        gross_profit_margin=gross_profit_margin,
+                        gross_profit=ReportsService._quantize_decimal(row.get('gross_profit', 0)),
+                        gross_profit_margin=ReportsService._quantize_decimal(row.get('gross_profit_margin', 0)),
                         location_id=row.get('loc_id'),
                         location_name=row.get('location_name'),
                     ))
 
-                # Get total count (using subquery to handle HAVING clause)
+                # Get total count with same HAVING filters
                 count_query = f"""
                     SELECT COUNT(*) as total
                     FROM (
@@ -4653,9 +4866,11 @@ class ReportsService:
                         WHERE {sales_where}
                         {product_filter}
                         GROUP BY si.product_id
+                        {having_clause}
                     ) as product_counts
                 """
-                cursor.execute(count_query, tuple(sales_params[:-2]))  # Remove LIMIT and OFFSET
+                count_params = list(sales_params) + having_params
+                cursor.execute(count_query, tuple(count_params))
                 total_result = cursor.fetchone()
                 total_count = int(total_result['total']) if total_result else len(items)
 
@@ -4928,25 +5143,9 @@ class ReportsService:
             one = cursor.fetchone()
             gross_rows = [one] if one else []
 
-        expense_conditions, expense_params = ReportsService._get_base_where_conditions(
-            tenant_id, org_id, bus_id, None, data.location_ids, table_alias="e"
-        )
-        expense_conditions, expense_params = ReportsService._add_date_filters(
-            expense_conditions, expense_params, data.from_date, data.to_date, "DATE(e.cdate)"
-        )
-        expense_conditions.append("e.delete_status = 'NOT_DELETED'")
-        expense_where = " AND ".join(expense_conditions)
-        cursor.execute(
-            f"""
-            SELECT COALESCE(SUM(amount), 0) as total_expenses
-            FROM {db_settings.CP_EXPENSES_HISTORY_TABLE} e
-            WHERE {expense_where}
-            """,
-            tuple(expense_params),
-        )
-        expenses_result = cursor.fetchone()
-        total_expenses = ReportsService._quantize_decimal(
-            expenses_result.get("total_expenses", 0) if expenses_result else 0
+        total_expenses = ReportsService._get_total_expenses(
+            cursor, tenant_id, org_id, bus_id,
+            data.from_date, data.to_date, None, data.location_ids,
         )
 
         total_revenue_for_alloc = sum(
@@ -5104,26 +5303,11 @@ class ReportsService:
                 cursor.execute(gross_profit_query, tuple(sales_params))
                 gross_profit_results = cursor.fetchall()
 
-                # Get total expenses for the period
-                expense_conditions, expense_params = ReportsService._get_base_where_conditions(
-                    tenant_id, org_id, bus_id, None, data.location_ids, table_alias="e"
+                # Get total expenses for the period (fixed expenses multiplied by months in range)
+                total_expenses = ReportsService._get_total_expenses(
+                    cursor, tenant_id, org_id, bus_id,
+                    data.from_date, data.to_date, None, data.location_ids,
                 )
-                expense_conditions, expense_params = ReportsService._add_date_filters(
-                    expense_conditions, expense_params, data.from_date, data.to_date, "DATE(e.cdate)"
-                )
-                expense_conditions.append("e.delete_status = 'NOT_DELETED'")
-                expense_where = " AND ".join(expense_conditions)
-
-                cursor.execute(
-                    f"""
-                    SELECT COALESCE(SUM(amount), 0) as total_expenses
-                    FROM {db_settings.CP_EXPENSES_HISTORY_TABLE} e
-                    WHERE {expense_where}
-                    """,
-                    tuple(expense_params)
-                )
-                expenses_result = cursor.fetchone()
-                total_expenses = ReportsService._quantize_decimal(expenses_result.get('total_expenses', 0))
 
                 # Revenue share must use all qualifying sales lines (same filters), not only rows returned after GROUP BY,
                 # otherwise loss-making SKUs skew the denominator and over-allocate overhead to profitable lines.
@@ -5296,27 +5480,11 @@ class ReportsService:
                 cursor.execute(query, tuple(sales_params))
                 location_results = cursor.fetchall()
 
-                # Get expenses per location if needed
-                expense_conditions, expense_params = ReportsService._get_base_where_conditions(
-                    tenant_id, org_id, bus_id, None, data.location_ids, table_alias="e"
+                # Get expenses per location (fixed expenses multiplied by months in range)
+                expenses_by_location = ReportsService._get_expenses_by_location(
+                    cursor, tenant_id, org_id, bus_id,
+                    data.from_date, data.to_date, data.location_ids,
                 )
-                expense_conditions, expense_params = ReportsService._add_date_filters(
-                    expense_conditions, expense_params, data.from_date, data.to_date, "DATE(e.cdate)"
-                )
-                expense_conditions.append("e.delete_status = 'NOT_DELETED'")
-                expense_where = " AND ".join(expense_conditions)
-
-                cursor.execute(
-                    f"""
-                    SELECT loc_id, COALESCE(SUM(amount), 0) as total_expenses
-                    FROM {db_settings.CP_EXPENSES_HISTORY_TABLE} e
-                    WHERE {expense_where}
-                    GROUP BY loc_id
-                    """,
-                    tuple(expense_params)
-                )
-                expenses_by_location = {row['loc_id']: ReportsService._quantize_decimal(row.get('total_expenses', 0)) 
-                                       for row in cursor.fetchall()}
 
                 performance_items = []
                 for row in location_results:
@@ -5539,7 +5707,7 @@ class ReportsService:
                     LEFT JOIN {db_settings.MSG_SUPPLIERS_TABLE} s ON po.supplier_id = s.id AND po.tenant_id = s.tenant_id AND po.org_id = s.org_id AND po.bus_id = s.bus_id
                     LEFT JOIN {db_settings.MSG_PURCHASE_ORDER_ITEMS_TABLE} poi ON po.id = poi.purchase_order_id AND po.tenant_id = poi.tenant_id AND po.org_id = poi.org_id AND po.bus_id = poi.bus_id
                     WHERE {where}
-                    GROUP BY po.id, po.po_number, po.order_date, s.fullname, po.status
+                    GROUP BY po.id, po.po_number, po.order_date, s.fullname, po.status, po.tenant_id, po.org_id, po.bus_id
                     ORDER BY po.order_date DESC
                     LIMIT %s OFFSET %s
                     """,
@@ -6447,13 +6615,17 @@ class ReportsService:
                 )
                 rows = cursor.fetchall()
                 summary_items = []
+                total_quantity = Decimal('0')
+                total_revenue = Decimal('0')
                 for row in rows:
+                    qty = ReportsService._quantize_decimal(row['total_quantity'] or 0)
+                    rev = ReportsService._quantize_decimal(row['total_revenue'] or 0)
+                    total_quantity += qty
+                    total_revenue += rev
                     summary_items.append(SummaryItemReadBase(
-                        product_id=row['product_id'] or '',
-                        product_name=row['product_name'] or 'Unknown',
-                        sale_count=int(row['sale_count'] or 0),
-                        total_quantity=ReportsService._quantize_decimal(row['total_quantity'] or 0),
-                        total_revenue=ReportsService._quantize_decimal(row['total_revenue'] or 0),
+                        label=row['product_name'] or 'Unknown',
+                        value=rev,
+                        count=int(row['sale_count'] or 0),
                     ))
                 response = SuppliersSummaryItemsReportResponseReadBase(
                     report_type="suppliers_summary_items",
@@ -6464,7 +6636,7 @@ class ReportsService:
                     filters_applied={"supplier_id": data.supplier_id, "product_id": data.product_id},
                     summary_items=summary_items,
                     total_items=len(summary_items),
-                    totals={"total_quantity": sum(i.total_quantity for i in summary_items), "total_revenue": sum(i.total_revenue for i in summary_items)},
+                    totals={"total_quantity": total_quantity, "total_revenue": total_revenue},
                 )
                 return Respons(success=True, detail="Suppliers summary items report generated successfully", data=[response])
         except Exception as e:

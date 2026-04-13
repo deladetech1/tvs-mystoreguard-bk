@@ -1,5 +1,6 @@
-from typing import Optional
-from datetime import datetime
+from typing import Optional, List
+from datetime import datetime, date
+from decimal import Decimal
 from pydantic import BaseModel, Field
 from src.entities.customers.customers_base import (
     CustomerBase,
@@ -79,4 +80,16 @@ class DeleteCustomerControllerReadDto(DeleteCustomerReadBase):
 class DeleteCustomerServiceReadDto(DeleteCustomerReadBase):
     """Service DTO for delete customer read operations"""
     pass
+
+
+# =====================================================
+# CUSTOMER STATISTICS READ DTOs
+# =====================================================
+
+class CustomerStatsOverviewReadDto(BaseModel):
+    """Overview statistics for customers"""
+    total_customers: int = 0
+    active_customers: int = 0
+    inactive_customers: int = 0
+    recently_added: int = 0
 

@@ -143,12 +143,12 @@ class PricingRulesService:
             elif data.rule_type in ['PERCENTAGE_DISCOUNT', 'PERCENTAGE_MARKUP']:
                 if data.discount_percent is None:
                     return False, f"discount_percent is required for rule_type '{data.rule_type}'"
-            elif data.rule_type in ['BUNDLE', 'BOGO', 'QUANTITY_BREAK']:
+            elif data.rule_type == 'QUANTITY_BREAK':
                 return False, f"rule_type '{data.rule_type}' requires rule_category 'QUANTITY_BASED'"
 
         # Validate QUANTITY_BASED rules
         elif data.rule_category == 'QUANTITY_BASED':
-            if data.rule_type not in ['BUNDLE', 'BOGO', 'QUANTITY_BREAK']:
+            if data.rule_type != 'QUANTITY_BREAK':
                 return False, f"rule_type '{data.rule_type}' requires rule_category 'PRICE_ADJUSTMENT'"
             
             if data.quantity_min is None and data.quantity_max is None:

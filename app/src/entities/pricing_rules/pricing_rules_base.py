@@ -17,8 +17,6 @@ PricingRuleType = Literal[
     'PERCENTAGE_DISCOUNT',
     'PRICE_MARKUP',
     'PERCENTAGE_MARKUP',
-    'BUNDLE',
-    'BOGO',
     'QUANTITY_BREAK'
 ]
 PricingRuleTargetType = Literal['PRODUCT', 'ALL_PRODUCTS', 'SKU', 'LOCATION', 'TAG', 'CATEGORY', 'BRAND', 'LABEL']
@@ -44,8 +42,7 @@ class PricingRuleBase(BaseModel):
     discount_value: Optional[Decimal] = Field(None, decimal_places=2, description="Fixed discount/markup value (e.g., -5.00 or +5.00)")
     discount_percent: Optional[Decimal] = Field(None, decimal_places=2, ge=-100, le=100, description="Percentage discount/markup (e.g., -10.00 or +10.00)")
     
-    # BOGO / BUNDLE / QUANTITY_BREAK
-    free_qty: int = Field(default=0, ge=0, description="Free quantity (e.g., Buy 2 get 1 free)")
+    free_qty: int = Field(default=0, ge=0, description="Free quantity")
     
     # Rule behavior
     stops_other_rules: bool = Field(default=False, description="If true, this rule stops/overrides other rules")

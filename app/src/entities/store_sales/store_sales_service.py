@@ -101,11 +101,12 @@ class StoreSalesService:
         org_id: str,
         bus_id: str,
         loc_id: str,
+        date_override: Optional[str] = None,
     ) -> str:
         """Generate a systematic sale number in format SAL-YYYYMMDD-NNN"""
         from datetime import datetime
-        
-        today = datetime.now().strftime("%Y%m%d")
+
+        today = date_override if date_override else datetime.now().strftime("%Y%m%d")
         prefix = f"SAL-{today}"
         
         cursor.execute(
@@ -390,14 +391,16 @@ class StoreSalesService:
                         'required_qty': Decimal(str(item.quantity))
                     }
 
-                # Generate sale number
+                # Generate sale number (use backdated date when available)
+                sale_number_date = cdate.replace("-", "") if occurred_at else None
                 sale_number = StoreSalesService._generate_sale_number(
-                    cursor, tenant_id, org_id, bus_id, loc_id
+                    cursor, tenant_id, org_id, bus_id, loc_id, date_override=sale_number_date
                 )
 
-                # Parse sale_date
+                # Parse sale_date — when backdating is active, always use the backdated date
+                effective_sale_date_str = cdate if occurred_at else (data.sale_date if data.sale_date else cdate)
                 try:
-                    sale_date = datetime.strptime(data.sale_date, "%Y-%m-%d").date()
+                    sale_date = datetime.strptime(effective_sale_date_str, "%Y-%m-%d").date()
                 except ValueError:
                     return Respons(
                         success=False,
@@ -1129,19 +1132,6 @@ class StoreSalesService:
                                     (float(new_batch_qty), batch_location_id, tenant_id, org_id, bus_id),
                                 )
 
-                                # Recalculate purchase batch qty_remaining from batch_locations to ensure consistency
-                                cursor.execute(
-                                    f"""UPDATE {db_settings.MSG_PURCHASE_BATCHES_TABLE}
-                                    SET qty_remaining = (
-                                        SELECT COALESCE(SUM(qty), 0)
-                                        FROM {db_settings.MSG_BATCH_LOCATIONS_TABLE}
-                                        WHERE purchase_batche_id = %s 
-                                        AND tenant_id = %s AND org_id = %s AND bus_id = %s
-                                    ), updated_by = %s
-                                    WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
-                                    (batch_id, tenant_id, org_id, bus_id, created_by, batch_id, tenant_id, org_id, bus_id),
-                                )
-
                                 batch_allocations.append({
                                     'batch_id': batch_id,
                                     'qty_deducted': float(qty_to_deduct)
@@ -1475,19 +1465,6 @@ class StoreSalesService:
                             (float(new_batch_qty), batch_location_id, tenant_id, org_id, bus_id),
                         )
 
-                            # Recalculate purchase batch qty_remaining from batch_locations to ensure consistency
-                            cursor.execute(
-                                f"""UPDATE {db_settings.MSG_PURCHASE_BATCHES_TABLE}
-                                SET qty_remaining = (
-                                    SELECT COALESCE(SUM(qty), 0)
-                                    FROM {db_settings.MSG_BATCH_LOCATIONS_TABLE}
-                                    WHERE purchase_batche_id = %s 
-                                    AND tenant_id = %s AND org_id = %s AND bus_id = %s
-                                ), updated_by = %s
-                                WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
-                                (batch_id, tenant_id, org_id, bus_id, created_by, batch_id, tenant_id, org_id, bus_id),
-                            )
-
                             # Create product movement
                             movement_id = Helper.generate_unique_identifier(prefix="mov")
                             cursor.execute(
@@ -1541,7 +1518,7 @@ class StoreSalesService:
 
                     # Update fulfillment status to FULFILLED and set fulfillment_date_time
                     fulfillment_status = 'FULFILLED'
-                    fulfillment_date_time = Helper.current_date_time()["cdatetime"]
+                    fulfillment_date_time = cdatetime
                     cursor.execute(
                         f"""UPDATE {db_settings.MSG_SALES_TABLE}
                         SET fulfillment_status = %s, status = %s, fulfillment_date_time = %s, updated_by = %s
@@ -2006,19 +1983,6 @@ class StoreSalesService:
                                 (float(quantity), batch_id, tenant_id, org_id, bus_id, loc_id),
                             )
 
-                            # Recalculate purchase batch qty_remaining from batch_locations to ensure consistency
-                            cursor.execute(
-                                f"""UPDATE {db_settings.MSG_PURCHASE_BATCHES_TABLE}
-                                SET qty_remaining = (
-                                    SELECT COALESCE(SUM(qty), 0)
-                                    FROM {db_settings.MSG_BATCH_LOCATIONS_TABLE}
-                                    WHERE purchase_batche_id = %s 
-                                    AND tenant_id = %s AND org_id = %s AND bus_id = %s
-                                ), updated_by = %s
-                                WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
-                                (batch_id, tenant_id, org_id, bus_id, updated_by, batch_id, tenant_id, org_id, bus_id),
-                            )
-
                         # Restore store product current_qty
                         cursor.execute(
                             f"""UPDATE {db_settings.MSG_STORE_PRODUCTS_TABLE}
@@ -2112,19 +2076,6 @@ class StoreSalesService:
                             WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
                             (float(new_batch_qty), batch_location_id, tenant_id, org_id, bus_id),
                         )
-
-                            # Recalculate purchase batch qty_remaining from batch_locations to ensure consistency
-                            cursor.execute(
-                                f"""UPDATE {db_settings.MSG_PURCHASE_BATCHES_TABLE}
-                                SET qty_remaining = (
-                                    SELECT COALESCE(SUM(qty), 0)
-                                    FROM {db_settings.MSG_BATCH_LOCATIONS_TABLE}
-                                    WHERE purchase_batche_id = %s 
-                                    AND tenant_id = %s AND org_id = %s AND bus_id = %s
-                                ), updated_by = %s
-                                WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
-                                (batch_id, tenant_id, org_id, bus_id, updated_by, batch_id, tenant_id, org_id, bus_id),
-                            )
 
                             batch_allocations.append({
                                 'batch_id': batch_id,
@@ -2540,19 +2491,6 @@ class StoreSalesService:
                             (float(quantity), batch_id, tenant_id, org_id, bus_id, loc_id),
                         )
 
-                        # Recalculate purchase batch qty_remaining from batch_locations to ensure consistency
-                        cursor.execute(
-                            f"""UPDATE {db_settings.MSG_PURCHASE_BATCHES_TABLE}
-                            SET qty_remaining = (
-                                SELECT COALESCE(SUM(qty), 0)
-                                FROM {db_settings.MSG_BATCH_LOCATIONS_TABLE}
-                                WHERE purchase_batche_id = %s 
-                                AND tenant_id = %s AND org_id = %s AND bus_id = %s
-                            ), updated_by = %s
-                            WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
-                            (batch_id, tenant_id, org_id, bus_id, cancelled_by, batch_id, tenant_id, org_id, bus_id),
-                        )
-
                     # Restore store product current_qty
                     cursor.execute(
                         f"""UPDATE {db_settings.MSG_STORE_PRODUCTS_TABLE}
@@ -2888,19 +2826,7 @@ class StoreSalesService:
                             (float(new_batch_qty), batch_location_id, tenant_id, org_id, bus_id),
                         )
 
-                        # Recalculate purchase batch qty_remaining from batch_locations to ensure consistency
                         batch_id = batch['purchase_batche_id']
-                        cursor.execute(
-                            f"""UPDATE {db_settings.MSG_PURCHASE_BATCHES_TABLE}
-                            SET qty_remaining = (
-                                SELECT COALESCE(SUM(qty), 0)
-                                FROM {db_settings.MSG_BATCH_LOCATIONS_TABLE}
-                                WHERE purchase_batche_id = %s 
-                                AND tenant_id = %s AND org_id = %s AND bus_id = %s
-                            ), updated_by = %s
-                            WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
-                            (batch_id, tenant_id, org_id, bus_id, updated_by, batch_id, tenant_id, org_id, bus_id),
-                        )
 
                         # Create product movement
                         movement_id = Helper.generate_unique_identifier(prefix="mov")
@@ -3689,14 +3615,26 @@ class StoreSalesService:
                 )
                 status_stats_results = cursor.fetchall()
 
+                all_sale_statuses = ['PAID', 'PARTIALLY_PAID', 'ON_HOLD', 'CANCELLED', 'QUEUED']
+                status_stats_map = {stat['status']: stat for stat in status_stats_results}
+
                 status_breakdown = []
-                for stat in status_stats_results:
-                    status_breakdown.append(SalesStatusStats(
-                        status=stat['status'],
-                        count=int(stat['count']),
-                        total_amount=StoreSalesService._round_money(stat['total_amount']),
-                        total_paid=StoreSalesService._round_money(stat['total_paid'])
-                    ))
+                for status in all_sale_statuses:
+                    if status in status_stats_map:
+                        stat = status_stats_map[status]
+                        status_breakdown.append(SalesStatusStats(
+                            status=stat['status'],
+                            count=int(stat['count']),
+                            total_amount=StoreSalesService._round_money(stat['total_amount']),
+                            total_paid=StoreSalesService._round_money(stat['total_paid'])
+                        ))
+                    else:
+                        status_breakdown.append(SalesStatusStats(
+                            status=status,
+                            count=0,
+                            total_amount=0.0,
+                            total_paid=0.0
+                        ))
 
                 # Get statistics by payment method - include all methods even with 0
                 all_payment_methods = ['CASH', 'CARD', 'BANK_TRANSFER', 'MOBILE_MONEY', 'CHEQUE', 'BITCOIN', 'OTHERS']
