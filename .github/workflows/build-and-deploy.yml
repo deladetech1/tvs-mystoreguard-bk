@@ -1,0 +1,160 @@
+name: Build & Deploy MyStoreGuard Backend
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+    paths:
+      - "app/**"
+      - "func/**"
+      - ".github/workflows/build-and-deploy.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  SERVICE_NAME: mystoreguard
+  DOCKERFILE_PATH: app/Dockerfile
+  BUILD_CONTEXT: .
+
+jobs:
+  detect-changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      app_changed: ${{ steps.changes.outputs.app }}
+      func_changed: ${{ steps.changes.outputs.func }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check for changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            app:
+              - 'app/**'
+              - '.github/workflows/build-and-deploy.yml'
+            func:
+              - 'func/**'
+              - '.github/workflows/build-and-deploy.yml'
+
+  build-and-deploy-app:
+    name: Build & Deploy Container App
+    needs: detect-changes
+    if: needs.detect-changes.outputs.app_changed == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Determine environment
+        id: env
+        run: |
+          if [[ "${{ github.ref_name }}" == "main" ]]; then
+            echo "env=prod" >> "$GITHUB_OUTPUT"
+            echo "acr_name=${{ vars.PROD_CONTAINER_REGISTRY_NAME }}" >> "$GITHUB_OUTPUT"
+            echo "subscription_id=${{ secrets.TROVESUITE_PROD_AZURE_SUBSCRIPTION_ID }}" >> "$GITHUB_OUTPUT"
+            echo "container_app_name=trovesuite-prod-mystoreguard-ca" >> "$GITHUB_OUTPUT"
+            echo "resource_group=${{ vars.PROD_RESOURCE_GROUP }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "env=dev" >> "$GITHUB_OUTPUT"
+            echo "acr_name=${{ vars.DEV_CONTAINER_REGISTRY_NAME }}" >> "$GITHUB_OUTPUT"
+            echo "subscription_id=${{ secrets.TROVESUITE_DEV_AZURE_SUBSCRIPTION_ID }}" >> "$GITHUB_OUTPUT"
+            echo "container_app_name=trovesuite-dev-mystoreguard-ca" >> "$GITHUB_OUTPUT"
+            echo "resource_group=${{ vars.DEV_RESOURCE_GROUP }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.TROVESUITE_AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ steps.env.outputs.subscription_id }}
+
+      - name: Login to Azure Container Registry
+        run: az acr login --name ${{ steps.env.outputs.acr_name }}
+
+      - name: Build and push Docker image
+        id: build
+        run: |
+          ACR_LOGIN_SERVER="${{ steps.env.outputs.acr_name }}.azurecr.io"
+          IMAGE_TAG="${{ github.run_number }}"
+
+          docker build \
+            -t "${ACR_LOGIN_SERVER}/${{ env.SERVICE_NAME }}:${IMAGE_TAG}" \
+            -t "${ACR_LOGIN_SERVER}/${{ env.SERVICE_NAME }}:latest" \
+            -f ${{ env.DOCKERFILE_PATH }} \
+            ${{ env.BUILD_CONTEXT }}
+
+          docker push "${ACR_LOGIN_SERVER}/${{ env.SERVICE_NAME }}:${IMAGE_TAG}"
+          docker push "${ACR_LOGIN_SERVER}/${{ env.SERVICE_NAME }}:latest"
+
+          echo "image=${ACR_LOGIN_SERVER}/${{ env.SERVICE_NAME }}:${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy to Azure Container Apps
+        run: |
+          az containerapp update \
+            --name ${{ steps.env.outputs.container_app_name }} \
+            --resource-group ${{ steps.env.outputs.resource_group }} \
+            --image ${{ steps.build.outputs.image }}
+
+  deploy-functions:
+    name: Deploy Azure Functions
+    needs: detect-changes
+    if: needs.detect-changes.outputs.func_changed == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Determine environment
+        id: env
+        run: |
+          if [[ "${{ github.ref_name }}" == "main" ]]; then
+            echo "env=prod" >> "$GITHUB_OUTPUT"
+            echo "subscription_id=${{ secrets.TROVESUITE_PROD_AZURE_SUBSCRIPTION_ID }}" >> "$GITHUB_OUTPUT"
+            echo "function_app_name=trovesuite-prod-mystoreguard-func" >> "$GITHUB_OUTPUT"
+            echo "resource_group=${{ vars.PROD_RESOURCE_GROUP }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "env=dev" >> "$GITHUB_OUTPUT"
+            echo "subscription_id=${{ secrets.TROVESUITE_DEV_AZURE_SUBSCRIPTION_ID }}" >> "$GITHUB_OUTPUT"
+            echo "function_app_name=trovesuite-dev-mystoreguard-func" >> "$GITHUB_OUTPUT"
+            echo "resource_group=${{ vars.DEV_RESOURCE_GROUP }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install function dependencies
+        run: |
+          cd func
+          pip install -r requirements.txt --target .python_packages/lib/site-packages
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.TROVESUITE_AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ steps.env.outputs.subscription_id }}
+
+      - name: Deploy Azure Functions
+        uses: azure/functions-action@v2
+        with:
+          app-name: ${{ steps.env.outputs.function_app_name }}
+          package: func

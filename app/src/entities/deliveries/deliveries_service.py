@@ -1,6 +1,10 @@
 from typing import Optional, List
 from decimal import Decimal
 from datetime import datetime, date
+import smtplib
+import threading
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from src.entities.deliveries.deliveries_read_dto import (
     CreateDeliveryServiceReadDto,
     UpdateDeliveryServiceReadDto,
@@ -24,6 +28,13 @@ from src.entities.deliveries.deliveries_write_dto import (
     CancelDeliveryServiceWriteDto,
     DeleteDeliveryServiceWriteDto,
 )
+from src.entities.deliveries.deliveries_email_builder import (
+    build_delivery_created_email,
+    build_delivery_status_changed_email,
+    build_delivery_dispatched_email,
+    build_delivery_completed_email,
+    build_delivery_cancelled_email,
+)
 from src.entities.shared.sh_response import Respons, PaginationMeta
 from src.entities.shared.sh_service import ActivityLogService
 from src.configs.settings import db_settings
@@ -32,6 +43,93 @@ from src.configs.logging import get_logger
 from trovesuite.utils import Helper
 
 logger = get_logger("deliveries_service")
+
+
+def _do_send_email(to_email: str, subject: str, body: str, mail_sender_email: str, mail_sender_pwd: str):
+    """Send the email via SMTP (runs in background thread)"""
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = mail_sender_email
+        msg['To'] = to_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'html'))
+
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(mail_sender_email, mail_sender_pwd)
+        server.send_message(msg)
+        server.quit()
+        logger.info(f"Delivery email sent successfully to {to_email}")
+    except Exception as e:
+        logger.error(f"Failed to send delivery email to {to_email}: {str(e)}", exc_info=True)
+
+
+def _send_delivery_email_notification(
+    to_email: str,
+    subject: str,
+    body: str,
+    tenant_id: str,
+) -> bool:
+    """Send delivery email notification in a background thread"""
+    try:
+        if not to_email:
+            logger.warning("No email address provided for delivery notification")
+            return False
+
+        logger.info(
+            "Sending delivery email notification",
+            extra={
+                "extra_fields": {
+                    "to": to_email,
+                    "subject": subject,
+                    "tenant_id": tenant_id,
+                }
+            }
+        )
+
+        mail_sender_email, mail_sender_pwd = Helper.get_email_credentials(tenant_id)
+
+        if mail_sender_email and mail_sender_pwd:
+            thread = threading.Thread(
+                target=_do_send_email,
+                args=(to_email, subject, body, mail_sender_email, mail_sender_pwd),
+                daemon=True
+            )
+            thread.start()
+            logger.info(f"Delivery email notification queued for {to_email}")
+            return True
+        else:
+            logger.warning(
+                "Email credentials not configured. Delivery email notification not sent.",
+                extra={
+                    "extra_fields": {
+                        "to": to_email,
+                        "subject": subject,
+                        "tenant_id": tenant_id,
+                    }
+                }
+            )
+            return False
+    except Exception as e:
+        logger.error(f"Error in delivery email notification: {str(e)}", exc_info=True)
+        return False
+
+
+def _get_customer_email(cursor, customer_id: str, tenant_id: str, org_id: str, bus_id: str) -> Optional[str]:
+    """Get customer email from the customers table"""
+    if not customer_id:
+        return None
+    try:
+        cursor.execute(
+            f"""SELECT email FROM {db_settings.MSG_CUSTOMERS_TABLE}
+            WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
+            (customer_id, tenant_id, org_id, bus_id),
+        )
+        result = cursor.fetchone()
+        return result.get('email') if result else None
+    except Exception as e:
+        logger.warning(f"Failed to get customer email: {str(e)}")
+        return None
 
 
 class DeliveriesService:
@@ -404,6 +502,25 @@ class DeliveriesService:
                         }
                     },
                 )
+
+                # Send email notification to customer
+                try:
+                    customer_email = _get_customer_email(cursor, sale.get('customer_id'), tenant_id, org_id, bus_id)
+                    if customer_email:
+                        email_delivery_dict = dict(delivery_result)
+                        email_delivery_dict['delivery_number'] = delivery_number
+                        email_delivery_dict['sale_number'] = sale.get('sale_number')
+                        email_delivery_dict['customer_name'] = customer_name
+                        email_delivery_dict['driver_name'] = driver_name
+                        email_delivery_dict['currency_symbol'] = currency_symbol
+                        email_items = [dict(item) for item in delivery_items_list]
+                        for ei in email_items:
+                            si = sale_items_dict.get(ei.get('sale_item_id'))
+                            ei['product_name'] = si.get('product_name_full') or si.get('product_name') if si else None
+                        subject, body = build_delivery_created_email(email_delivery_dict, email_items)
+                        _send_delivery_email_notification(customer_email, subject, body, tenant_id)
+                except Exception as email_err:
+                    logger.warning(f"Delivery created but email notification failed: {email_err}", exc_info=True)
 
                 return Respons(
                     success=True,
@@ -996,6 +1113,23 @@ class DeliveriesService:
                 except Exception as log_err:
                     logger.warning(f"Activity log failed: {log_err}", exc_info=True)
 
+                # Send email notification to customer
+                try:
+                    cursor.execute(
+                        f"""SELECT customer_id FROM {db_settings.MSG_SALES_TABLE}
+                        WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s AND loc_id = %s""",
+                        (delivery.get('sale_id'), tenant_id, org_id, bus_id, loc_id),
+                    )
+                    sale_row = cursor.fetchone()
+                    customer_email = _get_customer_email(cursor, sale_row.get('customer_id') if sale_row else None, tenant_id, org_id, bus_id)
+                    if customer_email:
+                        old_status = delivery.get('delivery_status')
+                        new_status = data.delivery_status.upper()
+                        subject, body = build_delivery_status_changed_email(dict(delivery), old_status, new_status, data.notes)
+                        _send_delivery_email_notification(customer_email, subject, body, tenant_id)
+                except Exception as email_err:
+                    logger.warning(f"Status update email notification failed: {email_err}", exc_info=True)
+
                 # Get updated delivery
                 return DeliveriesService.get_delivery(data.delivery_id, tenant_id, org_id, bus_id, loc_id)
 
@@ -1111,6 +1245,36 @@ class DeliveriesService:
                 except Exception as log_err:
                     logger.warning(f"Activity log failed: {log_err}", exc_info=True)
 
+                # Send email notification to customer
+                try:
+                    cursor.execute(
+                        f"""SELECT customer_id FROM {db_settings.MSG_SALES_TABLE}
+                        WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s AND loc_id = %s""",
+                        (delivery.get('sale_id'), tenant_id, org_id, bus_id, loc_id),
+                    )
+                    sale_row = cursor.fetchone()
+                    customer_email = _get_customer_email(cursor, sale_row.get('customer_id') if sale_row else None, tenant_id, org_id, bus_id)
+                    if customer_email:
+                        # Get driver name for the email
+                        dispatch_driver_name = None
+                        driver_id_for_email = data.driver_id or delivery.get('driver_id')
+                        if driver_id_for_email:
+                            cursor.execute(
+                                f"""SELECT fullname FROM {db_settings.CORE_PLATFORM_USERS_TABLE}
+                                WHERE tenant_id = %s AND id = %s""",
+                                (tenant_id, driver_id_for_email),
+                            )
+                            driver_row = cursor.fetchone()
+                            dispatch_driver_name = driver_row.get('fullname') if driver_row else None
+                        email_dict = dict(delivery)
+                        email_dict['driver_name'] = dispatch_driver_name
+                        if data.tracking_number:
+                            email_dict['tracking_number'] = data.tracking_number
+                        subject, body = build_delivery_dispatched_email(email_dict, data.notes)
+                        _send_delivery_email_notification(customer_email, subject, body, tenant_id)
+                except Exception as email_err:
+                    logger.warning(f"Dispatch email notification failed: {email_err}", exc_info=True)
+
                 # Get updated delivery
                 return DeliveriesService.get_delivery(data.delivery_id, tenant_id, org_id, bus_id, loc_id)
 
@@ -1198,6 +1362,21 @@ class DeliveriesService:
                 except Exception as log_err:
                     logger.warning(f"Activity log failed: {log_err}", exc_info=True)
 
+                # Send email notification to customer
+                try:
+                    cursor.execute(
+                        f"""SELECT customer_id FROM {db_settings.MSG_SALES_TABLE}
+                        WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s AND loc_id = %s""",
+                        (delivery.get('sale_id'), tenant_id, org_id, bus_id, loc_id),
+                    )
+                    sale_row = cursor.fetchone()
+                    customer_email = _get_customer_email(cursor, sale_row.get('customer_id') if sale_row else None, tenant_id, org_id, bus_id)
+                    if customer_email:
+                        subject, body = build_delivery_completed_email(dict(delivery), data.notes)
+                        _send_delivery_email_notification(customer_email, subject, body, tenant_id)
+                except Exception as email_err:
+                    logger.warning(f"Complete delivery email notification failed: {email_err}", exc_info=True)
+
                 # Get updated delivery
                 return DeliveriesService.get_delivery(data.delivery_id, tenant_id, org_id, bus_id, loc_id)
 
@@ -1284,6 +1463,21 @@ class DeliveriesService:
                     )
                 except Exception as log_err:
                     logger.warning(f"Activity log failed: {log_err}", exc_info=True)
+
+                # Send email notification to customer
+                try:
+                    cursor.execute(
+                        f"""SELECT customer_id FROM {db_settings.MSG_SALES_TABLE}
+                        WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s AND loc_id = %s""",
+                        (delivery.get('sale_id'), tenant_id, org_id, bus_id, loc_id),
+                    )
+                    sale_row = cursor.fetchone()
+                    customer_email = _get_customer_email(cursor, sale_row.get('customer_id') if sale_row else None, tenant_id, org_id, bus_id)
+                    if customer_email:
+                        subject, body = build_delivery_cancelled_email(dict(delivery), data.reason)
+                        _send_delivery_email_notification(customer_email, subject, body, tenant_id)
+                except Exception as email_err:
+                    logger.warning(f"Cancel delivery email notification failed: {email_err}", exc_info=True)
 
                 # Get updated delivery
                 return DeliveriesService.get_delivery(data.delivery_id, tenant_id, org_id, bus_id, loc_id)
