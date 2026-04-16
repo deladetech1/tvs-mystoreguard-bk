@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, List
 from decimal import Decimal
 from datetime import datetime
 from pydantic import BaseModel, Field
@@ -49,7 +49,8 @@ class UpdateReturnPolicyWriteBase(BaseModel):
 
     # Approval
     approval_required: Optional[bool] = Field(None, description="Whether manager approval is required")
-    approval_threshold_amount: Optional[Decimal] = Field(None, ge=0, decimal_places=2, description="Approval threshold amount")
+    approvers: Optional[List[str]] = Field(None, description="List of email addresses of users who can approve returns")
+    approval_threshold_amount: Optional[Decimal] = Field(None, gt=0, decimal_places=2, description="Approval threshold amount. Must be greater than 0.")
 
     # Policy behavior
     stops_other_policies: Optional[bool] = Field(None, description="If true, this policy stops other policies")

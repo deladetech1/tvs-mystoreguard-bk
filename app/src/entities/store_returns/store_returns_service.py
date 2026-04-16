@@ -483,6 +483,37 @@ class StoreReturnsService:
                         error="INVALID_STATUS",
                     )
 
+                # Check if this user is an authorized approver for this return's policy
+                return_policy_id = old_data.get('return_policy_id')
+                if return_policy_id:
+                    cursor.execute(
+                        f"""SELECT approvers FROM {db_settings.MSG_RETURN_POLICIES_TABLE}
+                        WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                        (return_policy_id, tenant_id, org_id, bus_id),
+                    )
+                    policy_record = cursor.fetchone()
+                    if policy_record:
+                        approvers_list = policy_record.get('approvers')
+                        # Parse JSONB if it comes back as string
+                        if isinstance(approvers_list, str):
+                            import json as _json
+                            approvers_list = _json.loads(approvers_list)
+                        if approvers_list and len(approvers_list) > 0:
+                            # Get the approving user's email
+                            cursor.execute(
+                                f"""SELECT email FROM {db_settings.CORE_PLATFORM_USERS_TABLE}
+                                WHERE id = %s AND tenant_id = %s""",
+                                (approved_by, tenant_id),
+                            )
+                            user_record = cursor.fetchone()
+                            user_email = user_record.get('email', '') if user_record else ''
+                            if user_email not in approvers_list:
+                                return Respons(
+                                    success=False,
+                                    detail=f"You are not an authorized approver for this return policy. Authorized approvers: {', '.join(approvers_list)}",
+                                    error="NOT_AUTHORIZED_APPROVER",
+                                )
+
                 cdatetime = Helper.current_date_time()["cdatetime"]
                 cursor.execute(
                     f"""UPDATE {db_settings.MSG_RETURNS_TABLE}
@@ -550,6 +581,35 @@ class StoreReturnsService:
                         detail=f"Return is '{old_data['status']}', only PENDING returns can be rejected",
                         error="INVALID_STATUS",
                     )
+
+                # Check if this user is an authorized approver for this return's policy
+                return_policy_id = old_data.get('return_policy_id')
+                if return_policy_id:
+                    cursor.execute(
+                        f"""SELECT approvers FROM {db_settings.MSG_RETURN_POLICIES_TABLE}
+                        WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                        (return_policy_id, tenant_id, org_id, bus_id),
+                    )
+                    policy_record = cursor.fetchone()
+                    if policy_record:
+                        approvers_list = policy_record.get('approvers')
+                        if isinstance(approvers_list, str):
+                            import json as _json
+                            approvers_list = _json.loads(approvers_list)
+                        if approvers_list and len(approvers_list) > 0:
+                            cursor.execute(
+                                f"""SELECT email FROM {db_settings.CORE_PLATFORM_USERS_TABLE}
+                                WHERE id = %s AND tenant_id = %s""",
+                                (rejected_by, tenant_id),
+                            )
+                            user_record = cursor.fetchone()
+                            user_email = user_record.get('email', '') if user_record else ''
+                            if user_email not in approvers_list:
+                                return Respons(
+                                    success=False,
+                                    detail=f"You are not an authorized approver for this return policy. Authorized approvers: {', '.join(approvers_list)}",
+                                    error="NOT_AUTHORIZED_APPROVER",
+                                )
 
                 cdatetime = Helper.current_date_time()["cdatetime"]
                 cursor.execute(

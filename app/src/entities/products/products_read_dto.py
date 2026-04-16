@@ -173,8 +173,8 @@ class ProductReadBase(ProductBase):
     
     # Price calculator details
     taxes_applied: List[TaxAppliedReadDto] = Field(default_factory=list, description="List of taxes applied to the product")
-    pricing_rule_applied: Optional[PricingRuleAppliedReadDto] = Field(None, description="Pricing rule applied to the product")
-    tax_rule_applied: Optional[TaxRuleAppliedReadDto] = Field(None, description="Tax rule applied to the product")
+    pricing_rules_applied: List[PricingRuleAppliedReadDto] = Field(default_factory=list, description="List of pricing rules that match this product")
+    tax_rules_applied: List[TaxRuleAppliedReadDto] = Field(default_factory=list, description="List of tax rules applied to the product")
 
 
 class CreateProductControllerReadDto(ProductReadBase):
