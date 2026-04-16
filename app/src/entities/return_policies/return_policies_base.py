@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, List
 from typing_extensions import Literal
 from decimal import Decimal
 from datetime import datetime
@@ -39,7 +39,8 @@ class ReturnPolicyBase(BaseModel):
 
     # Approval
     approval_required: bool = Field(default=False, description="Whether manager approval is required for returns under this policy")
-    approval_threshold_amount: Optional[Decimal] = Field(None, ge=0, decimal_places=2, description="If set, approval is only required when refund amount exceeds this threshold")
+    approvers: Optional[List[str]] = Field(None, description="List of email addresses of users who can approve returns under this policy. If empty and approval_required is true, anyone with the approve permission can approve.")
+    approval_threshold_amount: Optional[Decimal] = Field(None, gt=0, decimal_places=2, description="If set, approval is only required when refund amount exceeds this threshold. Must be greater than 0.")
 
     # Policy behavior
     stops_other_policies: bool = Field(default=False, description="If true, this policy stops/overrides other policies from being evaluated")

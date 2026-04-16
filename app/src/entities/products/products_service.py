@@ -642,8 +642,8 @@ class ProductsService:
                 product_dict['currency_name'] = None
                 product_dict['currency_symbol'] = None
                 product_dict['taxes_applied'] = []
-                product_dict['pricing_rule_applied'] = None
-                product_dict['tax_rule_applied'] = None
+                product_dict['pricing_rules_applied'] = []
+                product_dict['tax_rules_applied'] = []
 
                 # Create DTO - if this fails, let it raise to rollback transaction (data integrity issue)
                 product_read = CreateProductServiceReadDto(**product_dict)
@@ -991,8 +991,8 @@ class ProductsService:
                 product_dict['currency_name'] = None
                 product_dict['currency_symbol'] = None
                 product_dict['taxes_applied'] = []
-                product_dict['pricing_rule_applied'] = None
-                product_dict['tax_rule_applied'] = None
+                product_dict['pricing_rules_applied'] = []
+                product_dict['tax_rules_applied'] = []
 
                 product_read = UpdateProductServiceReadDto(**product_dict)
 
@@ -1234,8 +1234,8 @@ class ProductsService:
                     product_dict['currency_name'] = prices.get('currency_name')
                     product_dict['currency_symbol'] = prices.get('currency_symbol')
                     product_dict['taxes_applied'] = prices.get('taxes_applied', [])
-                    product_dict['pricing_rule_applied'] = prices.get('pricing_rule_applied')
-                    product_dict['tax_rule_applied'] = prices.get('tax_rule_applied')
+                    product_dict['pricing_rules_applied'] = prices.get('pricing_rules_applied', [])
+                    product_dict['tax_rules_applied'] = prices.get('tax_rules_applied', [])
                 except Exception as price_err:
                     logger.warning(f"Error calculating prices for product {product_id}: {str(price_err)}", exc_info=True)
                     product_dict['actual_price'] = None
@@ -1244,8 +1244,8 @@ class ProductsService:
                     product_dict['tax_amount'] = None
                     product_dict['final_price'] = None
                     product_dict['taxes_applied'] = []
-                    product_dict['pricing_rule_applied'] = None
-                    product_dict['tax_rule_applied'] = None
+                    product_dict['pricing_rules_applied'] = []
+                    product_dict['tax_rules_applied'] = []
 
                 product_read = GetProductServiceReadDto(**product_dict)
 
@@ -1503,8 +1503,8 @@ class ProductsService:
                         prod_dict['currency_name'] = prices.get('currency_name')
                         prod_dict['currency_symbol'] = prices.get('currency_symbol')
                         prod_dict['taxes_applied'] = prices.get('taxes_applied', [])
-                        prod_dict['pricing_rule_applied'] = prices.get('pricing_rule_applied')
-                        prod_dict['tax_rule_applied'] = prices.get('tax_rule_applied')
+                        prod_dict['pricing_rules_applied'] = prices.get('pricing_rules_applied', [])
+                        prod_dict['tax_rules_applied'] = prices.get('tax_rules_applied', [])
                     except Exception as price_err:
                         logger.warning(f"Error calculating prices for product {prod_dict['id']}: {str(price_err)}", exc_info=True)
                         prod_dict['actual_price'] = None
@@ -1513,8 +1513,8 @@ class ProductsService:
                         prod_dict['tax_amount'] = None
                         prod_dict['final_price'] = None
                         prod_dict['taxes_applied'] = []
-                        prod_dict['pricing_rule_applied'] = None
-                        prod_dict['tax_rule_applied'] = None
+                        prod_dict['pricing_rules_applied'] = []
+                        prod_dict['tax_rules_applied'] = []
 
                     product_list.append(GetProductsServiceReadDto(**prod_dict))
 

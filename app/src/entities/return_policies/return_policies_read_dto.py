@@ -102,7 +102,6 @@ class ReturnPolicyStatisticsReadBase(BaseModel):
     total_approval_required: int = Field(default=0, description="Total policies requiring approval")
 
     # Additional statistics
-    total_stops_other_policies: int = Field(default=0, description="Total policies that stop other policies")
     average_priority: Optional[Decimal] = Field(default=None, description="Average priority of all policies")
     average_return_window_days: Optional[Decimal] = Field(default=None, description="Average return window in days")
 

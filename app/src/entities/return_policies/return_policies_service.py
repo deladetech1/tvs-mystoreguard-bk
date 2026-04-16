@@ -192,6 +192,10 @@ class ReturnPoliciesService:
                 policy_id = Helper.generate_unique_identifier(prefix="rtp")
 
                 # Insert into msg_return_policies table
+                # Serialize approvers list to JSON for JSONB column
+                import json as _json
+                approvers_json = _json.dumps(data.approvers) if data.approvers else None
+
                 logger.info(f"Inserting return policy {policy_id} into {db_settings.MSG_RETURN_POLICIES_TABLE}")
                 cursor.execute(
                     f"""INSERT INTO {db_settings.MSG_RETURN_POLICIES_TABLE}
@@ -199,10 +203,10 @@ class ReturnPoliciesService:
                      policy_target_type, policy_target_id,
                      return_window_days, condition_required, receipt_required, allow_expired_returns,
                      restocking_fee_percent, refund_method,
-                     approval_required, approval_threshold_amount,
+                     approval_required, approvers, approval_threshold_amount,
                      stops_other_policies, priority, start_datetime, end_datetime, is_active,
                      cdate, ctime, cdatetime, created_by)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING *""",
                     (
                         policy_id, tenant_id, org_id, bus_id,
@@ -210,7 +214,8 @@ class ReturnPoliciesService:
                         data.policy_target_type, data.policy_target_id,
                         data.return_window_days, data.condition_required, data.receipt_required, data.allow_expired_returns,
                         float(data.restocking_fee_percent), data.refund_method,
-                        data.approval_required, float(data.approval_threshold_amount) if data.approval_threshold_amount is not None else None,
+                        data.approval_required, approvers_json,
+                        float(data.approval_threshold_amount) if data.approval_threshold_amount is not None else None,
                         data.stops_other_policies, data.priority,
                         data.start_datetime, data.end_datetime, data.is_active,
                         cdate, ctime, cdatetime, created_by
@@ -439,6 +444,10 @@ class ReturnPoliciesService:
                 if data.approval_required is not None:
                     update_fields.append("approval_required = %s")
                     params.append(data.approval_required)
+                if data.approvers is not None:
+                    import json as _json
+                    update_fields.append("approvers = %s")
+                    params.append(_json.dumps(data.approvers) if data.approvers else None)
                 if data.approval_threshold_amount is not None:
                     update_fields.append("approval_threshold_amount = %s")
                     params.append(float(data.approval_threshold_amount))
@@ -806,7 +815,6 @@ class ReturnPoliciesService:
                         COUNT(CASE WHEN approval_required = TRUE THEN 1 END) as total_approval_required,
 
                         -- Additional statistics
-                        COUNT(CASE WHEN stops_other_policies = TRUE THEN 1 END) as total_stops_other_policies,
                         AVG(priority) as average_priority,
                         AVG(return_window_days) as average_return_window_days
                     FROM {db_settings.MSG_RETURN_POLICIES_TABLE}
@@ -827,7 +835,6 @@ class ReturnPoliciesService:
                         total_non_returnable=0,
                         total_with_restocking_fee=0,
                         total_approval_required=0,
-                        total_stops_other_policies=0,
                         average_priority=None,
                         average_return_window_days=None,
                     )
@@ -851,7 +858,6 @@ class ReturnPoliciesService:
                         total_non_returnable=result.get('total_non_returnable', 0) or 0,
                         total_with_restocking_fee=result.get('total_with_restocking_fee', 0) or 0,
                         total_approval_required=result.get('total_approval_required', 0) or 0,
-                        total_stops_other_policies=result.get('total_stops_other_policies', 0) or 0,
                         average_priority=avg_priority,
                         average_return_window_days=avg_return_window,
                     )

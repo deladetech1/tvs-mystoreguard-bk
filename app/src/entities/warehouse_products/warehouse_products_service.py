@@ -656,8 +656,8 @@ class WarehouseProductsService:
                     sp_dict['tax_amount'] = None  # No tax for warehouse products
                     sp_dict['final_price'] = prices.get('final_price')  # Same as price_after_pricing_rule
                     sp_dict['taxes_applied'] = []  # No tax for warehouse products
-                    sp_dict['pricing_rule_applied'] = prices.get('pricing_rule_applied')
-                    sp_dict['tax_rule_applied'] = None  # No tax for warehouse products
+                    sp_dict['pricing_rules_applied'] = prices.get('pricing_rules_applied', [])
+                    sp_dict['tax_rules_applied'] = []  # No tax for warehouse products
                 except Exception as price_err:
                     # If price calculation fails, set to None and log
                     logger.debug(f"Price calculation failed for product {data.product_id}: {str(price_err)}")
@@ -667,8 +667,8 @@ class WarehouseProductsService:
                     sp_dict['tax_amount'] = None
                     sp_dict['final_price'] = None
                     sp_dict['taxes_applied'] = []
-                    sp_dict['pricing_rule_applied'] = None
-                    sp_dict['tax_rule_applied'] = None
+                    sp_dict['pricing_rules_applied'] = []
+                    sp_dict['tax_rules_applied'] = []
 
                 sp_read = CreateWarehouseProductServiceReadDto(**sp_dict)
 
@@ -1376,8 +1376,8 @@ class WarehouseProductsService:
                         sp_dict['tax_amount'] = round(float(tax_amount), 2)
                         sp_dict['final_price'] = float(final_price)
                         sp_dict['taxes_applied'] = taxes_applied
-                        sp_dict['pricing_rule_applied'] = pricing_result.get('pricing_rule_applied')
-                        sp_dict['tax_rule_applied'] = tax_result.get('tax_rule_applied')
+                        sp_dict['pricing_rules_applied'] = pricing_result.get('pricing_rules_applied', [])
+                        sp_dict['tax_rules_applied'] = tax_result.get('tax_rules_applied', [])
                     else:
                         # No price available
                         sp_dict['actual_price'] = None
@@ -1386,8 +1386,8 @@ class WarehouseProductsService:
                         sp_dict['tax_amount'] = None
                         sp_dict['final_price'] = None
                         sp_dict['taxes_applied'] = []
-                        sp_dict['pricing_rule_applied'] = None
-                        sp_dict['tax_rule_applied'] = None
+                        sp_dict['pricing_rules_applied'] = []
+                        sp_dict['tax_rules_applied'] = []
                 except Exception as price_err:
                     # If price calculation fails, set to None and log
                     logger.debug(f"Price calculation failed for product {product_id}: {str(price_err)}")
@@ -1397,8 +1397,8 @@ class WarehouseProductsService:
                     sp_dict['tax_amount'] = None
                     sp_dict['final_price'] = None
                     sp_dict['taxes_applied'] = []
-                    sp_dict['pricing_rule_applied'] = None
-                    sp_dict['tax_rule_applied'] = None
+                    sp_dict['pricing_rules_applied'] = []
+                    sp_dict['tax_rules_applied'] = []
 
                 sp_read = UpdateWarehouseProductServiceReadDto(**sp_dict)
 
@@ -1752,8 +1752,8 @@ class WarehouseProductsService:
                         sp_dict['tax_amount'] = round(float(tax_amount), 2)
                         sp_dict['final_price'] = float(final_price)
                         sp_dict['taxes_applied'] = taxes_applied
-                        sp_dict['pricing_rule_applied'] = pricing_result.get('pricing_rule_applied')
-                        sp_dict['tax_rule_applied'] = tax_result.get('tax_rule_applied')
+                        sp_dict['pricing_rules_applied'] = pricing_result.get('pricing_rules_applied', [])
+                        sp_dict['tax_rules_applied'] = tax_result.get('tax_rules_applied', [])
                     else:
                         # No price available
                         sp_dict['actual_price'] = None
@@ -1762,8 +1762,8 @@ class WarehouseProductsService:
                         sp_dict['tax_amount'] = None
                         sp_dict['final_price'] = None
                         sp_dict['taxes_applied'] = []
-                        sp_dict['pricing_rule_applied'] = None
-                        sp_dict['tax_rule_applied'] = None
+                        sp_dict['pricing_rules_applied'] = []
+                        sp_dict['tax_rules_applied'] = []
                 except Exception as price_err:
                     # If price calculation fails, set to None and log
                     logger.debug(f"Price calculation failed for product {product_id}: {str(price_err)}")
@@ -1773,8 +1773,8 @@ class WarehouseProductsService:
                     sp_dict['tax_amount'] = None
                     sp_dict['final_price'] = None
                     sp_dict['taxes_applied'] = []
-                    sp_dict['pricing_rule_applied'] = None
-                    sp_dict['tax_rule_applied'] = None
+                    sp_dict['pricing_rules_applied'] = []
+                    sp_dict['tax_rules_applied'] = []
 
                 sp_read = GetWarehouseProductServiceReadDto(**sp_dict)
 
@@ -2137,8 +2137,8 @@ class WarehouseProductsService:
                         sp_dict['tax_amount'] = None  # No tax for warehouse products
                         sp_dict['final_price'] = prices.get('final_price')  # Same as price_after_pricing_rule
                         sp_dict['taxes_applied'] = []  # No tax for warehouse products
-                        sp_dict['pricing_rule_applied'] = prices.get('pricing_rule_applied')
-                        sp_dict['tax_rule_applied'] = None  # No tax for warehouse products
+                        sp_dict['pricing_rules_applied'] = prices.get('pricing_rules_applied', [])
+                        sp_dict['tax_rules_applied'] = []  # No tax for warehouse products
                     except Exception as price_err:
                         # If price calculation fails, set to None and log
                         logger.debug(f"Price calculation failed for product {sp_dict['product_id']}: {str(price_err)}")
@@ -2148,8 +2148,8 @@ class WarehouseProductsService:
                         sp_dict['tax_amount'] = None
                         sp_dict['final_price'] = None
                         sp_dict['taxes_applied'] = []
-                        sp_dict['pricing_rule_applied'] = None
-                        sp_dict['tax_rule_applied'] = None
+                        sp_dict['pricing_rules_applied'] = []
+                        sp_dict['tax_rules_applied'] = []
 
                     sp_list.append(GetWarehouseProductsServiceReadDto(**sp_dict))
 
