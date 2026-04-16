@@ -133,6 +133,19 @@ from src.entities.reports.reports_read_dto import (
     # Product Price Reports
     ProductPriceSummaryItemReadBase,
     ProductPriceGraphItemReadBase,
+    # Returns Reports
+    ReturnSummaryItemReadBase,
+    ReturnDetailedItemReadBase,
+    ReturnByReasonItemReadBase,
+    ReturnByProductItemReadBase,
+    ReturnWriteOffItemReadBase,
+    ReturnGraphItemReadBase,
+    ReturnsSummaryReportResponseReadBase,
+    ReturnsDetailedReportResponseReadBase,
+    ReturnsByReasonReportResponseReadBase,
+    ReturnsByProductReportResponseReadBase,
+    ReturnsWriteOffReportResponseReadBase,
+    ReturnsGraphicalReportResponseReadBase,
     # Response DTOs
     SummaryReportResponseReadBase,
     DetailedReportResponseReadBase,
@@ -6844,5 +6857,582 @@ class ReportsService:
             return Respons(success=True, detail="Suppliers tax by payments report generated successfully", data=[response])
         except Exception as e:
             logger.error(f"Error generating suppliers tax by payments report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    # =====================================================
+    # RETURNS REPORTS
+    # =====================================================
+
+    @staticmethod
+    def get_returns_summary_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: 'ReturnsSummaryReportRequestWriteDto',
+    ) -> Respons[ReturnsSummaryReportResponseReadBase]:
+        """Get returns summary report"""
+        logger.info("Generating returns summary report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions = ["r.tenant_id = %s", "r.org_id = %s", "r.bus_id = %s"]
+                params = [tenant_id, org_id, bus_id]
+
+                if data.loc_id:
+                    conditions.append("r.loc_id = %s")
+                    params.append(data.loc_id)
+                elif data.location_ids:
+                    placeholders = ','.join(['%s'] * len(data.location_ids))
+                    conditions.append(f"r.loc_id IN ({placeholders})")
+                    params.extend(data.location_ids)
+
+                if data.from_date:
+                    conditions.append("r.return_date >= %s")
+                    params.append(str(data.from_date))
+                if data.to_date:
+                    conditions.append("r.return_date <= %s")
+                    params.append(str(data.to_date))
+
+                where_clause = " AND ".join(conditions)
+
+                # Main return stats
+                cursor.execute(
+                    f"""SELECT
+                        COUNT(*) as total_returns,
+                        COUNT(CASE WHEN r.status = 'COMPLETED' THEN 1 END) as total_completed,
+                        COUNT(CASE WHEN r.status = 'PENDING' THEN 1 END) as total_pending,
+                        COUNT(CASE WHEN r.status = 'REJECTED' THEN 1 END) as total_rejected,
+                        COALESCE(SUM(CASE WHEN r.status = 'COMPLETED' THEN r.total_refund_amount ELSE 0 END), 0) as total_refund_amount,
+                        COALESCE(SUM(CASE WHEN r.status = 'COMPLETED' THEN r.restocking_fee_amount ELSE 0 END), 0) as total_restocking_fees
+                    FROM {db_settings.MSG_RETURNS_TABLE} r
+                    WHERE {where_clause}""",
+                    tuple(params),
+                )
+                result = cursor.fetchone()
+
+                # Item-level stats
+                cursor.execute(
+                    f"""SELECT
+                        COALESCE(SUM(ri.quantity_returned), 0) as total_items_returned,
+                        COALESCE(SUM(CASE WHEN ri.restock = true THEN ri.quantity_returned ELSE 0 END), 0) as total_items_restocked,
+                        COALESCE(SUM(CASE WHEN ri.restock = false THEN ri.quantity_returned ELSE 0 END), 0) as total_items_written_off
+                    FROM {db_settings.MSG_RETURN_ITEMS_TABLE} ri
+                    JOIN {db_settings.MSG_RETURNS_TABLE} ret ON ri.return_id = ret.id
+                        AND ri.tenant_id = ret.tenant_id AND ri.org_id = ret.org_id
+                        AND ri.bus_id = ret.bus_id AND ri.loc_id = ret.loc_id
+                    WHERE {where_clause.replace('r.', 'ret.')}
+                    AND ret.status = 'COMPLETED'""",
+                    tuple(params),
+                )
+                item_result = cursor.fetchone()
+
+                # Return rate (returns vs sales)
+                cursor.execute(
+                    f"""SELECT COUNT(*) as total_sales
+                    FROM {db_settings.MSG_SALES_TABLE} s
+                    WHERE s.tenant_id = %s AND s.org_id = %s AND s.bus_id = %s
+                    AND s.status != 'CANCELLED'""",
+                    (tenant_id, org_id, bus_id),
+                )
+                sales_result = cursor.fetchone()
+                total_sales = int(sales_result['total_sales']) if sales_result else 0
+                total_returns = int(result['total_returns']) if result else 0
+                return_rate = round((total_returns / total_sales * 100), 2) if total_sales > 0 else 0
+
+                summary = ReturnSummaryItemReadBase(
+                    total_returns=total_returns,
+                    total_completed=int(result.get('total_completed', 0) or 0) if result else 0,
+                    total_pending=int(result.get('total_pending', 0) or 0) if result else 0,
+                    total_rejected=int(result.get('total_rejected', 0) or 0) if result else 0,
+                    total_refund_amount=float(result.get('total_refund_amount', 0) or 0) if result else 0,
+                    total_restocking_fees=float(result.get('total_restocking_fees', 0) or 0) if result else 0,
+                    total_items_returned=float(item_result.get('total_items_returned', 0) or 0) if item_result else 0,
+                    total_items_restocked=float(item_result.get('total_items_restocked', 0) or 0) if item_result else 0,
+                    total_items_written_off=float(item_result.get('total_items_written_off', 0) or 0) if item_result else 0,
+                    return_rate=return_rate,
+                )
+
+                response = ReturnsSummaryReportResponseReadBase(
+                    report_type="returns_summary",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    summary_items=[summary],
+                    total_items=1,
+                    totals={"return_rate": return_rate, "total_sales": total_sales},
+                )
+                return Respons(success=True, detail="Returns summary report generated successfully", data=[response])
+
+        except Exception as e:
+            logger.error(f"Error generating returns summary report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_returns_detailed_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: 'ReturnsDetailedReportRequestWriteDto',
+    ) -> Respons[ReturnsDetailedReportResponseReadBase]:
+        """Get returns detailed report"""
+        logger.info("Generating returns detailed report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions = ["r.tenant_id = %s", "r.org_id = %s", "r.bus_id = %s"]
+                params = [tenant_id, org_id, bus_id]
+
+                if data.loc_id:
+                    conditions.append("r.loc_id = %s")
+                    params.append(data.loc_id)
+                elif data.location_ids:
+                    placeholders = ','.join(['%s'] * len(data.location_ids))
+                    conditions.append(f"r.loc_id IN ({placeholders})")
+                    params.extend(data.location_ids)
+
+                if data.from_date:
+                    conditions.append("r.return_date >= %s")
+                    params.append(str(data.from_date))
+                if data.to_date:
+                    conditions.append("r.return_date <= %s")
+                    params.append(str(data.to_date))
+                if data.status:
+                    conditions.append("r.status = %s")
+                    params.append(data.status)
+                if data.reason:
+                    conditions.append("r.reason = %s")
+                    params.append(data.reason)
+                if data.customer_id:
+                    conditions.append("r.customer_id = %s")
+                    params.append(data.customer_id)
+
+                where_clause = " AND ".join(conditions)
+
+                # Count
+                cursor.execute(
+                    f"SELECT COUNT(*) as total FROM {db_settings.MSG_RETURNS_TABLE} r WHERE {where_clause}",
+                    tuple(params),
+                )
+                total_items = cursor.fetchone()['total'] or 0
+
+                offset = (data.page - 1) * data.size
+                cursor.execute(
+                    f"""SELECT r.*,
+                           s.sale_number,
+                           c.fullname as customer_name,
+                           creator.fullname as created_by_name,
+                           rp.name as return_policy_name,
+                           (SELECT COUNT(*) FROM {db_settings.MSG_RETURN_ITEMS_TABLE} ri
+                            WHERE ri.return_id = r.id AND ri.tenant_id = r.tenant_id) as items_count
+                    FROM {db_settings.MSG_RETURNS_TABLE} r
+                    LEFT JOIN {db_settings.MSG_SALES_TABLE} s ON r.sale_id = s.id
+                        AND r.tenant_id = s.tenant_id AND r.org_id = s.org_id
+                        AND r.bus_id = s.bus_id AND r.loc_id = s.loc_id
+                    LEFT JOIN {db_settings.MSG_CUSTOMERS_TABLE} c ON r.customer_id = c.id
+                        AND r.tenant_id = c.tenant_id AND r.org_id = c.org_id AND r.bus_id = c.bus_id
+                    LEFT JOIN {db_settings.CORE_PLATFORM_USERS_TABLE} creator ON r.created_by = creator.id AND r.tenant_id = creator.tenant_id
+                    LEFT JOIN {db_settings.MSG_RETURN_POLICIES_TABLE} rp ON r.return_policy_id = rp.id
+                        AND r.tenant_id = rp.tenant_id AND r.org_id = rp.org_id AND r.bus_id = rp.bus_id
+                    WHERE {where_clause}
+                    ORDER BY r.cdatetime DESC
+                    LIMIT %s OFFSET %s""",
+                    tuple(params + [data.size, offset]),
+                )
+                rows = cursor.fetchall()
+
+                items = []
+                for row in rows:
+                    items.append(ReturnDetailedItemReadBase(
+                        return_id=row['id'],
+                        return_number=row['return_number'],
+                        sale_number=row.get('sale_number'),
+                        return_date=row.get('return_date'),
+                        customer_name=row.get('customer_name'),
+                        return_type=row['return_type'],
+                        status=row['status'],
+                        reason=row['reason'],
+                        reason_notes=row.get('reason_notes'),
+                        items_count=int(row.get('items_count', 0) or 0),
+                        subtotal_refund_amount=float(row.get('subtotal_refund_amount', 0) or 0),
+                        restocking_fee_amount=float(row.get('restocking_fee_amount', 0) or 0),
+                        total_refund_amount=float(row.get('total_refund_amount', 0) or 0),
+                        return_policy_name=row.get('return_policy_name'),
+                        created_by=row.get('created_by_name'),
+                        processed_at=row.get('processed_at'),
+                    ))
+
+                total_refunded = sum(i.total_refund_amount for i in items)
+                response = ReturnsDetailedReportResponseReadBase(
+                    report_type="returns_detailed",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    items=items,
+                    total_items=total_items,
+                    page=data.page,
+                    size=data.size,
+                    totals={"total_refund_amount": total_refunded},
+                )
+                return Respons(success=True, detail="Returns detailed report generated successfully", data=[response])
+
+        except Exception as e:
+            logger.error(f"Error generating returns detailed report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_returns_by_reason_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: 'ReturnsByReasonReportRequestWriteDto',
+    ) -> Respons[ReturnsByReasonReportResponseReadBase]:
+        """Get returns grouped by reason"""
+        logger.info("Generating returns by reason report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions = ["r.tenant_id = %s", "r.org_id = %s", "r.bus_id = %s", "r.status = 'COMPLETED'"]
+                params = [tenant_id, org_id, bus_id]
+
+                if data.loc_id:
+                    conditions.append("r.loc_id = %s")
+                    params.append(data.loc_id)
+                elif data.location_ids:
+                    placeholders = ','.join(['%s'] * len(data.location_ids))
+                    conditions.append(f"r.loc_id IN ({placeholders})")
+                    params.extend(data.location_ids)
+
+                if data.from_date:
+                    conditions.append("r.return_date >= %s")
+                    params.append(str(data.from_date))
+                if data.to_date:
+                    conditions.append("r.return_date <= %s")
+                    params.append(str(data.to_date))
+
+                where_clause = " AND ".join(conditions)
+
+                cursor.execute(
+                    f"""SELECT
+                        r.reason,
+                        COUNT(*) as return_count,
+                        COALESCE(SUM(r.total_refund_amount), 0) as total_refund_amount,
+                        COALESCE(SUM(
+                            (SELECT COALESCE(SUM(ri.quantity_returned), 0)
+                             FROM {db_settings.MSG_RETURN_ITEMS_TABLE} ri
+                             WHERE ri.return_id = r.id AND ri.tenant_id = r.tenant_id)
+                        ), 0) as total_items_returned
+                    FROM {db_settings.MSG_RETURNS_TABLE} r
+                    WHERE {where_clause}
+                    GROUP BY r.reason
+                    ORDER BY return_count DESC""",
+                    tuple(params),
+                )
+                rows = cursor.fetchall()
+
+                total_count = sum(int(row['return_count'] or 0) for row in rows)
+                items = []
+                for row in rows:
+                    count = int(row['return_count'] or 0)
+                    items.append(ReturnByReasonItemReadBase(
+                        reason=row['reason'],
+                        return_count=count,
+                        total_refund_amount=float(row.get('total_refund_amount', 0) or 0),
+                        total_items_returned=float(row.get('total_items_returned', 0) or 0),
+                        percentage=round((count / total_count * 100), 2) if total_count > 0 else 0,
+                    ))
+
+                response = ReturnsByReasonReportResponseReadBase(
+                    report_type="returns_by_reason",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    items=items,
+                    total_items=len(items),
+                    totals={"total_returns": total_count},
+                )
+                return Respons(success=True, detail="Returns by reason report generated successfully", data=[response])
+
+        except Exception as e:
+            logger.error(f"Error generating returns by reason report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_returns_by_product_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: 'ReturnsByProductReportRequestWriteDto',
+    ) -> Respons[ReturnsByProductReportResponseReadBase]:
+        """Get return rate by product"""
+        logger.info("Generating returns by product report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions = ["ret.tenant_id = %s", "ret.org_id = %s", "ret.bus_id = %s", "ret.status = 'COMPLETED'"]
+                params = [tenant_id, org_id, bus_id]
+
+                if data.loc_id:
+                    conditions.append("ret.loc_id = %s")
+                    params.append(data.loc_id)
+                elif data.location_ids:
+                    placeholders = ','.join(['%s'] * len(data.location_ids))
+                    conditions.append(f"ret.loc_id IN ({placeholders})")
+                    params.extend(data.location_ids)
+
+                if data.from_date:
+                    conditions.append("ret.return_date >= %s")
+                    params.append(str(data.from_date))
+                if data.to_date:
+                    conditions.append("ret.return_date <= %s")
+                    params.append(str(data.to_date))
+
+                where_clause = " AND ".join(conditions)
+
+                offset = (data.page - 1) * data.size
+                cursor.execute(
+                    f"""SELECT
+                        ri.product_id,
+                        p.name as product_name,
+                        COALESCE(SUM(ri.quantity_returned), 0) as total_returned,
+                        COALESCE(SUM(ri.line_refund_amount), 0) as total_refund_amount,
+                        -- Total sold for this product
+                        COALESCE((
+                            SELECT SUM(si.quantity) FROM {db_settings.MSG_SALES_ITEMS_TABLE} si
+                            JOIN {db_settings.MSG_SALES_TABLE} s ON si.sale_id = s.id
+                                AND si.tenant_id = s.tenant_id AND si.org_id = s.org_id
+                                AND si.bus_id = s.bus_id AND si.loc_id = s.loc_id
+                            WHERE si.product_id = ri.product_id
+                            AND si.tenant_id = ri.tenant_id AND si.org_id = ri.org_id AND si.bus_id = ri.bus_id
+                            AND s.status != 'CANCELLED'
+                        ), 0) as total_sold,
+                        -- Most common reason
+                        (SELECT ret2.reason FROM {db_settings.MSG_RETURN_ITEMS_TABLE} ri2
+                         JOIN {db_settings.MSG_RETURNS_TABLE} ret2 ON ri2.return_id = ret2.id
+                             AND ri2.tenant_id = ret2.tenant_id AND ri2.org_id = ret2.org_id
+                             AND ri2.bus_id = ret2.bus_id AND ri2.loc_id = ret2.loc_id
+                         WHERE ri2.product_id = ri.product_id AND ri2.tenant_id = ri.tenant_id
+                         AND ret2.status = 'COMPLETED'
+                         GROUP BY ret2.reason ORDER BY COUNT(*) DESC LIMIT 1
+                        ) as top_reason
+                    FROM {db_settings.MSG_RETURN_ITEMS_TABLE} ri
+                    JOIN {db_settings.MSG_RETURNS_TABLE} ret ON ri.return_id = ret.id
+                        AND ri.tenant_id = ret.tenant_id AND ri.org_id = ret.org_id
+                        AND ri.bus_id = ret.bus_id AND ri.loc_id = ret.loc_id
+                    LEFT JOIN {db_settings.MSG_PRODUCTS_TABLE} p ON ri.product_id = p.id
+                        AND ri.tenant_id = p.tenant_id AND ri.org_id = p.org_id AND ri.bus_id = p.bus_id
+                    WHERE {where_clause}
+                    GROUP BY ri.product_id, p.name, ri.tenant_id, ri.org_id, ri.bus_id
+                    ORDER BY total_returned DESC
+                    LIMIT %s OFFSET %s""",
+                    tuple(params + [data.size, offset]),
+                )
+                rows = cursor.fetchall()
+
+                items = []
+                for row in rows:
+                    total_sold = float(row.get('total_sold', 0) or 0)
+                    total_returned = float(row.get('total_returned', 0) or 0)
+                    return_rate = round((total_returned / total_sold * 100), 2) if total_sold > 0 else 0
+
+                    if data.min_return_rate is not None and return_rate < data.min_return_rate:
+                        continue
+
+                    items.append(ReturnByProductItemReadBase(
+                        product_id=row['product_id'],
+                        product_name=row.get('product_name') or 'Unknown',
+                        total_sold=total_sold,
+                        total_returned=total_returned,
+                        return_rate=return_rate,
+                        total_refund_amount=float(row.get('total_refund_amount', 0) or 0),
+                        top_reason=row.get('top_reason'),
+                    ))
+
+                response = ReturnsByProductReportResponseReadBase(
+                    report_type="returns_by_product",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    items=items,
+                    total_items=len(items),
+                    page=data.page,
+                    size=data.size,
+                )
+                return Respons(success=True, detail="Returns by product report generated successfully", data=[response])
+
+        except Exception as e:
+            logger.error(f"Error generating returns by product report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_returns_write_off_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: 'ReturnsWriteOffReportRequestWriteDto',
+    ) -> Respons[ReturnsWriteOffReportResponseReadBase]:
+        """Get returns write-off/inventory loss report"""
+        logger.info("Generating returns write-off report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions = [
+                    "ret.tenant_id = %s", "ret.org_id = %s", "ret.bus_id = %s",
+                    "ret.status = 'COMPLETED'", "ri.restock = false"
+                ]
+                params = [tenant_id, org_id, bus_id]
+
+                if data.loc_id:
+                    conditions.append("ret.loc_id = %s")
+                    params.append(data.loc_id)
+                elif data.location_ids:
+                    placeholders = ','.join(['%s'] * len(data.location_ids))
+                    conditions.append(f"ret.loc_id IN ({placeholders})")
+                    params.extend(data.location_ids)
+
+                if data.from_date:
+                    conditions.append("ret.return_date >= %s")
+                    params.append(str(data.from_date))
+                if data.to_date:
+                    conditions.append("ret.return_date <= %s")
+                    params.append(str(data.to_date))
+                if data.condition:
+                    conditions.append("ri.condition = %s")
+                    params.append(data.condition)
+
+                where_clause = " AND ".join(conditions)
+
+                cursor.execute(
+                    f"""SELECT
+                        ri.product_id,
+                        p.name as product_name,
+                        ri.condition,
+                        SUM(ri.quantity_returned) as quantity_written_off,
+                        SUM(ri.line_refund_amount) as refund_cost
+                    FROM {db_settings.MSG_RETURN_ITEMS_TABLE} ri
+                    JOIN {db_settings.MSG_RETURNS_TABLE} ret ON ri.return_id = ret.id
+                        AND ri.tenant_id = ret.tenant_id AND ri.org_id = ret.org_id
+                        AND ri.bus_id = ret.bus_id AND ri.loc_id = ret.loc_id
+                    LEFT JOIN {db_settings.MSG_PRODUCTS_TABLE} p ON ri.product_id = p.id
+                        AND ri.tenant_id = p.tenant_id AND ri.org_id = p.org_id AND ri.bus_id = p.bus_id
+                    WHERE {where_clause}
+                    GROUP BY ri.product_id, p.name, ri.condition
+                    ORDER BY refund_cost DESC""",
+                    tuple(params),
+                )
+                rows = cursor.fetchall()
+
+                items = []
+                total_qty = 0
+                total_cost = 0
+                for row in rows:
+                    qty = float(row.get('quantity_written_off', 0) or 0)
+                    cost = float(row.get('refund_cost', 0) or 0)
+                    total_qty += qty
+                    total_cost += cost
+                    items.append(ReturnWriteOffItemReadBase(
+                        product_id=row['product_id'],
+                        product_name=row.get('product_name') or 'Unknown',
+                        condition=row['condition'],
+                        quantity_written_off=qty,
+                        refund_cost=cost,
+                    ))
+
+                response = ReturnsWriteOffReportResponseReadBase(
+                    report_type="returns_write_off",
+                    report_format=data.format,
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    items=items,
+                    total_items=len(items),
+                    totals={"total_quantity_written_off": total_qty, "total_refund_cost": total_cost},
+                )
+                return Respons(success=True, detail="Returns write-off report generated successfully", data=[response])
+
+        except Exception as e:
+            logger.error(f"Error generating returns write-off report: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_returns_graphical_report(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        data: 'ReturnsGraphicalReportRequestWriteDto',
+    ) -> Respons[ReturnsGraphicalReportResponseReadBase]:
+        """Get returns graphical report (returns over time)"""
+        logger.info("Generating returns graphical report", extra={"extra_fields": {"tenant_id": tenant_id}})
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions = ["r.tenant_id = %s", "r.org_id = %s", "r.bus_id = %s", "r.status = 'COMPLETED'"]
+                params = [tenant_id, org_id, bus_id]
+
+                if data.loc_id:
+                    conditions.append("r.loc_id = %s")
+                    params.append(data.loc_id)
+                elif data.location_ids:
+                    placeholders = ','.join(['%s'] * len(data.location_ids))
+                    conditions.append(f"r.loc_id IN ({placeholders})")
+                    params.extend(data.location_ids)
+
+                if data.from_date:
+                    conditions.append("r.return_date >= %s")
+                    params.append(str(data.from_date))
+                if data.to_date:
+                    conditions.append("r.return_date <= %s")
+                    params.append(str(data.to_date))
+
+                where_clause = " AND ".join(conditions)
+
+                # Determine group by expression
+                if data.group_by == 'DAY':
+                    group_expr = "r.return_date"
+                elif data.group_by == 'WEEK':
+                    group_expr = "TO_CHAR(r.cdatetime, 'IYYY-\"W\"IW')"
+                elif data.group_by == 'YEAR':
+                    group_expr = "TO_CHAR(r.cdatetime, 'YYYY')"
+                else:  # MONTH default
+                    group_expr = "TO_CHAR(r.cdatetime, 'YYYY-MM')"
+
+                cursor.execute(
+                    f"""SELECT
+                        {group_expr} as period,
+                        COUNT(*) as return_count,
+                        COALESCE(SUM(r.total_refund_amount), 0) as total_refund_amount,
+                        COALESCE(SUM(
+                            (SELECT COALESCE(SUM(ri.quantity_returned), 0)
+                             FROM {db_settings.MSG_RETURN_ITEMS_TABLE} ri
+                             WHERE ri.return_id = r.id AND ri.tenant_id = r.tenant_id)
+                        ), 0) as total_items_returned
+                    FROM {db_settings.MSG_RETURNS_TABLE} r
+                    WHERE {where_clause}
+                    GROUP BY {group_expr}
+                    ORDER BY period ASC""",
+                    tuple(params),
+                )
+                rows = cursor.fetchall()
+
+                graph_data = []
+                for row in rows:
+                    graph_data.append(ReturnGraphItemReadBase(
+                        period=str(row.get('period') or ''),
+                        return_count=int(row.get('return_count', 0) or 0),
+                        total_refund_amount=float(row.get('total_refund_amount', 0) or 0),
+                        total_items_returned=float(row.get('total_items_returned', 0) or 0),
+                    ))
+
+                response = ReturnsGraphicalReportResponseReadBase(
+                    report_type="returns_graphical",
+                    report_format="GRAPHICAL",
+                    generated_at=datetime.now(),
+                    period_start=data.from_date,
+                    period_end=data.to_date,
+                    graph_data=graph_data,
+                    chart_type="bar",
+                    metadata={"group_by": data.group_by},
+                )
+                return Respons(success=True, detail="Returns graphical report generated successfully", data=[response])
+
+        except Exception as e:
+            logger.error(f"Error generating returns graphical report: {str(e)}", exc_info=True)
             return Respons(success=False, detail=str(e), error="INTERNAL_ERROR")
 

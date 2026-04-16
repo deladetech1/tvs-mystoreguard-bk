@@ -7,8 +7,8 @@ from typing import Optional, List
 from datetime import date
 from src.utils.auth import CustomAuthService, get_org_bus_loc_with_permission, verify_subscription_active
 from src.entities.reports.reports_service import ReportsService
-from src.entities.reports.reports_write_dto import *
-from src.entities.reports.reports_read_dto import *
+from src.entities.reports.reports_write_dto import *  # noqa: F403
+from src.entities.reports.reports_read_dto import *  # noqa: F403
 from src.entities.shared.sh_response import Respons
 from src.configs.logging import get_logger
 from src.utils.logging_utils import LogContext
@@ -1748,4 +1748,186 @@ def get_location_performance_report(
             data=data,
         )
         return service_result
+
+
+# =====================================================
+# RETURNS REPORTS
+# =====================================================
+
+@reports_router.get("/returns/summary", response_model=Respons[ReturnsSummaryReportResponseReadBase])
+def get_returns_summary_report(
+    from_date: Optional[date] = Query(None, description="Start date (YYYY-MM-DD)"),
+    to_date: Optional[date] = Query(None, description="End date (YYYY-MM-DD)"),
+    loc_id: Optional[str] = Query(None, description="Location ID filter"),
+    location_ids: Optional[List[str]] = Query(None, description="List of location IDs"),
+    format: str = Query("SUMMARY", description="Report format"),
+    page: int = Query(1, ge=1),
+    size: int = Query(100, ge=1, le=1000),
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
+):
+    """Get returns summary report - overall return statistics, return rate, refund totals, restock vs write-off"""
+    if not check_report_permission(current_user, "permission-msg-reports-get"):
+        raise HTTPException(status_code=403, detail="Unauthorized access")
+
+    data = ReturnsSummaryReportRequestWriteDto(
+        from_date=from_date, to_date=to_date, loc_id=loc_id,
+        location_ids=location_ids, format=format, page=page, size=size,
+    )
+    return ReportsService.get_returns_summary_report(
+        tenant_id=current_user.data[0].tenant_id,
+        org_id=org_bus_loc["org_id"],
+        bus_id=org_bus_loc["bus_id"],
+        data=data,
+    )
+
+
+@reports_router.get("/returns/detailed", response_model=Respons[ReturnsDetailedReportResponseReadBase])
+def get_returns_detailed_report(
+    from_date: Optional[date] = Query(None, description="Start date (YYYY-MM-DD)"),
+    to_date: Optional[date] = Query(None, description="End date (YYYY-MM-DD)"),
+    loc_id: Optional[str] = Query(None, description="Location ID filter"),
+    location_ids: Optional[List[str]] = Query(None, description="List of location IDs"),
+    status: Optional[str] = Query(None, description="Filter by status (PENDING, APPROVED, REJECTED, COMPLETED)"),
+    reason: Optional[str] = Query(None, description="Filter by reason"),
+    customer_id: Optional[str] = Query(None, description="Filter by customer ID"),
+    format: str = Query("DETAILED", description="Report format"),
+    page: int = Query(1, ge=1),
+    size: int = Query(100, ge=1, le=1000),
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
+):
+    """Get returns detailed report - individual return records with filters"""
+    if not check_report_permission(current_user, "permission-msg-reports-get"):
+        raise HTTPException(status_code=403, detail="Unauthorized access")
+
+    data = ReturnsDetailedReportRequestWriteDto(
+        from_date=from_date, to_date=to_date, loc_id=loc_id,
+        location_ids=location_ids, status=status, reason=reason,
+        customer_id=customer_id, format=format, page=page, size=size,
+    )
+    return ReportsService.get_returns_detailed_report(
+        tenant_id=current_user.data[0].tenant_id,
+        org_id=org_bus_loc["org_id"],
+        bus_id=org_bus_loc["bus_id"],
+        data=data,
+    )
+
+
+@reports_router.get("/returns/by-reason", response_model=Respons[ReturnsByReasonReportResponseReadBase])
+def get_returns_by_reason_report(
+    from_date: Optional[date] = Query(None, description="Start date (YYYY-MM-DD)"),
+    to_date: Optional[date] = Query(None, description="End date (YYYY-MM-DD)"),
+    loc_id: Optional[str] = Query(None, description="Location ID filter"),
+    location_ids: Optional[List[str]] = Query(None, description="List of location IDs"),
+    format: str = Query("SUMMARY", description="Report format"),
+    page: int = Query(1, ge=1),
+    size: int = Query(100, ge=1, le=1000),
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
+):
+    """Get returns by reason report - returns grouped by reason with percentages"""
+    if not check_report_permission(current_user, "permission-msg-reports-get"):
+        raise HTTPException(status_code=403, detail="Unauthorized access")
+
+    data = ReturnsByReasonReportRequestWriteDto(
+        from_date=from_date, to_date=to_date, loc_id=loc_id,
+        location_ids=location_ids, format=format, page=page, size=size,
+    )
+    return ReportsService.get_returns_by_reason_report(
+        tenant_id=current_user.data[0].tenant_id,
+        org_id=org_bus_loc["org_id"],
+        bus_id=org_bus_loc["bus_id"],
+        data=data,
+    )
+
+
+@reports_router.get("/returns/by-product", response_model=Respons[ReturnsByProductReportResponseReadBase])
+def get_returns_by_product_report(
+    from_date: Optional[date] = Query(None, description="Start date (YYYY-MM-DD)"),
+    to_date: Optional[date] = Query(None, description="End date (YYYY-MM-DD)"),
+    loc_id: Optional[str] = Query(None, description="Location ID filter"),
+    location_ids: Optional[List[str]] = Query(None, description="List of location IDs"),
+    min_return_rate: Optional[float] = Query(None, description="Minimum return rate percentage to include"),
+    format: str = Query("DETAILED", description="Report format"),
+    page: int = Query(1, ge=1),
+    size: int = Query(100, ge=1, le=1000),
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
+):
+    """Get return rate by product - which products are returned most and why"""
+    if not check_report_permission(current_user, "permission-msg-reports-get"):
+        raise HTTPException(status_code=403, detail="Unauthorized access")
+
+    data = ReturnsByProductReportRequestWriteDto(
+        from_date=from_date, to_date=to_date, loc_id=loc_id,
+        location_ids=location_ids, min_return_rate=min_return_rate,
+        format=format, page=page, size=size,
+    )
+    return ReportsService.get_returns_by_product_report(
+        tenant_id=current_user.data[0].tenant_id,
+        org_id=org_bus_loc["org_id"],
+        bus_id=org_bus_loc["bus_id"],
+        data=data,
+    )
+
+
+@reports_router.get("/returns/write-off", response_model=Respons[ReturnsWriteOffReportResponseReadBase])
+def get_returns_write_off_report(
+    from_date: Optional[date] = Query(None, description="Start date (YYYY-MM-DD)"),
+    to_date: Optional[date] = Query(None, description="End date (YYYY-MM-DD)"),
+    loc_id: Optional[str] = Query(None, description="Location ID filter"),
+    location_ids: Optional[List[str]] = Query(None, description="List of location IDs"),
+    condition: Optional[str] = Query(None, description="Filter by condition (DAMAGED, EXPIRED, OPENED, WRITE_OFF)"),
+    format: str = Query("DETAILED", description="Report format"),
+    page: int = Query(1, ge=1),
+    size: int = Query(100, ge=1, le=1000),
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
+):
+    """Get returns write-off/inventory loss report - items lost due to returns (expired, damaged, etc.)"""
+    if not check_report_permission(current_user, "permission-msg-reports-get"):
+        raise HTTPException(status_code=403, detail="Unauthorized access")
+
+    data = ReturnsWriteOffReportRequestWriteDto(
+        from_date=from_date, to_date=to_date, loc_id=loc_id,
+        location_ids=location_ids, condition=condition,
+        format=format, page=page, size=size,
+    )
+    return ReportsService.get_returns_write_off_report(
+        tenant_id=current_user.data[0].tenant_id,
+        org_id=org_bus_loc["org_id"],
+        bus_id=org_bus_loc["bus_id"],
+        data=data,
+    )
+
+
+@reports_router.get("/returns/graphical", response_model=Respons[ReturnsGraphicalReportResponseReadBase])
+def get_returns_graphical_report(
+    from_date: Optional[date] = Query(None, description="Start date (YYYY-MM-DD)"),
+    to_date: Optional[date] = Query(None, description="End date (YYYY-MM-DD)"),
+    loc_id: Optional[str] = Query(None, description="Location ID filter"),
+    location_ids: Optional[List[str]] = Query(None, description="List of location IDs"),
+    group_by: Optional[str] = Query("MONTH", description="Group by: DAY, WEEK, MONTH, YEAR"),
+    format: str = Query("GRAPHICAL", description="Report format"),
+    page: int = Query(1, ge=1),
+    size: int = Query(100, ge=1, le=1000),
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
+):
+    """Get returns graphical report - returns over time for charts"""
+    if not check_report_permission(current_user, "permission-msg-reports-get"):
+        raise HTTPException(status_code=403, detail="Unauthorized access")
+
+    data = ReturnsGraphicalReportRequestWriteDto(
+        from_date=from_date, to_date=to_date, loc_id=loc_id,
+        location_ids=location_ids, group_by=group_by,
+        format=format, page=page, size=size,
+    )
+    return ReportsService.get_returns_graphical_report(
+        tenant_id=current_user.data[0].tenant_id,
+        org_id=org_bus_loc["org_id"],
+        bus_id=org_bus_loc["bus_id"],
+        data=data,
+    )
 

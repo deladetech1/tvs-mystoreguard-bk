@@ -784,6 +784,81 @@ class ProductPriceGraphItemReadBase(BaseModel):
 
 
 # =====================================================
+# RETURNS REPORTS
+# =====================================================
+
+class ReturnSummaryItemReadBase(BaseModel):
+    """Return summary item for summary reports"""
+    total_returns: int = Field(default=0, description="Total number of returns")
+    total_completed: int = Field(default=0, description="Total completed returns")
+    total_pending: int = Field(default=0, description="Total pending returns")
+    total_rejected: int = Field(default=0, description="Total rejected returns")
+    total_refund_amount: float = Field(default=0, description="Total refund amount")
+    total_restocking_fees: float = Field(default=0, description="Total restocking fees collected")
+    total_items_returned: float = Field(default=0, description="Total quantity of items returned")
+    total_items_restocked: float = Field(default=0, description="Total items restocked to inventory")
+    total_items_written_off: float = Field(default=0, description="Total items written off (expired, damaged, etc.)")
+    return_rate: float = Field(default=0, description="Return rate as percentage of total sales")
+
+
+class ReturnDetailedItemReadBase(BaseModel):
+    """Detailed return item for detailed reports"""
+    return_id: str
+    return_number: str
+    sale_number: Optional[str] = None
+    return_date: Optional[str] = None
+    customer_name: Optional[str] = None
+    return_type: str
+    status: str
+    reason: str
+    reason_notes: Optional[str] = None
+    items_count: int = Field(default=0)
+    subtotal_refund_amount: float = Field(default=0)
+    restocking_fee_amount: float = Field(default=0)
+    total_refund_amount: float = Field(default=0)
+    return_policy_name: Optional[str] = None
+    created_by: Optional[str] = None
+    processed_at: Optional[datetime] = None
+
+
+class ReturnByReasonItemReadBase(BaseModel):
+    """Returns grouped by reason"""
+    reason: str
+    return_count: int = Field(default=0)
+    total_refund_amount: float = Field(default=0)
+    total_items_returned: float = Field(default=0)
+    percentage: float = Field(default=0, description="Percentage of total returns")
+
+
+class ReturnByProductItemReadBase(BaseModel):
+    """Returns grouped by product (return rate analysis)"""
+    product_id: str
+    product_name: str
+    total_sold: float = Field(default=0, description="Total quantity sold")
+    total_returned: float = Field(default=0, description="Total quantity returned")
+    return_rate: float = Field(default=0, description="Return rate percentage")
+    total_refund_amount: float = Field(default=0)
+    top_reason: Optional[str] = Field(None, description="Most common return reason for this product")
+
+
+class ReturnWriteOffItemReadBase(BaseModel):
+    """Write-off/inventory loss item"""
+    product_id: str
+    product_name: str
+    condition: str = Field(description="DAMAGED, EXPIRED, OPENED, WRITE_OFF")
+    quantity_written_off: float = Field(default=0)
+    refund_cost: float = Field(default=0, description="Refund amount paid for written-off items")
+
+
+class ReturnGraphItemReadBase(BaseModel):
+    """Returns graph data point for graphical reports"""
+    period: str = Field(description="Time period label (e.g., '2026-04', '2026-W15')")
+    return_count: int = Field(default=0)
+    total_refund_amount: float = Field(default=0)
+    total_items_returned: float = Field(default=0)
+
+
+# =====================================================
 # TYPE ALIASES FOR ALLOWED ITEM TYPES
 # =====================================================
 
@@ -807,6 +882,10 @@ DetailedReportItemType = Union[
     SupplierDetailedItemReadBase,
     AppointmentDetailedItemReadBase,
     ProfitLossDetailedItemReadBase,
+    ReturnDetailedItemReadBase,
+    ReturnByReasonItemReadBase,
+    ReturnByProductItemReadBase,
+    ReturnWriteOffItemReadBase,
     DetailedItemReadBase,  # Generic fallback
 ]
 
@@ -826,6 +905,7 @@ SummaryReportItemType = Union[
     AppointmentSummaryItemReadBase,
     ProductPriceSummaryItemReadBase,
     SalesSummaryItemReadBase,
+    ReturnSummaryItemReadBase,
 ]
 
 # Union type for all possible graph data points
@@ -837,6 +917,7 @@ GraphDataPointType = Union[
     CustomerSeriesItemReadBase,
     ReceivingTaxItemReadBase,
     ReceivingCategoryItemReadBase,
+    ReturnGraphItemReadBase,
 ]
 
 
@@ -1611,6 +1692,74 @@ class ProductPricesGraphicalReportResponseReadBase(ReportResponseReadBase):
     )
     chart_type: str = Field("line", description="Recommended chart type")
     metadata: Optional[dict] = Field(default_factory=dict, description="Additional metadata for chart rendering")
+
+
+# =====================================================
+# RETURNS REPORT RESPONSE DTOs
+# =====================================================
+
+class ReturnsSummaryReportResponseReadBase(ReportResponseReadBase):
+    """Returns summary report response"""
+    summary_items: List[ReturnSummaryItemReadBase] = Field(
+        default_factory=list,
+        description="Returns summary statistics"
+    )
+    total_items: int = Field(0, description="Total items in list")
+    totals: Optional[dict] = Field(default_factory=dict, description="Aggregated totals")
+
+
+class ReturnsDetailedReportResponseReadBase(ReportResponseReadBase):
+    """Returns detailed report response"""
+    items: List[ReturnDetailedItemReadBase] = Field(
+        default_factory=list,
+        description="List of individual return records"
+    )
+    total_items: int = Field(0, description="Total number of items")
+    page: int = Field(1)
+    size: int = Field(100)
+    totals: Optional[dict] = Field(default_factory=dict, description="Aggregated totals")
+
+
+class ReturnsByReasonReportResponseReadBase(ReportResponseReadBase):
+    """Returns by reason report response"""
+    items: List[ReturnByReasonItemReadBase] = Field(
+        default_factory=list,
+        description="Returns grouped by reason"
+    )
+    total_items: int = Field(0)
+    totals: Optional[dict] = Field(default_factory=dict)
+
+
+class ReturnsByProductReportResponseReadBase(ReportResponseReadBase):
+    """Returns by product report response (return rate analysis)"""
+    items: List[ReturnByProductItemReadBase] = Field(
+        default_factory=list,
+        description="Return rate per product"
+    )
+    total_items: int = Field(0)
+    page: int = Field(1)
+    size: int = Field(100)
+    totals: Optional[dict] = Field(default_factory=dict)
+
+
+class ReturnsWriteOffReportResponseReadBase(ReportResponseReadBase):
+    """Returns write-off/inventory loss report response"""
+    items: List[ReturnWriteOffItemReadBase] = Field(
+        default_factory=list,
+        description="Write-off items from returns"
+    )
+    total_items: int = Field(0)
+    totals: Optional[dict] = Field(default_factory=dict)
+
+
+class ReturnsGraphicalReportResponseReadBase(ReportResponseReadBase):
+    """Returns graphical report response"""
+    graph_data: List[ReturnGraphItemReadBase] = Field(
+        default_factory=list,
+        description="Returns data over time"
+    )
+    chart_type: str = Field("bar", description="Recommended chart type")
+    metadata: Optional[dict] = Field(default_factory=dict)
 
 
 # =====================================================
