@@ -371,8 +371,9 @@ class ProductPriceCalculator:
             rule_conditions.append(f"({' OR '.join(target_conditions)})")
             where_clause = " AND ".join(rule_conditions)
             
-            # Order by specificity first, then priority within same specificity
+            # Order by specificity first, then priority within same specificity level
             # Specificity: SKU (1) > PRODUCT (2) > TAG (3) > LABEL (3) > CATEGORY (3) > BRAND (3) > LOCATION (4) > ALL_PRODUCTS (5)
+            # Within the same specificity level, higher priority wins
             # Only the single most specific, highest priority rule is applied
             cursor.execute(
                 f"""SELECT id, name, rule_type, rule_category, rule_target_type, rule_target_id,
@@ -381,7 +382,6 @@ class ProductPriceCalculator:
                 FROM {db_settings.MSG_PRICING_RULES_TABLE}
                 WHERE {where_clause}
                 ORDER BY
-                    priority DESC,
                     CASE rule_target_type
                         WHEN 'SKU' THEN 1
                         WHEN 'PRODUCT' THEN 2
@@ -392,6 +392,7 @@ class ProductPriceCalculator:
                         WHEN 'LOCATION' THEN 4
                         WHEN 'ALL_PRODUCTS' THEN 5
                     END,
+                    priority DESC,
                     cdatetime DESC
                 LIMIT 1""",
                 tuple(params)
@@ -432,8 +433,8 @@ class ProductPriceCalculator:
                 result_price = max(Decimal('0'), Decimal(str(rule['discount_value'])))
 
             elif rule_type == 'FIXED_AMOUNT':
-                discount = Decimal(str(rule['discount_value']))
-                result_price = max(Decimal('0'), result_price - discount)
+                # Set price to a fixed amount (not subtract)
+                result_price = max(Decimal('0'), Decimal(str(rule['discount_value'])))
 
             elif rule_type == 'PRICE_DISCOUNT':
                 discount = Decimal(str(rule['discount_value']))
@@ -473,7 +474,11 @@ class ProductPriceCalculator:
             }
             
         except Exception as e:
-            logger.error(f"Error applying pricing rules: {str(e)}", exc_info=True)
+            logger.error(
+                f"Error applying pricing rules for product {product_id}: {str(e)}. "
+                f"Returning original price {base_price} without pricing rule applied.",
+                exc_info=True
+            )
             return {
                 'price': base_price,
                 'pricing_rule_applied': {
@@ -487,7 +492,8 @@ class ProductPriceCalculator:
                     'price_after': None,
                     'adjustment': None,
                     'priority': None
-                }
+                },
+                'error': f"Pricing rule error: {str(e)}"
             }
 
     @staticmethod
@@ -613,7 +619,7 @@ class ProductPriceCalculator:
             
             total_tax_amount = Decimal('0')
             taxes_applied = []
-            primary_tax_rule_applied = None
+            tax_rules_applied = []
             # Keep full precision during calculations - round only at the end
             current_price = base_price
 
@@ -640,18 +646,20 @@ class ProductPriceCalculator:
                 is_inclusive = rule.get('is_inclusive', False)
                 tax_name = rule.get('tax_name', 'Unknown Tax')
 
-                # Calculate tax amount directly (NO CONDITIONS) - use full precision
-                # Use pre_tax_base for both inclusive and exclusive taxes so that
-                # exclusive taxes are not charged on embedded inclusive tax
-                tax_amount = (pre_tax_base * tax_rate) / Decimal('100')
+                # Inclusive taxes: calculate on pre_tax_base (extract from shelf price)
+                # Exclusive taxes: calculate on base_price (the shelf price customers see)
+                if is_inclusive:
+                    tax_amount = (pre_tax_base * tax_rate) / Decimal('100')
+                else:
+                    tax_amount = (base_price * tax_rate) / Decimal('100')
 
                 # Keep full precision during calculation
                 tax_amount = max(Decimal('0'), tax_amount)
                 total_tax_amount += tax_amount
 
-                # Track the first tax rule that was actually applied (round only for display)
-                if primary_tax_rule_applied is None and tax_amount > 0:
-                    primary_tax_rule_applied = {
+                # Track ALL applied tax rules (not just the first)
+                if tax_amount > 0:
+                    tax_rules_applied.append({
                         'tax_rule_id': tax_rule_id,
                         'tax_rule_name': tax_rule_name,
                         'tax_rule_type': tax_rule_type,
@@ -662,7 +670,7 @@ class ProductPriceCalculator:
                         'is_inclusive': is_inclusive,
                         'tax_amount': float(round_money(tax_amount)),
                         'priority': rule.get('priority', 0)
-                    }
+                    })
 
                 taxes_applied.append({
                     'tax_id': tax_id,
@@ -675,34 +683,39 @@ class ProductPriceCalculator:
                 # Add tax to current price with full precision (no rounding yet)
                 if not is_inclusive:
                     current_price = current_price + tax_amount
-            
+
             # Round only at the end after all tax calculations
             final_price = round_money(max(Decimal('0'), current_price))
-            
-            # If no tax rule was applied, return default structure
-            if primary_tax_rule_applied is None:
-                primary_tax_rule_applied = {
-                    'tax_rule_id': None,
-                    'tax_rule_name': None,
-                    'tax_rule_type': None,
-                    'tax_rule_target_id': None,
-                    'tax_id': None,
-                    'tax_name': None,
-                    'rate': None,
-                    'is_inclusive': None,
-                    'tax_amount': None,
-                    'priority': None
-                }
-            
+
+            # Return the first applied rule as primary for backward compatibility,
+            # plus all applied rules in tax_rules_applied list
+            primary_tax_rule_applied = tax_rules_applied[0] if tax_rules_applied else {
+                'tax_rule_id': None,
+                'tax_rule_name': None,
+                'tax_rule_type': None,
+                'tax_rule_target_id': None,
+                'tax_id': None,
+                'tax_name': None,
+                'rate': None,
+                'is_inclusive': None,
+                'tax_amount': None,
+                'priority': None
+            }
+
             return {
                 'final_price': final_price,
                 'tax_amount': round_money(total_tax_amount),
                 'taxes_applied': taxes_applied,
-                'tax_rule_applied': primary_tax_rule_applied
+                'tax_rule_applied': primary_tax_rule_applied,
+                'tax_rules_applied': tax_rules_applied,
             }
             
         except Exception as e:
-            logger.error(f"Error applying tax rules: {str(e)}", exc_info=True)
+            logger.error(
+                f"Error applying tax rules for product {product_id}: {str(e)}. "
+                f"Returning price {base_price} without tax applied.",
+                exc_info=True
+            )
             return {
                 'final_price': round_money(base_price),
                 'tax_amount': Decimal('0'),
@@ -718,7 +731,9 @@ class ProductPriceCalculator:
                     'is_inclusive': None,
                     'tax_amount': None,
                     'priority': None
-                }
+                },
+                'tax_rules_applied': [],
+                'error': f"Tax rule error: {str(e)}"
             }
 
     @staticmethod
@@ -817,11 +832,16 @@ class ProductPriceCalculator:
                 'final_price': decimal_to_float(final_price),
                 'taxes_applied': tax_result['taxes_applied'],
                 'pricing_rule_applied': pricing_rule_applied,
-                'tax_rule_applied': tax_result.get('tax_rule_applied')
+                'tax_rule_applied': tax_result.get('tax_rule_applied'),
+                'tax_rules_applied': tax_result.get('tax_rules_applied', []),
             }
             
         except Exception as e:
-            logger.error(f"Error calculating product prices: {str(e)}", exc_info=True)
+            logger.error(
+                f"Error calculating product prices for product {product_id}: {str(e)}. "
+                f"Returning empty price result.",
+                exc_info=True
+            )
             return {
                 'cost_price': None,
                 'base_selling_price': None,
@@ -832,6 +852,8 @@ class ProductPriceCalculator:
                 'final_price': None,
                 'taxes_applied': [],
                 'pricing_rule_applied': None,
-                'tax_rule_applied': None
+                'tax_rule_applied': None,
+                'tax_rules_applied': [],
+                'error': f"Price calculation error: {str(e)}"
             }
 

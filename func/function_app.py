@@ -4,6 +4,22 @@ import logging
 
 from shared.database import get_db_connection
 from shared.email_service import send_email, send_to_recipient_list, get_notification_email_credentials, fmt_currency
+from messaging.queries import (
+    pick_up_due_messages,
+    get_message_recipients,
+    update_recipient_status,
+    update_message_status,
+    pick_up_due_meeting_reminders,
+    get_meeting_participants,
+    update_participant_reminder_status,
+    update_meeting_reminder_status,
+)
+from messaging.email_builder import (
+    build_message_email_html,
+    build_meeting_reminder_email_html,
+    build_message_sms_text,
+    build_meeting_reminder_sms_text,
+)
 from stock_alerts.queries import (
     get_store_configs_with_out_of_stock_notifications,
     get_warehouse_configs_with_out_of_stock_notifications,
@@ -227,6 +243,162 @@ def send_daily_sales_report(timer: func.TimerRequest) -> None:
 
     except Exception as e:
         logger.error(f"Daily sales report function failed: {e}", exc_info=True)
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+
+# ══════════════════════════════════════════════════
+# Scheduled Messages (every 5 min)
+# ══════════════════════════════════════════════════
+
+@app.timer_trigger(schedule="0 */5 * * * *", arg_name="timer", run_on_startup=False)
+def process_scheduled_messages(timer: func.TimerRequest) -> None:
+    """Picks up scheduled messages that are due and sends them via email."""
+    logger.info("Scheduled messages check triggered at %s", datetime.datetime.utcnow().isoformat())
+
+    if timer.past_due:
+        logger.warning("Scheduled messages timer is past due — running catch-up execution.")
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            messages = pick_up_due_messages(cursor)
+            conn.commit()
+
+            if not messages:
+                logger.info("No scheduled messages due for sending.")
+                return
+
+            logger.info(f"Picked up {len(messages)} scheduled message(s) to process.")
+            total_sent = 0
+
+            for msg in messages:
+                tenant_id = msg["tenant_id"]
+                org_id = msg["org_id"]
+                bus_id = msg["bus_id"]
+                message_id = msg["id"]
+
+                recipients = get_message_recipients(cursor, tenant_id, org_id, bus_id, message_id)
+                if not recipients:
+                    update_message_status(cursor, tenant_id, org_id, bus_id, message_id, "SENT")
+                    conn.commit()
+                    continue
+
+                sender_email_addr, sender_password = get_notification_email_credentials(cursor, tenant_id)
+                if not sender_email_addr or not sender_password:
+                    logger.warning(f"No email credentials for tenant {tenant_id}. Marking message {message_id} as FAILED.")
+                    update_message_status(cursor, tenant_id, org_id, bus_id, message_id, "FAILED")
+                    conn.commit()
+                    continue
+
+                update_message_status(cursor, tenant_id, org_id, bus_id, message_id, "SENDING")
+                conn.commit()
+
+                any_sent = False
+                for recipient in recipients:
+                    to_email = recipient.get("recipient_email")
+                    if not to_email:
+                        update_recipient_status(cursor, tenant_id, org_id, bus_id, recipient["id"], "FAILED", "No email address")
+                        continue
+
+                    email_body = build_message_email_html(msg["subject"], msg["body"])
+                    success = send_email(sender_email_addr, sender_password, to_email, msg["subject"], email_body)
+
+                    if success:
+                        update_recipient_status(cursor, tenant_id, org_id, bus_id, recipient["id"], "DELIVERED")
+                        any_sent = True
+                        total_sent += 1
+                    else:
+                        update_recipient_status(cursor, tenant_id, org_id, bus_id, recipient["id"], "FAILED", "Email delivery failed")
+
+                final_status = "SENT" if any_sent else "FAILED"
+                update_message_status(cursor, tenant_id, org_id, bus_id, message_id, final_status)
+                conn.commit()
+
+            logger.info(f"Scheduled messages complete. {total_sent} recipient(s) delivered.")
+
+    except Exception as e:
+        logger.error(f"Scheduled messages function failed: {e}", exc_info=True)
+        if conn:
+            conn.rollback()
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+
+# ══════════════════════════════════════════════════
+# Meeting Reminders (every 5 min)
+# ══════════════════════════════════════════════════
+
+@app.timer_trigger(schedule="0 */5 * * * *", arg_name="timer", run_on_startup=False)
+def process_meeting_reminders(timer: func.TimerRequest) -> None:
+    """Picks up meetings whose reminder time has arrived and sends reminders."""
+    logger.info("Meeting reminders check triggered at %s", datetime.datetime.utcnow().isoformat())
+
+    if timer.past_due:
+        logger.warning("Meeting reminders timer is past due — running catch-up execution.")
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            meetings = pick_up_due_meeting_reminders(cursor)
+            conn.commit()
+
+            if not meetings:
+                logger.info("No meeting reminders due for sending.")
+                return
+
+            logger.info(f"Picked up {len(meetings)} meeting(s) with due reminders.")
+            total_sent = 0
+
+            for meeting in meetings:
+                tenant_id = meeting["tenant_id"]
+                org_id = meeting["org_id"]
+                bus_id = meeting["bus_id"]
+                meeting_id = meeting["id"]
+
+                participants = get_meeting_participants(cursor, tenant_id, org_id, bus_id, meeting_id)
+                if not participants:
+                    update_meeting_reminder_status(cursor, tenant_id, org_id, bus_id, meeting_id)
+                    conn.commit()
+                    continue
+
+                sender_email_addr, sender_password = get_notification_email_credentials(cursor, tenant_id)
+                if not sender_email_addr or not sender_password:
+                    logger.warning(f"No email credentials for tenant {tenant_id}. Skipping meeting {meeting_id} reminders.")
+                    conn.commit()
+                    continue
+
+                for participant in participants:
+                    to_email = participant.get("participant_email")
+                    if not to_email:
+                        update_participant_reminder_status(cursor, tenant_id, org_id, bus_id, participant["id"], "FAILED", "No email address")
+                        continue
+
+                    email_body = build_meeting_reminder_email_html(meeting)
+                    subject = f"Meeting Reminder: {meeting['title']} — {meeting['meeting_date']} at {meeting['start_time']}"
+                    success = send_email(sender_email_addr, sender_password, to_email, subject, email_body)
+
+                    if success:
+                        update_participant_reminder_status(cursor, tenant_id, org_id, bus_id, participant["id"], "SENT")
+                        total_sent += 1
+                    else:
+                        update_participant_reminder_status(cursor, tenant_id, org_id, bus_id, participant["id"], "FAILED", "Email delivery failed")
+
+                update_meeting_reminder_status(cursor, tenant_id, org_id, bus_id, meeting_id)
+                conn.commit()
+
+            logger.info(f"Meeting reminders complete. {total_sent} reminder(s) sent.")
+
+    except Exception as e:
+        logger.error(f"Meeting reminders function failed: {e}", exc_info=True)
+        if conn:
+            conn.rollback()
         raise
     finally:
         if conn:
