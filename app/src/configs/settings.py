@@ -159,6 +159,13 @@ class Settings:
     MSG_PROMO_CODES_TABLE = os.getenv("MSG_PROMO_CODES_TABLE", "mystoreguard.msg_promo_codes")
     MSG_PROMO_CODE_USAGE_TABLE = os.getenv("MSG_PROMO_CODE_USAGE_TABLE", "mystoreguard.msg_promo_code_usage")
     
+    # Return Policies table
+    MSG_RETURN_POLICIES_TABLE = os.getenv("MSG_RETURN_POLICIES_TABLE", "mystoreguard.msg_return_policies")
+
+    # Returns tables
+    MSG_RETURNS_TABLE = os.getenv("MSG_RETURNS_TABLE", "mystoreguard.msg_returns")
+    MSG_RETURN_ITEMS_TABLE = os.getenv("MSG_RETURN_ITEMS_TABLE", "mystoreguard.msg_return_items")
+
     # Affiliates tables
     MSG_AFFILIATES_TABLE = os.getenv("MSG_AFFILIATES_TABLE", "mystoreguard.msg_affiliates")
     MSG_AFFILIATE_REFERRALS_TABLE = os.getenv("MSG_AFFILIATE_REFERRALS_TABLE", "mystoreguard.msg_affiliate_referrals")
