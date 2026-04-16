@@ -506,3 +506,39 @@ class ProductPricesGraphicalReportRequestWriteDto(BaseReportRequestWriteDto):
     product_id: Optional[str] = Field(None, description="Filter by product ID")
     price_type: str = Field('selling_price', description="Price type: cost_price or selling_price")
 
+
+# =====================================================
+# RETURNS REPORTS REQUEST DTOs
+# =====================================================
+
+class ReturnsSummaryReportRequestWriteDto(BaseReportRequestWriteDto):
+    """Request DTO for returns summary report"""
+    pass
+
+
+class ReturnsDetailedReportRequestWriteDto(BaseReportRequestWriteDto):
+    """Request DTO for returns detailed report"""
+    status: Optional[str] = Field(None, description="Filter by return status (PENDING, APPROVED, REJECTED, COMPLETED)")
+    reason: Optional[str] = Field(None, description="Filter by return reason")
+    customer_id: Optional[str] = Field(None, description="Filter by customer ID")
+
+
+class ReturnsByReasonReportRequestWriteDto(BaseReportRequestWriteDto):
+    """Request DTO for returns by reason report"""
+    pass
+
+
+class ReturnsByProductReportRequestWriteDto(BaseReportRequestWriteDto):
+    """Request DTO for returns by product report (return rate analysis)"""
+    min_return_rate: Optional[float] = Field(None, description="Minimum return rate percentage to include")
+
+
+class ReturnsWriteOffReportRequestWriteDto(BaseReportRequestWriteDto):
+    """Request DTO for returns write-off/inventory loss report"""
+    condition: Optional[str] = Field(None, description="Filter by condition (DAMAGED, EXPIRED, OPENED, WRITE_OFF)")
+
+
+class ReturnsGraphicalReportRequestWriteDto(BaseReportRequestWriteDto):
+    """Request DTO for returns graphical report"""
+    group_by: Optional[ReportGroupByType] = Field('MONTH', description="Group by period: DAY, WEEK, MONTH, YEAR")
+
