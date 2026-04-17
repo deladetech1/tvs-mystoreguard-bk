@@ -50,25 +50,25 @@ class StoreReturnsService:
                         AND amp.tenant_id = m.tenant_id AND amp.org_id = m.org_id AND amp.bus_id = m.bus_id
                     WHERE amp.product_id = p.id AND amp.tenant_id = p.tenant_id
                         AND amp.org_id = p.org_id AND amp.bus_id = p.bus_id
-                        AND m.type = 'category') as category_ids,
+                        AND m.of_type ='category') as category_ids,
                    (SELECT string_agg(m.id, ',') FROM {db_settings.MSG_ASSIGN_METADATA_TO_PRODUCTS_TABLE} amp
                     JOIN {db_settings.MSG_PRODUCT_METADATA_TABLE} m ON amp.product_metadata_id = m.id
                         AND amp.tenant_id = m.tenant_id AND amp.org_id = m.org_id AND amp.bus_id = m.bus_id
                     WHERE amp.product_id = p.id AND amp.tenant_id = p.tenant_id
                         AND amp.org_id = p.org_id AND amp.bus_id = p.bus_id
-                        AND m.type = 'tag') as tag_ids,
+                        AND m.of_type ='tag') as tag_ids,
                    (SELECT string_agg(m.id, ',') FROM {db_settings.MSG_ASSIGN_METADATA_TO_PRODUCTS_TABLE} amp
                     JOIN {db_settings.MSG_PRODUCT_METADATA_TABLE} m ON amp.product_metadata_id = m.id
                         AND amp.tenant_id = m.tenant_id AND amp.org_id = m.org_id AND amp.bus_id = m.bus_id
                     WHERE amp.product_id = p.id AND amp.tenant_id = p.tenant_id
                         AND amp.org_id = p.org_id AND amp.bus_id = p.bus_id
-                        AND m.type = 'brand') as brand_ids,
+                        AND m.of_type ='brand') as brand_ids,
                    (SELECT string_agg(m.id, ',') FROM {db_settings.MSG_ASSIGN_METADATA_TO_PRODUCTS_TABLE} amp
                     JOIN {db_settings.MSG_PRODUCT_METADATA_TABLE} m ON amp.product_metadata_id = m.id
                         AND amp.tenant_id = m.tenant_id AND amp.org_id = m.org_id AND amp.bus_id = m.bus_id
                     WHERE amp.product_id = p.id AND amp.tenant_id = p.tenant_id
                         AND amp.org_id = p.org_id AND amp.bus_id = p.bus_id
-                        AND m.type = 'label') as label_ids
+                        AND m.of_type ='label') as label_ids
             FROM {db_settings.MSG_PRODUCTS_TABLE} p
             WHERE p.id = %s AND p.tenant_id = %s AND p.org_id = %s AND p.bus_id = %s""",
             (product_id, tenant_id, org_id, bus_id),
