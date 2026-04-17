@@ -55,6 +55,8 @@ from src.entities.promo_codes.promo_codes_controller import promo_codes_router
 from src.entities.affiliates.affiliates_controller import affiliates_router
 from src.entities.return_policies.return_policies_controller import return_policies_router
 from src.entities.store_returns.store_returns_controller import store_returns_router
+from src.entities.messaging.messaging_controller import messaging_router
+from src.entities.meetings.meetings_controller import meetings_router
 
 # Initialize logging
 logger = setup_logging()
@@ -182,4 +184,6 @@ app.include_router(prefix="/api/v1", router=promo_codes_router)
 app.include_router(prefix="/api/v1", router=affiliates_router)
 app.include_router(prefix="/api/v1", router=return_policies_router)
 app.include_router(prefix="/api/v1", router=store_returns_router)
+app.include_router(prefix="/api/v1", router=messaging_router)
+app.include_router(prefix="/api/v1", router=meetings_router)
 logger.info("Application startup completed")

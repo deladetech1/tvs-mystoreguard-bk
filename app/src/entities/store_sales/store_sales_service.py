@@ -185,7 +185,8 @@ class StoreSalesService:
             AND pb.is_active = true
             AND pb.status NOT IN ('VOID', 'CANCELLED')
             AND bl.qty > 0
-            ORDER BY bl.cdatetime ASC, pb.cdatetime ASC""",
+            ORDER BY bl.cdatetime ASC, pb.cdatetime ASC
+            FOR UPDATE OF bl""",
             (tenant_id, org_id, bus_id, loc_id, product_id),
         )
         return cursor.fetchall()
@@ -309,10 +310,16 @@ class StoreSalesService:
 
                 # Check inventory availability for all items before processing
                 # For DEPOSIT mode, we still check availability but won't move inventory until fully paid
-                inventory_checks = {}
+                # First, aggregate quantities per product_id (same product can appear multiple times in cart)
+                product_qty_totals = {}
                 for item in data.items:
+                    pid = item.product_id
+                    product_qty_totals[pid] = product_qty_totals.get(pid, Decimal('0')) + Decimal(str(item.quantity))
+
+                inventory_checks = {}
+                for product_id_check, total_qty_needed in product_qty_totals.items():
                     is_available, available_qty, batches = StoreSalesService._check_inventory_availability(
-                        tenant_id, org_id, bus_id, loc_id, item.product_id, item.quantity, cursor
+                        tenant_id, org_id, bus_id, loc_id, product_id_check, float(total_qty_needed), cursor
                     )
                     
                     if not is_available:
@@ -320,75 +327,74 @@ class StoreSalesService:
                         cursor.execute(
                             f"""SELECT name FROM {db_settings.MSG_PRODUCTS_TABLE}
                             WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
-                            (item.product_id, tenant_id, org_id, bus_id),
+                            (product_id_check, tenant_id, org_id, bus_id),
                         )
                         product = cursor.fetchone()
-                        product_name = product.get('name', item.product_id) if product else item.product_id
-                        
+                        product_name = product.get('name', product_id_check) if product else product_id_check
+
                         # Check if product exists in any location (for better error message)
                         cursor.execute(
                             f"""SELECT COUNT(*) as batch_count, COALESCE(SUM(bl.qty), 0) as total_qty
                             FROM {db_settings.MSG_BATCH_LOCATIONS_TABLE} bl
-                            INNER JOIN {db_settings.MSG_PURCHASE_BATCHES_TABLE} pb 
-                                ON bl.purchase_batche_id = pb.id 
-                                AND bl.tenant_id = pb.tenant_id 
-                                AND bl.org_id = pb.org_id 
+                            INNER JOIN {db_settings.MSG_PURCHASE_BATCHES_TABLE} pb
+                                ON bl.purchase_batche_id = pb.id
+                                AND bl.tenant_id = pb.tenant_id
+                                AND bl.org_id = pb.org_id
                                 AND bl.bus_id = pb.bus_id
-                            WHERE bl.tenant_id = %s AND bl.org_id = %s AND bl.bus_id = %s 
-                            AND pb.product_id = %s 
+                            WHERE bl.tenant_id = %s AND bl.org_id = %s AND bl.bus_id = %s
+                            AND pb.product_id = %s
                             AND bl.location_type = 'STORE'
-                            AND pb.delete_status = 'NOT_DELETED' 
+                            AND pb.delete_status = 'NOT_DELETED'
                             AND pb.is_active = true
                             AND pb.status NOT IN ('VOID', 'CANCELLED')
                             AND bl.qty > 0""",
-                            (tenant_id, org_id, bus_id, item.product_id),
+                            (tenant_id, org_id, bus_id, product_id_check),
                         )
                         inventory_check = cursor.fetchone()
                         total_inventory = float(inventory_check['total_qty']) if inventory_check else 0.0
-                        batch_count = int(inventory_check['batch_count']) if inventory_check else 0
-                        
+
                         # Check if product exists in warehouse
                         cursor.execute(
                             f"""SELECT COUNT(*) as warehouse_batch_count, COALESCE(SUM(bl.qty), 0) as warehouse_qty
                             FROM {db_settings.MSG_BATCH_LOCATIONS_TABLE} bl
-                            INNER JOIN {db_settings.MSG_PURCHASE_BATCHES_TABLE} pb 
-                                ON bl.purchase_batche_id = pb.id 
-                                AND bl.tenant_id = pb.tenant_id 
-                                AND bl.org_id = pb.org_id 
+                            INNER JOIN {db_settings.MSG_PURCHASE_BATCHES_TABLE} pb
+                                ON bl.purchase_batche_id = pb.id
+                                AND bl.tenant_id = pb.tenant_id
+                                AND bl.org_id = pb.org_id
                                 AND bl.bus_id = pb.bus_id
-                            WHERE bl.tenant_id = %s AND bl.org_id = %s AND bl.bus_id = %s 
-                            AND pb.product_id = %s 
+                            WHERE bl.tenant_id = %s AND bl.org_id = %s AND bl.bus_id = %s
+                            AND pb.product_id = %s
                             AND bl.location_type = 'WAREHOUSE'
-                            AND pb.delete_status = 'NOT_DELETED' 
+                            AND pb.delete_status = 'NOT_DELETED'
                             AND pb.is_active = true
                             AND pb.status NOT IN ('VOID', 'CANCELLED')
                             AND bl.qty > 0""",
-                            (tenant_id, org_id, bus_id, item.product_id),
+                            (tenant_id, org_id, bus_id, product_id_check),
                         )
                         warehouse_check = cursor.fetchone()
                         warehouse_qty = float(warehouse_check['warehouse_qty']) if warehouse_check else 0.0
-                        
+
                         # Build detailed error message
-                        error_detail = f"Insufficient inventory for product '{product_name}' at this location. Required: {item.quantity}, Available: {available_qty}"
-                        
+                        error_detail = f"Insufficient inventory for product '{product_name}' at this location. Required: {float(total_qty_needed)}, Available: {available_qty}"
+
                         if total_inventory > 0:
                             error_detail += f". Note: {total_inventory} units exist in other store locations."
-                        
+
                         if warehouse_qty > 0:
                             error_detail += f" {warehouse_qty} units available in warehouse - consider transferring to store first."
-                        
+
                         if total_inventory == 0 and warehouse_qty == 0:
                             error_detail += " No inventory found in any location. Please add stock first."
-                        
+
                         return Respons(
                             success=False,
                             detail=error_detail,
                             error="INSUFFICIENT_INVENTORY",
                         )
-                    
-                    inventory_checks[item.product_id] = {
+
+                    inventory_checks[product_id_check] = {
                         'batches': batches,
-                        'required_qty': Decimal(str(item.quantity))
+                        'required_qty': total_qty_needed
                     }
 
                 # Generate sale number (use backdated date when available)
@@ -494,7 +500,7 @@ class StoreSalesService:
                 
                 for item in data.items:
                     product_id = item.product_id
-                    required_qty = inventory_checks[product_id]['required_qty']
+                    required_qty = Decimal(str(item.quantity))  # Use this item's quantity, not the aggregated total
                     batches = inventory_checks[product_id]['batches']
                     
                     # Get product name
@@ -680,9 +686,13 @@ class StoreSalesService:
                             paid_amount += amount_to_use
                             remaining_balance -= amount_to_use
                         else:
-                            # Regular payment method
-                            paid_amount += Decimal(str(payment_data.paid_amount))
-                            remaining_balance -= Decimal(str(payment_data.paid_amount))
+                            # Regular payment method - cap at remaining balance to prevent overpayment
+                            payment_amount = Decimal(str(payment_data.paid_amount))
+                            if remaining_balance <= 0:
+                                raise ValueError("Sale is already fully paid. Cannot accept additional payment.")
+                            payment_amount = min(payment_amount, remaining_balance)
+                            paid_amount += payment_amount
+                            remaining_balance -= payment_amount
 
                 # Calculate balance (use final_total_amount after promo discount)
                 balance_amount = final_total_for_payments - paid_amount
@@ -1330,7 +1340,12 @@ class StoreSalesService:
                 # Create promo code usage record if promo code was used
                 if promo_code_id and promo_discount_amount > 0:
                     usage_id = Helper.generate_unique_identifier(prefix="pcu")
-                    sale_total_before = final_total_for_payments + promo_discount_amount  # Total before discount
+                    # Use verified subtotal_before_discount if available (accurate: includes tax on undiscounted prices)
+                    # Otherwise fall back to approximate calculation
+                    if data.verified_subtotal_before_discount is not None:
+                        sale_total_before = Decimal(str(data.verified_subtotal_before_discount))
+                    else:
+                        sale_total_before = final_total_for_payments + promo_discount_amount  # Approximate
                     sale_total_after = final_total_for_payments  # Total after discount
                     
                     cursor.execute(
@@ -1437,8 +1452,8 @@ class StoreSalesService:
                     logger.info(f"No payments provided for sale {sale_id}")
 
                 # For DEPOSIT mode: Check if fully paid and move inventory if needed
-                # Skip this if explicitly ON_HOLD
-                if not is_explicitly_on_hold and sale_mode == 'DEPOSIT' and paid_amount >= final_total_for_payments and fulfillment_status == 'PENDING':
+                # Skip this if explicitly ON_HOLD or if inventory was already moved above
+                if not is_explicitly_on_hold and not should_move_inventory and sale_mode == 'DEPOSIT' and paid_amount >= final_total_for_payments and fulfillment_status == 'PENDING':
                     # Now move inventory since fully paid
                     for item_data in sale_items:
                         product_id = item_data['product_id']
@@ -2474,57 +2489,170 @@ class StoreSalesService:
                 )
                 items = cursor.fetchall()
 
-                # Restore inventory for each item
-                for item in items:
-                    item_dict = dict(item)
-                    product_id = item_dict['product_id']
-                    quantity = Decimal(str(item_dict['quantity']))
-                    batch_id = item_dict.get('batch_id')
+                # Restore inventory using the original OUT movements (preserves correct batch split)
+                # First get all OUT movements for this sale
+                cursor.execute(
+                    f"""SELECT product_id, batch_id, qty
+                    FROM {db_settings.MSG_PRODUCT_MOVEMENTS_TABLE}
+                    WHERE reference_id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s
+                    AND movement_type = 'OUT' AND reason LIKE 'SALE%'""",
+                    (data.sale_id, tenant_id, org_id, bus_id),
+                )
+                original_movements = cursor.fetchall()
 
-                    # Restore to batch location
-                    if batch_id:
+                dt_cancel = Helper.current_date_time()
+                cdate = dt_cancel["cdate"]
+                ctime = dt_cancel["ctime"]
+                cdatetime = dt_cancel["cdatetime"]
+
+                if original_movements:
+                    # Restore using exact batch allocations from original movements
+                    restored_products = set()
+                    for mov in original_movements:
+                        mov_product_id = mov['product_id']
+                        mov_batch_id = mov['batch_id']
+                        mov_qty = Decimal(str(mov['qty']))
+
+                        # Restore to the exact batch location
                         cursor.execute(
                             f"""UPDATE {db_settings.MSG_BATCH_LOCATIONS_TABLE}
                             SET qty = qty + %s
-                            WHERE purchase_batche_id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s 
+                            WHERE purchase_batche_id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s
                             AND loc_id = %s AND location_type = 'STORE'""",
-                            (float(quantity), batch_id, tenant_id, org_id, bus_id, loc_id),
+                            (float(mov_qty), mov_batch_id, tenant_id, org_id, bus_id, loc_id),
                         )
 
-                    # Restore store product current_qty
-                    cursor.execute(
-                        f"""UPDATE {db_settings.MSG_STORE_PRODUCTS_TABLE}
-                        SET current_qty = current_qty + %s, updated_by = %s
-                        WHERE tenant_id = %s AND org_id = %s AND bus_id = %s 
-                        AND loc_id = %s AND product_id = %s""",
-                        (float(quantity), cancelled_by, tenant_id, org_id, bus_id, loc_id, product_id),
-                    )
+                        # Create reverse movement
+                        movement_id = Helper.generate_unique_identifier(prefix="mov")
+                        cursor.execute(
+                            f"""INSERT INTO {db_settings.MSG_PRODUCT_MOVEMENTS_TABLE}
+                            (id, tenant_id, org_id, bus_id, product_id, batch_id, location_type, location_id,
+                             movement_type, qty, reason, reference_id, cdate, ctime, cdatetime, created_by)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            RETURNING *""",
+                            (
+                                movement_id, tenant_id, org_id, bus_id, mov_product_id,
+                                mov_batch_id, 'STORE', loc_id,
+                                'IN', float(mov_qty),
+                                'SALE_CANCELLED', data.sale_id,
+                                cdate, ctime, cdatetime, cancelled_by
+                            ),
+                        )
 
-                    # Create reverse movement
-                    movement_id = Helper.generate_unique_identifier(prefix="mov")
-                    cdate = Helper.current_date_time()["cdate"]
-                    ctime = Helper.current_date_time()["ctime"]
-                    cdatetime = Helper.current_date_time()["cdatetime"]
-                    
-                    cursor.execute(
-                        f"""INSERT INTO {db_settings.MSG_PRODUCT_MOVEMENTS_TABLE}
-                        (id, tenant_id, org_id, bus_id, product_id, batch_id, location_type, location_id,
-                         movement_type, qty, reason, reference_id, cdate, ctime, cdatetime, created_by)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        RETURNING *""",
-                        (
-                            movement_id, tenant_id, org_id, bus_id, product_id,
-                            batch_id, 'STORE', loc_id,
-                            'IN', float(quantity),
-                            'SALE_CANCELLED', data.sale_id,
-                            cdate, ctime, cdatetime, cancelled_by
-                        ),
-                    )
+                        restored_products.add(mov_product_id)
 
-                # Update sale status
+                    # Restore store product current_qty once per product
+                    for item in items:
+                        item_dict = dict(item)
+                        product_id = item_dict['product_id']
+                        quantity = Decimal(str(item_dict['quantity']))
+                        if product_id in restored_products:
+                            cursor.execute(
+                                f"""UPDATE {db_settings.MSG_STORE_PRODUCTS_TABLE}
+                                SET current_qty = current_qty + %s, updated_by = %s
+                                WHERE tenant_id = %s AND org_id = %s AND bus_id = %s
+                                AND loc_id = %s AND product_id = %s""",
+                                (float(quantity), cancelled_by, tenant_id, org_id, bus_id, loc_id, product_id),
+                            )
+                else:
+                    # No movements found (sale was ON_HOLD, inventory was never deducted)
+                    # Just log it — no inventory to restore
+                    logger.info(f"No inventory movements found for sale {data.sale_id}. Inventory was not deducted (likely ON_HOLD).")
+
+                # Restore gift card balance if gift card was used
+                gift_card_amount_used = Decimal(str(sale_dict.get('gift_card_amount_used') or 0))
+                if gift_card_amount_used > 0:
+                    # Find the gift card payment to get the gift card ID
+                    cursor.execute(
+                        f"""SELECT gift_card_id FROM {db_settings.MSG_SALES_PAYMENTS_TABLE}
+                        WHERE sale_id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s AND loc_id = %s
+                        AND payment_method = 'GIFT_CARD' AND deleted_at IS NULL
+                        LIMIT 1""",
+                        (data.sale_id, tenant_id, org_id, bus_id, loc_id),
+                    )
+                    gc_payment = cursor.fetchone()
+                    if gc_payment and gc_payment.get('gift_card_id'):
+                        # Restore balance and reactivate if it was marked USED
+                        cursor.execute(
+                            f"""UPDATE {db_settings.MSG_GIFT_CARDS_TABLE}
+                            SET current_balance = current_balance + %s,
+                                status = CASE WHEN status = 'USED' THEN 'ACTIVE' ELSE status END
+                            WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                            (float(gift_card_amount_used), gc_payment['gift_card_id'], tenant_id, org_id, bus_id),
+                        )
+                        logger.info(f"Restored gift card balance: {float(gift_card_amount_used)} for sale {data.sale_id}")
+
+                # Reverse promo code usage if promo code was used
+                promo_code_id = sale_dict.get('promo_code_id')
+                if promo_code_id:
+                    cursor.execute(
+                        f"""UPDATE {db_settings.MSG_PROMO_CODES_TABLE}
+                        SET current_usage_count = GREATEST(current_usage_count - 1, 0),
+                            updated_by = %s
+                        WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                        (cancelled_by, promo_code_id, tenant_id, org_id, bus_id),
+                    )
+                    logger.info(f"Reversed promo code usage count for promo {promo_code_id} on sale {data.sale_id}")
+
+                # Reverse affiliate referral and commission if affiliate was used
+                affiliate_id = sale_dict.get('affiliate_id')
+                if affiliate_id:
+                    # Check if the referral was converted (commission was paid)
+                    cursor.execute(
+                        f"""SELECT id, conversion_status, commission_amount
+                        FROM {db_settings.MSG_AFFILIATE_REFERRALS_TABLE}
+                        WHERE sale_id = %s AND affiliate_id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s
+                        LIMIT 1""",
+                        (data.sale_id, affiliate_id, tenant_id, org_id, bus_id),
+                    )
+                    referral = cursor.fetchone()
+                    if referral:
+                        was_converted = referral['conversion_status'] == 'CONVERTED'
+                        commission_amount = Decimal(str(referral.get('commission_amount') or 0))
+
+                        # Update affiliate stats
+                        if was_converted:
+                            cursor.execute(
+                                f"""UPDATE {db_settings.MSG_AFFILIATES_TABLE}
+                                SET total_referrals = GREATEST(total_referrals - 1, 0),
+                                    total_conversions = GREATEST(total_conversions - 1, 0),
+                                    total_commission_earned = GREATEST(total_commission_earned - %s, 0),
+                                    updated_by = %s
+                                WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                                (float(commission_amount), cancelled_by, affiliate_id, tenant_id, org_id, bus_id),
+                            )
+                        else:
+                            cursor.execute(
+                                f"""UPDATE {db_settings.MSG_AFFILIATES_TABLE}
+                                SET total_referrals = GREATEST(total_referrals - 1, 0),
+                                    updated_by = %s
+                                WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                                (cancelled_by, affiliate_id, tenant_id, org_id, bus_id),
+                            )
+
+                        # Mark referral as cancelled
+                        cursor.execute(
+                            f"""UPDATE {db_settings.MSG_AFFILIATE_REFERRALS_TABLE}
+                            SET conversion_status = 'CANCELLED'
+                            WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                            (referral['id'], tenant_id, org_id, bus_id),
+                        )
+
+                        # Mark commission as cancelled
+                        if was_converted:
+                            cursor.execute(
+                                f"""UPDATE {db_settings.MSG_AFFILIATE_COMMISSIONS_TABLE}
+                                SET payment_status = 'CANCELLED'
+                                WHERE sale_id = %s AND affiliate_id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                                (data.sale_id, affiliate_id, tenant_id, org_id, bus_id),
+                            )
+
+                        logger.info(f"Reversed affiliate referral for affiliate {affiliate_id} on sale {data.sale_id}")
+
+                # Update sale status and reset financial amounts
                 cursor.execute(
                     f"""UPDATE {db_settings.MSG_SALES_TABLE}
-                    SET status = 'CANCELLED', updated_by = %s
+                    SET status = 'CANCELLED', paid_amount = 0, balance_amount = 0, updated_by = %s
                     WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s AND loc_id = %s
                     RETURNING *""",
                     (cancelled_by, data.sale_id, tenant_id, org_id, bus_id, loc_id),
@@ -2748,7 +2876,7 @@ class StoreSalesService:
                 WHERE reference_id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s
                 AND reason LIKE %s
                 AND movement_type = 'OUT'""",
-                (sale_id, tenant_id, org_id, bus_id, 'SALE_%'),
+                (sale_id, tenant_id, org_id, bus_id, 'SALE%'),
             )
             movement_check = cursor.fetchone()
             existing_movements = movement_check['movement_count'] if movement_check else 0
@@ -2870,6 +2998,86 @@ class StoreSalesService:
                         (float(quantity), updated_by, tenant_id, org_id, bus_id, loc_id, product_id),
                     )
 
+        # Convert affiliate referral when sale becomes PAID (for DEPOSIT/CREDIT sales paid later)
+        if new_status == 'PAID':
+            cursor.execute(
+                f"""SELECT s.affiliate_id, s.total_amount
+                FROM {db_settings.MSG_SALES_TABLE} s
+                WHERE s.id = %s AND s.tenant_id = %s AND s.org_id = %s AND s.bus_id = %s AND s.loc_id = %s
+                AND s.affiliate_id IS NOT NULL""",
+                (sale_id, tenant_id, org_id, bus_id, loc_id),
+            )
+            sale_affiliate = cursor.fetchone()
+            if sale_affiliate and sale_affiliate.get('affiliate_id'):
+                aff_id = sale_affiliate['affiliate_id']
+                sale_total = Decimal(str(sale_affiliate['total_amount'] or 0))
+
+                # Check if referral exists and is still PENDING
+                cursor.execute(
+                    f"""SELECT id, conversion_status
+                    FROM {db_settings.MSG_AFFILIATE_REFERRALS_TABLE}
+                    WHERE sale_id = %s AND affiliate_id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s
+                    AND conversion_status = 'PENDING'
+                    LIMIT 1""",
+                    (sale_id, aff_id, tenant_id, org_id, bus_id),
+                )
+                pending_referral = cursor.fetchone()
+                if pending_referral:
+                    referral_id = pending_referral['id']
+                    cdate_now = Helper.current_date_time()["cdate"]
+                    ctime_now = Helper.current_date_time()["ctime"]
+                    cdatetime_now = Helper.current_date_time()["cdatetime"]
+
+                    # Calculate commission
+                    cursor.execute(
+                        f"""SELECT commission_rate, commission_type, fixed_commission_amount
+                        FROM {db_settings.MSG_AFFILIATES_TABLE}
+                        WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                        (aff_id, tenant_id, org_id, bus_id),
+                    )
+                    affiliate_data = cursor.fetchone()
+                    commission_amount = Decimal('0')
+                    if affiliate_data:
+                        if affiliate_data['commission_type'] == 'PERCENTAGE':
+                            commission_rate = Decimal(str(affiliate_data['commission_rate']))
+                            commission_amount = (sale_total * commission_rate) / Decimal('100')
+                        else:
+                            commission_amount = Decimal(str(affiliate_data['fixed_commission_amount'] or 0))
+
+                    # Update referral to CONVERTED
+                    cursor.execute(
+                        f"""UPDATE {db_settings.MSG_AFFILIATE_REFERRALS_TABLE}
+                        SET conversion_status = 'CONVERTED', conversion_date = %s, commission_amount = %s
+                        WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                        (cdatetime_now, float(commission_amount), referral_id, tenant_id, org_id, bus_id),
+                    )
+
+                    # Update affiliate stats
+                    cursor.execute(
+                        f"""UPDATE {db_settings.MSG_AFFILIATES_TABLE}
+                        SET total_conversions = total_conversions + 1,
+                            total_commission_earned = total_commission_earned + %s,
+                            updated_by = %s
+                        WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                        (float(commission_amount), updated_by, aff_id, tenant_id, org_id, bus_id),
+                    )
+
+                    # Create commission record
+                    commission_id = Helper.generate_unique_identifier(prefix="afc")
+                    cursor.execute(
+                        f"""INSERT INTO {db_settings.MSG_AFFILIATE_COMMISSIONS_TABLE}
+                        (id, tenant_id, org_id, bus_id, loc_id, affiliate_id, referral_id, sale_id,
+                         commission_amount, payment_status, cdate, ctime, cdatetime, created_by)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                        (
+                            commission_id, tenant_id, org_id, bus_id, loc_id, aff_id, referral_id, sale_id,
+                            float(commission_amount), 'PENDING',
+                            cdate_now, ctime_now, cdatetime_now, updated_by
+                        ),
+                    )
+
+                    logger.info(f"Affiliate referral {referral_id} converted to CONVERTED for sale {sale_id}, commission={float(commission_amount)}")
+
         # Return the calculated values
         return total_paid, new_status, new_fulfillment_status
 
@@ -2929,9 +3137,17 @@ class StoreSalesService:
                         error="SALE_CANCELLED",
                     )
 
-                # Validate all payment methods (Pydantic already validates, but this provides better error messages)
-                valid_payment_methods = ['CASH', 'CARD', 'BANK_TRANSFER', 'MOBILE_MONEY', 'CHEQUE', 'BITCOIN', 'GIFT_CARD', 'OTHERS']
+                # Validate all payment methods
+                # GIFT_CARD is not allowed in create_payment — gift cards are only handled during sale creation
+                # because they require balance deduction, transaction records, and status updates
+                valid_payment_methods = ['CASH', 'CARD', 'BANK_TRANSFER', 'MOBILE_MONEY', 'CHEQUE', 'BITCOIN', 'OTHERS']
                 for idx, payment in enumerate(data.payments):
+                    if payment.payment_method == 'GIFT_CARD':
+                        return Respons(
+                            success=False,
+                            detail="Gift card payments can only be applied during sale creation (via the create sale endpoint). To use a gift card, please cancel this sale and create a new one with the gift card code.",
+                            error="GIFT_CARD_NOT_SUPPORTED_IN_ADD_PAYMENT",
+                        )
                     if payment.payment_method not in valid_payment_methods:
                         return Respons(
                             success=False,
@@ -3898,6 +4114,7 @@ class StoreSalesService:
                     'label_ids': []
                 }
                 item_line_totals_for_validation = []  # List of (price_after_pricing_rule × quantity) for each item
+                item_line_totals_before_promo = []  # List of (final_price_without_promo × quantity) for subtotal_before_discount
                 
                 for item in data.items:
                     # Collect metadata for this item
@@ -3996,6 +4213,10 @@ class StoreSalesService:
                     price_after_pricing_rule = Decimal(str(prices_for_validation.get('price_after_pricing_rule', 0) or 0))
                     line_total_for_validation = price_after_pricing_rule * Decimal(str(item.quantity))
                     item_line_totals_for_validation.append(line_total_for_validation)
+
+                    # Store the full final_price (with tax, without promo) for subtotal_before_discount
+                    final_price_no_promo = Decimal(str(prices_for_validation.get('final_price', 0) or 0))
+                    item_line_totals_before_promo.append(final_price_no_promo * Decimal(str(item.quantity)))
                 
                 # =====================================================
                 # STEP 1B: VALIDATE PROMO CODE (if provided)
@@ -4281,6 +4502,11 @@ class StoreSalesService:
                 # Final total is already calculated (total_amount includes discounted prices)
                 # total_promo_discount_amount is kept for reporting/display purposes only
                 final_total_amount = total_amount
+
+                # Calculate subtotal_before_discount from the first-pass prices (without promo, with tax)
+                subtotal_before_discount = None
+                if total_promo_discount_amount > 0 and item_line_totals_before_promo:
+                    subtotal_before_discount = float(sum(item_line_totals_before_promo))
                 
                 # =====================================================
                 # VALIDATE AND PROCESS GIFT CARD (if provided)
@@ -4462,6 +4688,7 @@ class StoreSalesService:
                 verify_price_read = VerifyPriceServiceReadDto(
                     items=verified_items,
                     business_name=business_name,
+                    subtotal_before_discount=subtotal_before_discount,
                     total_amount=float(total_amount),
                     total_tax_amount=float(total_tax_amount),
                     promo_code_id=promo_code_id,

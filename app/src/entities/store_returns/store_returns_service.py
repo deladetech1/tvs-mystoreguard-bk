@@ -46,25 +46,25 @@ class StoreReturnsService:
         cursor.execute(
             f"""SELECT p.id, p.sku,
                    (SELECT string_agg(m.id, ',') FROM {db_settings.MSG_ASSIGN_METADATA_TO_PRODUCTS_TABLE} amp
-                    JOIN {db_settings.MSG_PRODUCT_METADATA_TABLE} m ON amp.metadata_id = m.id
+                    JOIN {db_settings.MSG_PRODUCT_METADATA_TABLE} m ON amp.product_metadata_id = m.id
                         AND amp.tenant_id = m.tenant_id AND amp.org_id = m.org_id AND amp.bus_id = m.bus_id
                     WHERE amp.product_id = p.id AND amp.tenant_id = p.tenant_id
                         AND amp.org_id = p.org_id AND amp.bus_id = p.bus_id
                         AND m.type = 'category') as category_ids,
                    (SELECT string_agg(m.id, ',') FROM {db_settings.MSG_ASSIGN_METADATA_TO_PRODUCTS_TABLE} amp
-                    JOIN {db_settings.MSG_PRODUCT_METADATA_TABLE} m ON amp.metadata_id = m.id
+                    JOIN {db_settings.MSG_PRODUCT_METADATA_TABLE} m ON amp.product_metadata_id = m.id
                         AND amp.tenant_id = m.tenant_id AND amp.org_id = m.org_id AND amp.bus_id = m.bus_id
                     WHERE amp.product_id = p.id AND amp.tenant_id = p.tenant_id
                         AND amp.org_id = p.org_id AND amp.bus_id = p.bus_id
                         AND m.type = 'tag') as tag_ids,
                    (SELECT string_agg(m.id, ',') FROM {db_settings.MSG_ASSIGN_METADATA_TO_PRODUCTS_TABLE} amp
-                    JOIN {db_settings.MSG_PRODUCT_METADATA_TABLE} m ON amp.metadata_id = m.id
+                    JOIN {db_settings.MSG_PRODUCT_METADATA_TABLE} m ON amp.product_metadata_id = m.id
                         AND amp.tenant_id = m.tenant_id AND amp.org_id = m.org_id AND amp.bus_id = m.bus_id
                     WHERE amp.product_id = p.id AND amp.tenant_id = p.tenant_id
                         AND amp.org_id = p.org_id AND amp.bus_id = p.bus_id
                         AND m.type = 'brand') as brand_ids,
                    (SELECT string_agg(m.id, ',') FROM {db_settings.MSG_ASSIGN_METADATA_TO_PRODUCTS_TABLE} amp
-                    JOIN {db_settings.MSG_PRODUCT_METADATA_TABLE} m ON amp.metadata_id = m.id
+                    JOIN {db_settings.MSG_PRODUCT_METADATA_TABLE} m ON amp.product_metadata_id = m.id
                         AND amp.tenant_id = m.tenant_id AND amp.org_id = m.org_id AND amp.bus_id = m.bus_id
                     WHERE amp.product_id = p.id AND amp.tenant_id = p.tenant_id
                         AND amp.org_id = p.org_id AND amp.bus_id = p.bus_id
@@ -476,10 +476,10 @@ class StoreReturnsService:
                     return Respons(success=False, detail="Return not found", error="NOT_FOUND")
 
                 old_data = dict(existing)
-                if old_data['status'] != 'PENDING':
+                if old_data['status'] not in ('PENDING', 'REJECTED'):
                     return Respons(
                         success=False,
-                        detail=f"Return is '{old_data['status']}', only PENDING returns can be approved",
+                        detail=f"Return is '{old_data['status']}', only PENDING or REJECTED returns can be approved",
                         error="INVALID_STATUS",
                     )
 
@@ -575,10 +575,10 @@ class StoreReturnsService:
                     return Respons(success=False, detail="Return not found", error="NOT_FOUND")
 
                 old_data = dict(existing)
-                if old_data['status'] != 'PENDING':
+                if old_data['status'] not in ('PENDING', 'APPROVED'):
                     return Respons(
                         success=False,
-                        detail=f"Return is '{old_data['status']}', only PENDING returns can be rejected",
+                        detail=f"Return is '{old_data['status']}', only PENDING or APPROVED returns can be rejected",
                         error="INVALID_STATUS",
                     )
 
