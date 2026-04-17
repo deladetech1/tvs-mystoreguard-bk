@@ -166,6 +166,14 @@ class Settings:
     MSG_RETURNS_TABLE = os.getenv("MSG_RETURNS_TABLE", "mystoreguard.msg_returns")
     MSG_RETURN_ITEMS_TABLE = os.getenv("MSG_RETURN_ITEMS_TABLE", "mystoreguard.msg_return_items")
 
+    # Messaging tables
+    MSG_MESSAGES_TABLE = os.getenv("MSG_MESSAGES_TABLE", "mystoreguard.msg_messages")
+    MSG_MESSAGE_RECIPIENTS_TABLE = os.getenv("MSG_MESSAGE_RECIPIENTS_TABLE", "mystoreguard.msg_message_recipients")
+
+    # Meetings tables
+    MSG_MEETINGS_TABLE = os.getenv("MSG_MEETINGS_TABLE", "mystoreguard.msg_meetings")
+    MSG_MEETING_PARTICIPANTS_TABLE = os.getenv("MSG_MEETING_PARTICIPANTS_TABLE", "mystoreguard.msg_meeting_participants")
+
     # Affiliates tables
     MSG_AFFILIATES_TABLE = os.getenv("MSG_AFFILIATES_TABLE", "mystoreguard.msg_affiliates")
     MSG_AFFILIATE_REFERRALS_TABLE = os.getenv("MSG_AFFILIATE_REFERRALS_TABLE", "mystoreguard.msg_affiliate_referrals")

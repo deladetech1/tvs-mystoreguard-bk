@@ -323,13 +323,14 @@ class VerifyPriceReadDto(BaseModel):
     """Read DTO for verified prices"""
     items: List[VerifiedPriceItemReadDto]
     business_name: str = Field(..., description="Business name for receipt display")
-    total_amount: float = Field(default=0, description="Total amount for all items (before promo discount)")
+    subtotal_before_discount: Optional[float] = Field(None, description="Total amount before promo discount (sum of line totals without promo). Only present when a promo code is applied.")
+    total_amount: float = Field(default=0, description="Total amount for all items (promo discount already applied per-item in final_price)")
     total_tax_amount: float = Field(default=0, description="Total tax amount for all items")
     # Promo code discount info
     promo_code_id: Optional[str] = Field(None, description="Promo code ID if valid promo code provided")
-    promo_discount_amount: Optional[float] = Field(None, description="Discount amount from promo code")
+    promo_discount_amount: Optional[float] = Field(None, description="Total promo discount amount across all eligible items (for display only — already deducted from total_amount)")
     promo_code_error: Optional[str] = Field(None, description="Error message if promo code validation failed")
-    final_total_amount: float = Field(default=0, description="Final total amount after promo discount")
+    final_total_amount: float = Field(default=0, description="Final total amount the customer pays (same as total_amount — promo already applied)")
     # Gift card info
     gift_card_id: Optional[str] = Field(None, description="Gift card ID if valid gift card code provided")
     gift_card_balance_available: Optional[float] = Field(None, description="Available balance on gift card")
