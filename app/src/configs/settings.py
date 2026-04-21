@@ -34,7 +34,9 @@ class Settings:
     # =============================================================================
     CORE_PLATFORM_USERS_TABLE = os.getenv("CORE_PLATFORM_USERS_TABLE", "core_platform.cp_users")
     CORE_PLATFORM_RESOURCE_ID_TABLE = os.getenv("CORE_PLATFORM_RESOURCE_ID_TABLE", "core_platform.cp_shared_resource_ids")
-    CORE_PLATFORM_USER_SUBSCRIPTION_HISTORY_TABLE = os.getenv("CORE_PLATFORM_USER_SUBSCRIPTION_HISTORY_TABLE", "core_platform.cp_user_subscription_histories")
+    CORE_PLATFORM_APP_SUBSCRIPTIONS_TABLE = os.getenv("CORE_PLATFORM_APP_SUBSCRIPTIONS_TABLE", "core_platform.cp_app_subscriptions")
+    CORE_PLATFORM_APP_SUBSCRIPTION_HISTORY_TABLE = os.getenv("CORE_PLATFORM_APP_SUBSCRIPTION_HISTORY_TABLE", "core_platform.cp_app_subscription_histories")
+    CORE_PLATFORM_APPS_TABLE = os.getenv("CORE_PLATFORM_APPS_TABLE", "core_platform.cp_apps")
 
     # =============================================================================
     # CORE PLATFORM TABLES (prefixed with cp_, now in core_platform schema with tenant_id)

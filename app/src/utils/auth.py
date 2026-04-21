@@ -15,6 +15,11 @@ from src.configs.settings import db_settings
 security = HTTPBearer()
 logger = get_logger("auth")
 
+# This service's own app_id in the core-platform cp_apps catalog.
+# Used by check_subscription_active / verify_subscription_active to look up
+# the per-app subscription for the calling tenant.
+APP_ID = "app-mystoreguard"
+
 class CustomAuthService:
 
     # Trovesuite errors that should block service execution
@@ -682,20 +687,14 @@ def get_org_bus_loc_with_permission(
     }
 
 
-def check_subscription_active(tenant_id: str, user_id: str) -> Tuple[bool, Optional[str]]:
+def check_subscription_active(
+    tenant_id: str, business_id: str, user_id: str
+) -> Tuple[bool, Optional[str]]:
     """
-    Check if the user's subscription is active (has not ended).
-    
-    Queries the cp_user_subscription_histories table to find the most recent active subscription
-    and verifies that:
-    1. The subscription is active (is_active = true)
-    2. The subscription is not deleted (delete_status = 'NOT_DELETED')
-    3. The subscription has not ended (end_at is NULL or in the future)
-    
-    Args:
-        tenant_id: Tenant ID
-        user_id: User ID
-    
+    Check whether the (tenant, business, app=mystoreguard) subscription is
+    active and not expired. Queries cp_app_subscription_histories filtered by
+    app_id = APP_ID and business_id.
+
     Returns:
         tuple[bool, Optional[str]]: (is_active, error_message)
             - If active: (True, None)
@@ -703,34 +702,38 @@ def check_subscription_active(tenant_id: str, user_id: str) -> Tuple[bool, Optio
     """
     try:
         query = f'''
-            SELECT 
+            SELECT
                 id,
-                user_subscription_id,
+                app_subscription_id,
                 start_at,
                 end_at,
                 is_active,
                 delete_status,
                 cdatetime
-            FROM {db_settings.CORE_PLATFORM_USER_SUBSCRIPTION_HISTORY_TABLE}
+            FROM {db_settings.CORE_PLATFORM_APP_SUBSCRIPTION_HISTORY_TABLE}
             WHERE tenant_id = %s
+            AND business_id = %s
+            AND app_id = %s
             AND is_active = true
             AND delete_status = 'NOT_DELETED'
             ORDER BY cdatetime DESC NULLS LAST, start_at DESC NULLS LAST
             LIMIT 1
         '''
-        
+
         logger.debug(
             "Executing subscription check query",
             extra={
                 "extra_fields": {
                     "tenant_id": tenant_id,
+                    "business_id": business_id,
                     "user_id": user_id,
-                    "table": db_settings.CORE_PLATFORM_USER_SUBSCRIPTION_HISTORY_TABLE,
+                    "app_id": APP_ID,
+                    "table": db_settings.CORE_PLATFORM_APP_SUBSCRIPTION_HISTORY_TABLE,
                 }
             },
         )
-        
-        result = DatabaseManager.execute_query(query, (tenant_id,))
+
+        result = DatabaseManager.execute_query(query, (tenant_id, business_id, APP_ID))
         
         logger.debug(
             "Subscription query result",
@@ -746,16 +749,21 @@ def check_subscription_active(tenant_id: str, user_id: str) -> Tuple[bool, Optio
         
         if not result or len(result) == 0:
             logger.warning(
-                "No active subscription found for tenant",
+                "No active subscription found for (tenant, business, app)",
                 extra={
                     "extra_fields": {
                         "tenant_id": tenant_id,
+                        "business_id": business_id,
                         "user_id": user_id,
-                        "table": db_settings.CORE_PLATFORM_USER_SUBSCRIPTION_HISTORY_TABLE,
+                        "app_id": APP_ID,
+                        "table": db_settings.CORE_PLATFORM_APP_SUBSCRIPTION_HISTORY_TABLE,
                     }
                 },
             )
-            return False, "No active subscription found. Please renew your subscription to continue."
+            return False, (
+                "This business has not subscribed to this app. "
+                "Visit the App Store to get started."
+            )
         
         subscription = result[0]
         end_at = subscription.get('end_at')
@@ -903,24 +911,18 @@ def check_subscription_active(tenant_id: str, user_id: str) -> Tuple[bool, Optio
 
 
 def verify_subscription_active(
+    bus_id: str = Header(..., alias="bus-id", description="Business ID"),
     current_user: dict = Depends(CustomAuthService.get_current_user),
 ) -> dict:
     """
-    FastAPI dependency to verify that the user's subscription is active before allowing data modifications.
-    
-    This dependency should be used in POST, PUT, DELETE endpoints to ensure that only users
-    with active subscriptions can perform data modification operations.
-    
+    FastAPI dependency to verify that the active business's subscription for
+    this app is active before allowing data modifications.
+
+    Subscription is per (tenant, business, app). The bus-id header tells us
+    which business the request is acting on. If that (tenant, business, app)
+    has no subscription (or it expired), we 403.
+
     GET and LIST operations should NOT use this dependency.
-    
-    Args:
-        current_user: User data from CustomAuthService.get_current_user
-    
-    Raises:
-        HTTPException: 403 if subscription has ended or is not found
-    
-    Returns:
-        dict: {"status": "active"} if subscription is active
     """
     if not current_user or not hasattr(current_user, 'data') or not current_user.data or len(current_user.data) == 0:
         logger.warning(
@@ -931,22 +933,22 @@ def verify_subscription_active(
             status_code=403,
             detail="Invalid user data"
         )
-    
-    # Prefer JWT-derived values (set by get_current_user); role DTOs can have user_id=None for group roles
+
     tenant_id = getattr(current_user, "tenant_id", None) or (current_user.data[0].tenant_id if current_user.data else None)
     user_id = getattr(current_user, "user_id", None) or (current_user.data[0].user_id if current_user.data else None)
-    
+
     logger.debug(
         "Checking subscription status",
         extra={
             "extra_fields": {
                 "user_id": user_id,
                 "tenant_id": tenant_id,
+                "business_id": bus_id,
             }
         },
     )
-    
-    is_active, error_message = check_subscription_active(tenant_id, user_id)
+
+    is_active, error_message = check_subscription_active(tenant_id, bus_id, user_id)
     
     if not is_active:
         logger.warning(
