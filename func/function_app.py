@@ -1,4 +1,3 @@
-# Deploy-trigger: smoke test for shared MI / app insights / function deployment storage wiring.
 import azure.functions as func
 import datetime
 import logging
