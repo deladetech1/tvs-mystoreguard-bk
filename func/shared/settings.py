@@ -2,7 +2,7 @@ import os
 
 
 # Database
-DB_URL = os.getenv("DB_URL")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Email fallback credentials
 MAIL_SENDER_EMAIL = os.getenv("MAIL_SENDER_EMAIL")

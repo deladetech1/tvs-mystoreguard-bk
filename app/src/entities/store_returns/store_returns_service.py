@@ -1,4 +1,9 @@
 from decimal import Decimal
+import json
+import smtplib
+import threading
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from src.entities.store_returns.store_returns_read_dto import (
     CreateReturnServiceReadDto,
     ApproveReturnServiceReadDto,
@@ -15,6 +20,9 @@ from src.entities.store_returns.store_returns_write_dto import (
     RejectReturnServiceWriteDto,
     ProcessReturnServiceWriteDto,
 )
+from src.entities.store_returns.store_returns_email_builder import (
+    build_return_pending_approval_email,
+)
 from src.entities.shared.sh_response import Respons, PaginationMeta
 from src.entities.shared.sh_service import ActivityLogService
 from src.configs.settings import db_settings
@@ -23,6 +31,76 @@ from src.configs.logging import get_logger
 from trovesuite.utils import Helper
 
 logger = get_logger("store_returns_service")
+
+
+def _do_send_email(to_email: str, subject: str, body: str, mail_sender_email: str, mail_sender_pwd: str):
+    """Send a single email via SMTP (runs in a background thread)."""
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = mail_sender_email
+        msg['To'] = to_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'html'))
+
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(mail_sender_email, mail_sender_pwd)
+        server.send_message(msg)
+        server.quit()
+        logger.info(f"Return approval email sent successfully to {to_email}")
+    except Exception as e:
+        logger.error(f"Failed to send return approval email to {to_email}: {str(e)}", exc_info=True)
+
+
+def _send_return_approval_notifications(approver_emails: list, subject: str, body: str, tenant_id: str) -> int:
+    """Fire off background SMTP sends for each approver. Returns the number queued."""
+    if not approver_emails:
+        return 0
+
+    try:
+        mail_sender_email, mail_sender_pwd = Helper.get_email_credentials(tenant_id)
+    except Exception as e:
+        logger.error(f"Failed to load email credentials for tenant {tenant_id}: {str(e)}", exc_info=True)
+        return 0
+
+    if not (mail_sender_email and mail_sender_pwd):
+        logger.warning(
+            "Email credentials not configured. Return approval notifications not sent.",
+            extra={"extra_fields": {"tenant_id": tenant_id, "approver_count": len(approver_emails)}},
+        )
+        return 0
+
+    queued = 0
+    for to_email in approver_emails:
+        if not to_email:
+            continue
+        thread = threading.Thread(
+            target=_do_send_email,
+            args=(to_email, subject, body, mail_sender_email, mail_sender_pwd),
+            daemon=True,
+        )
+        thread.start()
+        queued += 1
+
+    logger.info(f"Queued {queued} return approval notification email(s) for tenant {tenant_id}")
+    return queued
+
+
+def _extract_approver_emails(policy: dict) -> list:
+    """Normalise the policy.approvers JSONB field into a clean list of email strings."""
+    if not policy:
+        return []
+    raw = policy.get('approvers')
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError):
+            return []
+    if not isinstance(raw, list):
+        return []
+    return [e.strip() for e in raw if isinstance(e, str) and e.strip()]
 
 
 class StoreReturnsService:
@@ -445,6 +523,28 @@ class StoreReturnsService:
                     detail += " - awaiting approval"
                 elif initial_status == 'APPROVED':
                     detail += " - auto-approved (no approval required). Process to complete."
+
+                # 11. Notify approvers (fire-and-forget) when approval is required
+                if initial_status == 'PENDING':
+                    try:
+                        approver_emails = _extract_approver_emails(policy)
+                        if approver_emails:
+                            subject, body = build_return_pending_approval_email(
+                                return_dict, policy, sale_dict
+                            )
+                            _send_return_approval_notifications(
+                                approver_emails, subject, body, tenant_id
+                            )
+                        else:
+                            logger.info(
+                                "Return requires approval but policy has no approvers configured",
+                                extra={"extra_fields": {"return_id": return_id, "policy_id": policy.get('id') if policy else None}},
+                            )
+                    except Exception as notify_err:
+                        logger.error(
+                            f"Failed to dispatch return approval notifications: {str(notify_err)}",
+                            exc_info=True,
+                        )
 
                 return Respons(success=True, detail=detail, data=[return_read])
 

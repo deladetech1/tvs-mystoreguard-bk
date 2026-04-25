@@ -3,7 +3,7 @@
   "Values": {
     "FUNCTIONS_WORKER_RUNTIME": "python",
     "AzureWebJobsStorage": "UseDevelopmentStorage=true",
-    "DB_URL": "postgresql://user:password@host:5432/dbname",
+    "DATABASE_URL": "postgresql://user:password@host:5432/dbname",
     "MAIL_SENDER_EMAIL": "",
     "MAIL_SENDER_PWD": "",
     "MSG_STORE_CONFIGS_TABLE": "mystoreguard.msg_store_configs",
