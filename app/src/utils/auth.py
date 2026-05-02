@@ -127,6 +127,30 @@ class CustomAuthService:
                 detail=auth_result.error
             )
 
+        # Core-platform membership gate. Mystoreguard authenticates via core platform,
+        # so only users with an active cp_members row can access this app. HR-only
+        # employees (cp_users + hr_employees, no cp_members) must not be allowed in.
+        is_core_platform_member = DatabaseManager.execute_scalar(
+            f"""SELECT COUNT(1) FROM {db_settings.CORE_PLATFORM_MEMBERS_TABLE}
+                WHERE tenant_id = %s AND user_id = %s
+                AND is_active = true AND delete_status = 'NOT_DELETED'""",
+            (tenant_id, user_id),
+        )
+        if not is_core_platform_member:
+            logger.warning(
+                "Authorization failed - user is not a core-platform member",
+                extra={
+                    "extra_fields": {
+                        "user_id": user_id,
+                        "tenant_id": tenant_id,
+                    }
+                },
+            )
+            raise HTTPException(
+                status_code=403,
+                detail="Not a core-platform member",
+            )
+
         return auth_result
 
 

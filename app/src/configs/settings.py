@@ -33,6 +33,7 @@ class Settings:
     # SHARED TABLES (core_platform schema)
     # =============================================================================
     CORE_PLATFORM_USERS_TABLE = os.getenv("CORE_PLATFORM_USERS_TABLE", "core_platform.cp_users")
+    CORE_PLATFORM_MEMBERS_TABLE = os.getenv("CORE_PLATFORM_MEMBERS_TABLE", "core_platform.cp_members")
     CORE_PLATFORM_RESOURCE_ID_TABLE = os.getenv("CORE_PLATFORM_RESOURCE_ID_TABLE", "core_platform.cp_shared_resource_ids")
     CORE_PLATFORM_APP_SUBSCRIPTIONS_TABLE = os.getenv("CORE_PLATFORM_APP_SUBSCRIPTIONS_TABLE", "core_platform.cp_app_subscriptions")
     CORE_PLATFORM_APP_SUBSCRIPTION_HISTORY_TABLE = os.getenv("CORE_PLATFORM_APP_SUBSCRIPTION_HISTORY_TABLE", "core_platform.cp_app_subscription_histories")
