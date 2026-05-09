@@ -1,8 +1,18 @@
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 from decimal import Decimal
 from pydantic import BaseModel, Field
-from src.entities.tax_rules.tax_rules_base import TaxRuleBase
+from src.entities.tax_rules.tax_rules_base import TaxRuleBase, TaxRuleConditionBase
+
+
+# =====================================================
+# TAX RULE CONDITION READ DTO
+# =====================================================
+
+class TaxRuleConditionReadDto(TaxRuleConditionBase):
+    """Read DTO for a tax rule condition (includes persisted identifiers)"""
+    id: str
+    tax_rule_id: Optional[str] = None
 
 
 # =====================================================
@@ -17,6 +27,7 @@ class TaxRuleReadBase(TaxRuleBase):
     bus_id: str
     tax_name: Optional[str] = Field(None, description="Name of the tax associated with this rule")
     rule_target_name: Optional[str] = Field(None, description="Name/value of the rule target (product name, location name, metadata name, etc.)")
+    conditions: Optional[List[TaxRuleConditionReadDto]] = Field(default=None, description="List of conditions attached to the tax rule")
     cdate: Optional[str] = None
     ctime: Optional[str] = None
     cdatetime: Optional[datetime] = None
