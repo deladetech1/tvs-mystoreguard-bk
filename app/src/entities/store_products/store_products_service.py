@@ -312,33 +312,17 @@ class StoreProductsService:
                 qty_to_allocate = data.current_qty
                 new_total_qty = existing_qty + qty_to_allocate if is_update else qty_to_allocate
 
-                # Get batches based on batch_numbers
-                batches_to_use = []
-                if not data.batch_numbers or len(data.batch_numbers) == 0:
-                    # Get batches in FIFO order (oldest first) - include datetime fields for FIFO insertion
-                    cursor.execute(
-                        f"""SELECT id, batch_number, qty_remaining, cdate, ctime, cdatetime
-                        FROM {db_settings.MSG_PURCHASE_BATCHES_TABLE}
-                        WHERE tenant_id = %s AND org_id = %s AND bus_id = %s 
-                        AND product_id = %s AND delete_status = 'NOT_DELETED' AND is_active = true
-                        AND qty_remaining > 0
-                        ORDER BY cdatetime ASC""",
-                        (tenant_id, org_id, bus_id, data.product_id),
-                    )
-                    batches_to_use = cursor.fetchall()
-                else:
-                    # Get specific batches by batch_number, ordered by cdatetime ASC for FIFO - include datetime fields
-                    cursor.execute(
-                        f"""SELECT id, batch_number, qty_remaining, cdate, ctime, cdatetime
-                        FROM {db_settings.MSG_PURCHASE_BATCHES_TABLE}
-                        WHERE tenant_id = %s AND org_id = %s AND bus_id = %s 
-                        AND product_id = %s AND batch_number = ANY(%s)
-                        AND delete_status = 'NOT_DELETED' AND is_active = true
-                        AND qty_remaining > 0
-                        ORDER BY cdatetime ASC""",
-                        (tenant_id, org_id, bus_id, data.product_id, data.batch_numbers),
-                    )
-                    batches_to_use = cursor.fetchall()
+                # Get batches in FIFO order (oldest first) - include datetime fields for FIFO insertion
+                cursor.execute(
+                    f"""SELECT id, batch_number, qty_remaining, cdate, ctime, cdatetime
+                    FROM {db_settings.MSG_PURCHASE_BATCHES_TABLE}
+                    WHERE tenant_id = %s AND org_id = %s AND bus_id = %s
+                    AND product_id = %s AND delete_status = 'NOT_DELETED' AND is_active = true
+                    AND qty_remaining > 0
+                    ORDER BY cdatetime ASC""",
+                    (tenant_id, org_id, bus_id, data.product_id),
+                )
+                batches_to_use = cursor.fetchall()
 
                 if not batches_to_use:
                     return Respons(
