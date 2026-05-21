@@ -10,6 +10,7 @@ from src.entities.store_products.store_products_read_dto import (
     GetStoreProductsServiceReadDto,
     GetStoreProductStatisticsServiceReadDto,
     AddStockStoreProductServiceReadDto,
+    BulkCreateStoreProductServiceReadDto,
 )
 from src.entities.products.products_read_dto import ProductMovementReadDto
 from src.entities.products.products_read_dto import PurchaseBatchReadDto
@@ -734,6 +735,83 @@ class StoreProductsService:
                 detail=f"Failed to create store product: {str(e)}",
                 error="INTERNAL_ERROR",
             )
+
+    @staticmethod
+    def create_store_products(
+        items: List[CreateStoreProductServiceWriteDto],
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        loc_id: str,
+        created_by: str
+    ) -> Respons[BulkCreateStoreProductServiceReadDto]:
+        """Create one or more store products at a single location (best-effort).
+
+        Each item is processed independently via ``create_store_product`` (its own
+        transaction), so a failure on one item does not roll back the items that
+        already succeeded. A per-item result is returned for every item in the
+        request, in the same order.
+        """
+        if not items:
+            return Respons(
+                success=False,
+                detail="At least one store product is required",
+                error="VALIDATION_ERROR",
+            )
+
+        logger.info(
+            "Processing bulk store product creation",
+            extra={
+                "extra_fields": {
+                    "tenant_id": tenant_id,
+                    "org_id": org_id,
+                    "bus_id": bus_id,
+                    "loc_id": loc_id,
+                    "item_count": len(items),
+                    "product_ids": [item.product_id for item in items],
+                }
+            },
+        )
+
+        results: List[BulkCreateStoreProductServiceReadDto] = []
+        succeeded = 0
+
+        for index, data in enumerate(items):
+            result = StoreProductsService.create_store_product(
+                data=data,
+                tenant_id=tenant_id,
+                org_id=org_id,
+                bus_id=bus_id,
+                loc_id=loc_id,
+                created_by=created_by,
+            )
+
+            store_product = result.data[0] if (result.success and result.data) else None
+            if result.success:
+                succeeded += 1
+
+            results.append(
+                BulkCreateStoreProductServiceReadDto(
+                    index=index,
+                    product_id=data.product_id,
+                    success=result.success,
+                    detail=result.detail,
+                    error=result.error,
+                    store_product=store_product,
+                )
+            )
+
+        failed = len(items) - succeeded
+        detail = f"Added {succeeded} of {len(items)} store product(s) successfully"
+        if failed:
+            detail += f", {failed} failed"
+
+        return Respons(
+            # Best-effort: success when at least one item was added
+            success=succeeded > 0,
+            detail=detail,
+            data=results,
+        )
 
     @staticmethod
     def add_stock_store_product(

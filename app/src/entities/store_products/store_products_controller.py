@@ -11,7 +11,7 @@ from src.entities.store_products.store_products_write_dto import (
     AddStockStoreProductControllerWriteDto,
 )
 from src.entities.store_products.store_products_read_dto import (
-    CreateStoreProductControllerReadDto,
+    BulkCreateStoreProductControllerReadDto,
     UpdateStoreProductControllerReadDto,
     DeleteStoreProductControllerReadDto,
     PermanentDeleteStoreProductControllerReadDto,
@@ -30,29 +30,37 @@ store_products_router = APIRouter(prefix="/store-products", tags=["Store Product
 logger = get_logger("store_products")
 
 
-# 1. Create Store Product
-@store_products_router.post("/add", response_model=Respons[CreateStoreProductControllerReadDto])
-def create_store_product(
-    data: CreateStoreProductControllerWriteDto,
+# 1. Create Store Products (one or more)
+@store_products_router.post("/add", response_model=Respons[BulkCreateStoreProductControllerReadDto])
+def create_store_products(
+    data: List[CreateStoreProductControllerWriteDto],
     current_user: dict = Depends(CustomAuthService.get_current_user),
     _subscription_check: dict = Depends(verify_subscription_active),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
-    """Create a new store product with FIFO batch allocation"""
+    """Create one or more store products with FIFO batch allocation.
+
+    Accepts an array of items so multiple products can be added to a store in a
+    single request. Pass a single object in an array to add just one. Each item is
+    processed independently (best-effort): items that succeed are saved even if
+    others fail, and the response carries a per-item result for every item.
+    """
+    loc_id = org_bus_loc["loc_id"]
     with LogContext(
         "store_products",
-        "create_store_product",
-        product_id=data.product_id,
-        loc_id=org_bus_loc["loc_id"],
+        "create_store_products",
+        item_count=len(data),
+        product_ids=[item.product_id for item in data],
+        loc_id=loc_id,
     ):
         logger.info(
-            "Processing create store product request",
+            "Processing create store products request",
             extra={
                 "extra_fields": {
                     "endpoint": "/store-products/add",
-                    "product_id": data.product_id,
-                    "loc_id": org_bus_loc["loc_id"],
-                    "current_qty": data.current_qty,
+                    "item_count": len(data),
+                    "product_ids": [item.product_id for item in data],
+                    "loc_id": loc_id,
                 }
             },
         )
@@ -65,7 +73,7 @@ def create_store_product(
 
         if not is_authorized:
             logger.warning(
-                "Create store product failed - unauthorized access",
+                "Create store products failed - unauthorized access",
                 extra={
                     "extra_fields": {
                         "endpoint": "/store-products/add",
@@ -76,30 +84,32 @@ def create_store_product(
             )
             raise HTTPException(status_code=403, detail="Unauthorized access")
 
-        service_result = StoreProductsService.create_store_product(
-            data=data,
+        service_result = StoreProductsService.create_store_products(
+            items=data,
             tenant_id=current_user.data[0].tenant_id,
             org_id=org_bus_loc["org_id"],
             bus_id=org_bus_loc["bus_id"],
-            loc_id=org_bus_loc["loc_id"],  # Use loc_id from header
+            loc_id=loc_id,  # Use loc_id from header
             created_by=current_user.data[0].user_id,
         )
 
         if service_result.success:
+            succeeded = sum(1 for item in (service_result.data or []) if item.success)
             logger.info(
-                "Store product created successfully",
+                "Store products processed successfully",
                 extra={
                     "extra_fields": {
                         "endpoint": "/store-products/add",
-                        "product_id": data.product_id,
-                        "loc_id": org_bus_loc["loc_id"],
+                        "item_count": len(data),
+                        "succeeded": succeeded,
+                        "loc_id": loc_id,
                         "status": "success",
                     }
                 },
             )
         else:
             logger.warning(
-                f"Store product creation failed: {service_result.detail}",
+                f"Store products creation failed: {service_result.detail}",
                 extra={
                     "extra_fields": {
                         "endpoint": "/store-products/add",

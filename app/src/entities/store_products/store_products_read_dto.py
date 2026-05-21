@@ -114,6 +114,34 @@ class CreateStoreProductServiceReadDto(StoreProductReadBase):
     pass
 
 
+# =====================================================
+# BULK CREATE STORE PRODUCT READ DTOs
+# =====================================================
+
+class BulkCreateStoreProductItemResultBase(BaseModel):
+    """Per-item result for a bulk create store products request (best-effort).
+
+    One of these is returned for every item in the request, in the same order,
+    so callers can tell exactly which items were added and which failed.
+    """
+    index: int = Field(..., description="Zero-based position of the item in the request array")
+    product_id: str = Field(..., description="Product ID this result refers to")
+    success: bool = Field(..., description="Whether this item was added/updated successfully")
+    detail: Optional[str] = Field(None, description="Human-readable outcome message for this item")
+    error: Optional[str] = Field(None, description="Error code when this item failed (None on success)")
+    store_product: Optional[StoreProductReadBase] = Field(None, description="The created/updated store product when successful")
+
+
+class BulkCreateStoreProductControllerReadDto(BulkCreateStoreProductItemResultBase):
+    """Controller DTO for bulk create store products read operations"""
+    pass
+
+
+class BulkCreateStoreProductServiceReadDto(BulkCreateStoreProductItemResultBase):
+    """Service DTO for bulk create store products read operations"""
+    pass
+
+
 class AddStockStoreProductControllerReadDto(StoreProductReadBase):
     """Controller DTO for add stock store product read operations"""
     pass
