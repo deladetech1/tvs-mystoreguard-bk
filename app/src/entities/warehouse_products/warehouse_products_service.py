@@ -10,6 +10,7 @@ from src.entities.warehouse_products.warehouse_products_read_dto import (
     GetWarehouseProductsServiceReadDto,
     GetWarehouseProductStatisticsServiceReadDto,
     AddStockWarehouseProductServiceReadDto,
+    BulkCreateWarehouseProductServiceReadDto,
 )
 from src.entities.products.products_read_dto import ProductMovementReadDto
 from src.entities.products.products_read_dto import PurchaseBatchReadDto
@@ -312,33 +313,17 @@ class WarehouseProductsService:
                 qty_to_allocate = data.current_qty
                 new_total_qty = existing_qty + qty_to_allocate if is_update else qty_to_allocate
 
-                # Get batches based on batch_numbers
-                batches_to_use = []
-                if not data.batch_numbers or len(data.batch_numbers) == 0:
-                    # Get batches in FIFO order (oldest first) - include datetime fields for FIFO insertion
-                    cursor.execute(
-                        f"""SELECT id, batch_number, qty_remaining, cdate, ctime, cdatetime
-                        FROM {db_settings.MSG_PURCHASE_BATCHES_TABLE}
-                        WHERE tenant_id = %s AND org_id = %s AND bus_id = %s 
-                        AND product_id = %s AND delete_status = 'NOT_DELETED' AND is_active = true
-                        AND qty_remaining > 0
-                        ORDER BY cdatetime ASC""",
-                        (tenant_id, org_id, bus_id, data.product_id),
-                    )
-                    batches_to_use = cursor.fetchall()
-                else:
-                    # Get specific batches by batch_number, ordered by cdatetime ASC for FIFO - include datetime fields
-                    cursor.execute(
-                        f"""SELECT id, batch_number, qty_remaining, cdate, ctime, cdatetime
-                        FROM {db_settings.MSG_PURCHASE_BATCHES_TABLE}
-                        WHERE tenant_id = %s AND org_id = %s AND bus_id = %s 
-                        AND product_id = %s AND batch_number = ANY(%s)
-                        AND delete_status = 'NOT_DELETED' AND is_active = true
-                        AND qty_remaining > 0
-                        ORDER BY cdatetime ASC""",
-                        (tenant_id, org_id, bus_id, data.product_id, data.batch_numbers),
-                    )
-                    batches_to_use = cursor.fetchall()
+                # Get batches in FIFO order (oldest first) - include datetime fields for FIFO insertion
+                cursor.execute(
+                    f"""SELECT id, batch_number, qty_remaining, cdate, ctime, cdatetime
+                    FROM {db_settings.MSG_PURCHASE_BATCHES_TABLE}
+                    WHERE tenant_id = %s AND org_id = %s AND bus_id = %s
+                    AND product_id = %s AND delete_status = 'NOT_DELETED' AND is_active = true
+                    AND qty_remaining > 0
+                    ORDER BY cdatetime ASC""",
+                    (tenant_id, org_id, bus_id, data.product_id),
+                )
+                batches_to_use = cursor.fetchall()
 
                 if not batches_to_use:
                     return Respons(
@@ -738,6 +723,83 @@ class WarehouseProductsService:
                 detail=f"Failed to create warehouse product: {str(e)}",
                 error="INTERNAL_ERROR",
             )
+
+    @staticmethod
+    def create_warehouse_products(
+        items: List[CreateWarehouseProductServiceWriteDto],
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        loc_id: str,
+        created_by: str
+    ) -> Respons[BulkCreateWarehouseProductServiceReadDto]:
+        """Create one or more warehouse products at a single location (best-effort).
+
+        Each item is processed independently via ``create_warehouse_product`` (its
+        own transaction), so a failure on one item does not roll back the items that
+        already succeeded. A per-item result is returned for every item in the
+        request, in the same order.
+        """
+        if not items:
+            return Respons(
+                success=False,
+                detail="At least one warehouse product is required",
+                error="VALIDATION_ERROR",
+            )
+
+        logger.info(
+            "Processing bulk warehouse product creation",
+            extra={
+                "extra_fields": {
+                    "tenant_id": tenant_id,
+                    "org_id": org_id,
+                    "bus_id": bus_id,
+                    "loc_id": loc_id,
+                    "item_count": len(items),
+                    "product_ids": [item.product_id for item in items],
+                }
+            },
+        )
+
+        results: List[BulkCreateWarehouseProductServiceReadDto] = []
+        succeeded = 0
+
+        for index, data in enumerate(items):
+            result = WarehouseProductsService.create_warehouse_product(
+                data=data,
+                tenant_id=tenant_id,
+                org_id=org_id,
+                bus_id=bus_id,
+                loc_id=loc_id,
+                created_by=created_by,
+            )
+
+            warehouse_product = result.data[0] if (result.success and result.data) else None
+            if result.success:
+                succeeded += 1
+
+            results.append(
+                BulkCreateWarehouseProductServiceReadDto(
+                    index=index,
+                    product_id=data.product_id,
+                    success=result.success,
+                    detail=result.detail,
+                    error=result.error,
+                    warehouse_product=warehouse_product,
+                )
+            )
+
+        failed = len(items) - succeeded
+        detail = f"Added {succeeded} of {len(items)} warehouse product(s) successfully"
+        if failed:
+            detail += f", {failed} failed"
+
+        return Respons(
+            # Best-effort: success when at least one item was added
+            success=succeeded > 0,
+            detail=detail,
+            data=results,
+        )
 
     @staticmethod
     def add_stock_warehouse_product(

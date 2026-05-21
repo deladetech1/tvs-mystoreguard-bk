@@ -114,6 +114,34 @@ class CreateWarehouseProductServiceReadDto(WarehouseProductReadBase):
     pass
 
 
+# =====================================================
+# BULK CREATE WAREHOUSE PRODUCT READ DTOs
+# =====================================================
+
+class BulkCreateWarehouseProductItemResultBase(BaseModel):
+    """Per-item result for a bulk create warehouse products request (best-effort).
+
+    One of these is returned for every item in the request, in the same order,
+    so callers can tell exactly which items were added and which failed.
+    """
+    index: int = Field(..., description="Zero-based position of the item in the request array")
+    product_id: str = Field(..., description="Product ID this result refers to")
+    success: bool = Field(..., description="Whether this item was added/updated successfully")
+    detail: Optional[str] = Field(None, description="Human-readable outcome message for this item")
+    error: Optional[str] = Field(None, description="Error code when this item failed (None on success)")
+    warehouse_product: Optional[WarehouseProductReadBase] = Field(None, description="The created/updated warehouse product when successful")
+
+
+class BulkCreateWarehouseProductControllerReadDto(BulkCreateWarehouseProductItemResultBase):
+    """Controller DTO for bulk create warehouse products read operations"""
+    pass
+
+
+class BulkCreateWarehouseProductServiceReadDto(BulkCreateWarehouseProductItemResultBase):
+    """Service DTO for bulk create warehouse products read operations"""
+    pass
+
+
 class AddStockWarehouseProductControllerReadDto(WarehouseProductReadBase):
     """Controller DTO for add stock warehouse product read operations"""
     pass
