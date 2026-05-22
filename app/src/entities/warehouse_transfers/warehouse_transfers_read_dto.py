@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 from decimal import Decimal
 from pydantic import BaseModel, Field
@@ -7,6 +7,15 @@ from pydantic import BaseModel, Field
 # =====================================================
 # WAREHOUSE TRANSFER READ DTOs
 # =====================================================
+
+class WarehouseTransferItemRead(BaseModel):
+    """A single product line within a warehouse transfer"""
+    id: str
+    product_id: str
+    qty: int
+    status: str
+    product_name: Optional[str] = Field(None, description="Product name")
+
 
 class WarehouseTransferReadBase(BaseModel):
     """Base read DTO for warehouse transfer"""
@@ -18,8 +27,6 @@ class WarehouseTransferReadBase(BaseModel):
     source_id: str
     destination: str
     destination_id: str
-    product_id: str
-    qty: int
     status: str
     transfer_number: str
     person_to_approve_id: Optional[str] = None
@@ -28,7 +35,8 @@ class WarehouseTransferReadBase(BaseModel):
     ctime: str
     cdatetime: datetime
     created_by: str
-    product_name: Optional[str] = Field(None, description="Product name")
+    items: List[WarehouseTransferItemRead] = Field(default_factory=list, description="Products being transferred")
+    total_qty: int = Field(0, description="Sum of quantities across all items")
     source_location_name: Optional[str] = Field(None, description="Source location name")
     destination_location_name: Optional[str] = Field(None, description="Destination location name")
     created_by_name: Optional[str] = Field(None, description="Creator full name")

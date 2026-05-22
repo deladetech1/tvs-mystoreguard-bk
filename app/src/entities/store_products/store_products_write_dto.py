@@ -12,7 +12,7 @@ from src.entities.store_products.store_products_base import (
 
 class CreateStoreProductWriteBase(StoreProductBase):
     """Base write DTO for creating a store product"""
-    batch_numbers: Optional[List[str]] = Field(default=None, description="Optional list of batch numbers. If empty, batches will be selected automatically using FIFO")
+    pass
 
 
 class CreateStoreProductControllerWriteDto(CreateStoreProductWriteBase):

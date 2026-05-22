@@ -135,6 +135,7 @@ class Settings:
     
     # Product transfers table
     MSG_PRODUCT_TRANSFERS_TABLE = os.getenv("MSG_PRODUCT_TRANSFERS_TABLE", "mystoreguard.msg_product_transfers")
+    MSG_PRODUCT_TRANSFER_ITEMS_TABLE = os.getenv("MSG_PRODUCT_TRANSFER_ITEMS_TABLE", "mystoreguard.msg_product_transfer_items")
     
     # Appointments table
     MSG_APPOINTMENTS_TABLE = os.getenv("MSG_APPOINTMENTS_TABLE", "mystoreguard.msg_appointments")

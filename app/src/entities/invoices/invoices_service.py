@@ -360,7 +360,7 @@ class InvoicesService:
                                 (item.product_id, tenant_id, org_id, bus_id),
                             )
                             product_result = cursor.fetchone()
-                            product_name = product_result.get('name', item.product_name) if product_result else item.product_name
+                            product_name = product_result.get('name', 'Unknown') if product_result else 'Unknown'
                             
                             availability_errors.append({
                                 'product_name': product_name,
@@ -1118,28 +1118,28 @@ class InvoicesService:
                                     (item.product_id, tenant_id, org_id, bus_id),
                                 )
                                 product_result = cursor.fetchone()
-                                product_name = product_result.get('name', item.product_name) if product_result else item.product_name
-                                
+                                product_name = product_result.get('name', 'Unknown') if product_result else 'Unknown'
+
                                 availability_errors.append({
                                     'product_name': product_name,
                                     'product_id': item.product_id,
                                     'required_qty': required_qty,
                                     'available_qty': available_qty
                                 })
-                        
+
                         if availability_errors:
                             error_details = []
                             for error in availability_errors:
                                 error_details.append(
                                     f"product: {error['product_name']}, current_qty: {error['available_qty']}"
                                 )
-                            
+
                             return Respons(
                                 success=False,
                                 detail=f"We don't have enough items available. {', '.join(error_details)}",
                                 error="INSUFFICIENT_INVENTORY",
                             )
-                    
+
                     # Delete existing items (after restoring inventory)
                     cursor.execute(
                         f"""DELETE FROM {db_settings.MSG_INVOICE_ITEMS_TABLE}
@@ -1166,7 +1166,7 @@ class InvoicesService:
                             (tenant_id, org_id, bus_id, item.product_id),
                         )
                         product = cursor.fetchone()
-                        product_name = product.get('name', item.product_name) if product else item.product_name
+                        product_name = product.get('name', 'Unknown') if product else 'Unknown'
 
                         # Get taxes_applied from item (for storing, not for calculation)
                         taxes_applied_from_input = item.taxes_applied if item.taxes_applied else []

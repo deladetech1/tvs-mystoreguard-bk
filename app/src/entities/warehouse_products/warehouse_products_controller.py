@@ -11,7 +11,7 @@ from src.entities.warehouse_products.warehouse_products_write_dto import (
     AddStockWarehouseProductControllerWriteDto,
 )
 from src.entities.warehouse_products.warehouse_products_read_dto import (
-    CreateWarehouseProductControllerReadDto,
+    BulkCreateWarehouseProductControllerReadDto,
     UpdateWarehouseProductControllerReadDto,
     DeleteWarehouseProductControllerReadDto,
     PermanentDeleteWarehouseProductControllerReadDto,
@@ -30,29 +30,37 @@ warehouse_products_router = APIRouter(prefix="/warehouse-products", tags=["Wareh
 logger = get_logger("warehouse_products")
 
 
-# 1. Create Store Product
-@warehouse_products_router.post("/add", response_model=Respons[CreateWarehouseProductControllerReadDto])
-def create_warehouse_product(
-    data: CreateWarehouseProductControllerWriteDto,
+# 1. Create Warehouse Products (one or more)
+@warehouse_products_router.post("/add", response_model=Respons[BulkCreateWarehouseProductControllerReadDto])
+def create_warehouse_products(
+    data: List[CreateWarehouseProductControllerWriteDto],
     current_user: dict = Depends(CustomAuthService.get_current_user),
     _subscription_check: dict = Depends(verify_subscription_active),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
-    """Create a new warehouse product with FIFO batch allocation"""
+    """Create one or more warehouse products with FIFO batch allocation.
+
+    Accepts an array of items so multiple products can be added to a warehouse in a
+    single request. Pass a single object in an array to add just one. Each item is
+    processed independently (best-effort): items that succeed are saved even if
+    others fail, and the response carries a per-item result for every item.
+    """
+    loc_id = org_bus_loc["loc_id"]
     with LogContext(
         "warehouse_products",
-        "create_warehouse_product",
-        product_id=data.product_id,
-        loc_id=org_bus_loc["loc_id"],
+        "create_warehouse_products",
+        item_count=len(data),
+        product_ids=[item.product_id for item in data],
+        loc_id=loc_id,
     ):
         logger.info(
-            "Processing create warehouse product request",
+            "Processing create warehouse products request",
             extra={
                 "extra_fields": {
                     "endpoint": "/warehouse-products/add",
-                    "product_id": data.product_id,
-                    "loc_id": org_bus_loc["loc_id"],
-                    "current_qty": data.current_qty,
+                    "item_count": len(data),
+                    "product_ids": [item.product_id for item in data],
+                    "loc_id": loc_id,
                 }
             },
         )
@@ -65,7 +73,7 @@ def create_warehouse_product(
 
         if not is_authorized:
             logger.warning(
-                "Create warehouse product failed - unauthorized access",
+                "Create warehouse products failed - unauthorized access",
                 extra={
                     "extra_fields": {
                         "endpoint": "/warehouse-products/add",
@@ -76,30 +84,32 @@ def create_warehouse_product(
             )
             raise HTTPException(status_code=403, detail="Unauthorized access")
 
-        service_result = WarehouseProductsService.create_warehouse_product(
-            data=data,
+        service_result = WarehouseProductsService.create_warehouse_products(
+            items=data,
             tenant_id=current_user.data[0].tenant_id,
             org_id=org_bus_loc["org_id"],
             bus_id=org_bus_loc["bus_id"],
-            loc_id=org_bus_loc["loc_id"],  # Use loc_id from header
+            loc_id=loc_id,  # Use loc_id from header
             created_by=current_user.data[0].user_id,
         )
 
         if service_result.success:
+            succeeded = sum(1 for item in (service_result.data or []) if item.success)
             logger.info(
-                "Warehouse product created successfully",
+                "Warehouse products processed successfully",
                 extra={
                     "extra_fields": {
                         "endpoint": "/warehouse-products/add",
-                        "product_id": data.product_id,
-                        "loc_id": org_bus_loc["loc_id"],
+                        "item_count": len(data),
+                        "succeeded": succeeded,
+                        "loc_id": loc_id,
                         "status": "success",
                     }
                 },
             )
         else:
             logger.warning(
-                f"Warehouse product creation failed: {service_result.detail}",
+                f"Warehouse products creation failed: {service_result.detail}",
                 extra={
                     "extra_fields": {
                         "endpoint": "/warehouse-products/add",

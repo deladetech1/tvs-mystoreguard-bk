@@ -70,6 +70,50 @@ class TaxRulesService:
         """
 
     @staticmethod
+    def _fetch_conditions(
+        cursor,
+        rule_id: str,
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+    ) -> list[dict]:
+        """Fetch all conditions belonging to a single tax rule"""
+        cursor.execute(
+            f"""SELECT * FROM {db_settings.MSG_TAX_RULE_CONDITIONS_TABLE}
+            WHERE tax_rule_id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s
+            ORDER BY priority DESC, cdatetime ASC""",
+            (rule_id, tenant_id, org_id, bus_id),
+        )
+        rows = cursor.fetchall() or []
+        return [dict(r) for r in rows]
+
+    @staticmethod
+    def _fetch_conditions_batch(
+        cursor,
+        rule_ids: list[str],
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+    ) -> dict[str, list[dict]]:
+        """Fetch conditions for many rules at once, grouped by tax_rule_id"""
+        if not rule_ids:
+            return {}
+        placeholders = ",".join(["%s"] * len(rule_ids))
+        cursor.execute(
+            f"""SELECT * FROM {db_settings.MSG_TAX_RULE_CONDITIONS_TABLE}
+            WHERE tax_rule_id IN ({placeholders})
+            AND tenant_id = %s AND org_id = %s AND bus_id = %s
+            ORDER BY priority DESC, cdatetime ASC""",
+            tuple(rule_ids) + (tenant_id, org_id, bus_id),
+        )
+        rows = cursor.fetchall() or []
+        grouped: dict[str, list[dict]] = {}
+        for r in rows:
+            d = dict(r)
+            grouped.setdefault(d.get('tax_rule_id'), []).append(d)
+        return grouped
+
+    @staticmethod
     def _validate_tax_exists(
         cursor,
         tax_id: str,
@@ -297,6 +341,10 @@ class TaxRulesService:
                     rule_dict['deleted_by'] = None
                     rule_dict['rule_target_name'] = None
                     rule_dict['tax_name'] = None
+
+                rule_dict['conditions'] = TaxRulesService._fetch_conditions(
+                    cursor, rule_id, tenant_id, org_id, bus_id
+                )
 
                 # Create DTO
                 try:
@@ -585,6 +633,10 @@ class TaxRulesService:
                     rule_dict['rule_target_name'] = None
                     rule_dict['tax_name'] = None
 
+                rule_dict['conditions'] = TaxRulesService._fetch_conditions(
+                    cursor, rule_id, tenant_id, org_id, bus_id
+                )
+
                 rule_read = UpdateTaxRuleServiceReadDto(**rule_dict)
 
                 # Log activity
@@ -682,6 +734,9 @@ class TaxRulesService:
                 rule_dict['deleted_by'] = rule_dict.get('deleted_by') or None
                 rule_dict['rule_target_name'] = rule_dict.get('rule_target_name') or None
                 rule_dict['tax_name'] = rule_dict.get('tax_name') or None
+                rule_dict['conditions'] = TaxRulesService._fetch_conditions(
+                    cursor, rule_id, tenant_id, org_id, bus_id
+                )
                 rule_read = GetTaxRuleServiceReadDto(**rule_dict)
 
                 return Respons(
@@ -767,6 +822,11 @@ class TaxRulesService:
                 )
                 rules = cursor.fetchall()
 
+                rule_ids = [r['id'] if isinstance(r, dict) else dict(r)['id'] for r in rules]
+                conditions_by_rule = TaxRulesService._fetch_conditions_batch(
+                    cursor, rule_ids, tenant_id, org_id, bus_id
+                )
+
                 rule_list = []
                 for r in rules:
                     r_dict = dict(r)
@@ -775,6 +835,7 @@ class TaxRulesService:
                     r_dict['deleted_by'] = r_dict.get('deleted_by') or None
                     r_dict['rule_target_name'] = r_dict.get('rule_target_name') or None
                     r_dict['tax_name'] = r_dict.get('tax_name') or None
+                    r_dict['conditions'] = conditions_by_rule.get(r_dict.get('id'), [])
                     rule_list.append(GetTaxRulesServiceReadDto(**r_dict))
 
                 pagination = PaginationMeta(

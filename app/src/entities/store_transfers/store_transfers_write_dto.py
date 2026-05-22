@@ -1,6 +1,6 @@
-from typing import Optional, Literal
+from typing import Optional, Literal, List
 from pydantic import BaseModel, Field
-from src.entities.store_transfers.store_transfers_base import StoreTransferBase
+from src.entities.store_transfers.store_transfers_base import StoreTransferBase, StoreTransferItemInput
 
 
 # =====================================================
@@ -42,7 +42,9 @@ class ApproveStoreTransferServiceWriteDto(BaseModel):
 class UpdateStoreTransferControllerWriteDto(BaseModel):
     """Controller DTO for updating a store transfer"""
     transfer_id: str = Field(..., description="Transfer ID")
-    qty: Optional[int] = Field(None, gt=0, description="Quantity to transfer")
+    items: Optional[List[StoreTransferItemInput]] = Field(
+        None, min_length=1, description="Replace the transfer's items with this list (optional)"
+    )
     destination_type: Optional[Literal["STORE", "WAREHOUSE"]] = Field(None, description="Destination type")
     destination_id: Optional[str] = Field(None, description="Destination location ID")
     person_to_approve_id: Optional[str] = Field(None, description="User ID of person to approve the transfer")
@@ -52,7 +54,7 @@ class UpdateStoreTransferControllerWriteDto(BaseModel):
 class UpdateStoreTransferServiceWriteDto(BaseModel):
     """Service DTO for updating a store transfer"""
     transfer_id: str
-    qty: Optional[int] = None
+    items: Optional[List[StoreTransferItemInput]] = None
     destination_type: Optional[Literal["STORE", "WAREHOUSE"]] = None
     destination_id: Optional[str] = None
     person_to_approve_id: Optional[str] = None
