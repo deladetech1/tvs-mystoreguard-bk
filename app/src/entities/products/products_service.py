@@ -315,23 +315,8 @@ class ProductsService:
 
         try:
             with DatabaseManager.transaction() as cursor:
-                # Check if product with same name already exists
-                cursor.execute(
-                    f"""SELECT id FROM {db_settings.MSG_PRODUCTS_TABLE}
-                    WHERE tenant_id = %s AND org_id = %s AND bus_id = %s 
-                    AND name = %s AND delete_status = 'NOT_DELETED'""",
-                    (tenant_id, org_id, bus_id, data.name),
-                )
-                existing_product = cursor.fetchone()
+                # Product names are not required to be unique - duplicates are allowed.
 
-                if existing_product:
-                    # Return early for duplicate - no changes made, transaction will exit normally
-                    return Respons(
-                        success=False,
-                        detail=f"Product with name '{data.name}' already exists",
-                        error="DUPLICATE_NAME",
-                    )
-                
                 # Generate product ID
                 product_id = Helper.generate_unique_identifier(prefix="prd")
 
@@ -770,21 +755,8 @@ class ProductsService:
                 
                 old_data = dict(existing_product)
 
-                # If name is being updated, check for duplicates
-                if data.name is not None and data.name != old_data.get('name'):
-                    cursor.execute(
-                        f"""SELECT id FROM {db_settings.MSG_PRODUCTS_TABLE}
-                        WHERE tenant_id = %s AND org_id = %s AND bus_id = %s 
-                        AND name = %s AND id != %s AND delete_status = 'NOT_DELETED'""",
-                        (tenant_id, org_id, bus_id, data.name, product_id),
-                    )
-                    duplicate = cursor.fetchone()
-                    if duplicate:
-                        return Respons(
-                            success=False,
-                            detail=f"Product with name '{data.name}' already exists",
-                            error="DUPLICATE_NAME",
-                        )
+                # Product names are not required to be unique - duplicate names on
+                # update are allowed.
 
                 # Build update query dynamically
                 update_fields = []
