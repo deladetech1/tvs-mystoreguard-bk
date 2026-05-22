@@ -37,7 +37,7 @@ def create_warehouse_transfer(
     with LogContext(
         "warehouse_transfers",
         "create_warehouse_transfer",
-        product_id=data.product_id,
+        item_count=len(data.items),
         loc_id=org_bus_loc["loc_id"],
     ):
         logger.info(
@@ -45,9 +45,8 @@ def create_warehouse_transfer(
             extra={
                 "extra_fields": {
                     "endpoint": "/warehouse-transfers/create",
-                    "product_id": data.product_id,
+                    "item_count": len(data.items),
                     "loc_id": org_bus_loc["loc_id"],
-                    "qty": data.qty,
                 }
             },
         )

@@ -37,7 +37,7 @@ def create_store_transfer(
     with LogContext(
         "store_transfers",
         "create_store_transfer",
-        product_id=data.product_id,
+        item_count=len(data.items),
         loc_id=org_bus_loc["loc_id"],
     ):
         logger.info(
@@ -45,9 +45,8 @@ def create_store_transfer(
             extra={
                 "extra_fields": {
                     "endpoint": "/store-transfers/create",
-                    "product_id": data.product_id,
+                    "item_count": len(data.items),
                     "loc_id": org_bus_loc["loc_id"],
-                    "qty": data.qty,
                 }
             },
         )
