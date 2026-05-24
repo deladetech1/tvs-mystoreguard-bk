@@ -17,6 +17,18 @@ class StoreTransferItemRead(BaseModel):
     product_name: Optional[str] = Field(None, description="Product name")
 
 
+class StoreTransferApprovalRead(BaseModel):
+    """An approve/reject decision recorded against a store transfer"""
+    id: str
+    action: str = Field(..., description="APPROVED or REJECTED")
+    reason: Optional[str] = Field(None, description="Optional reason/message provided by the approver")
+    performed_by: str = Field(..., description="User ID of the approver")
+    performed_by_name: Optional[str] = Field(None, description="Full name of the approver")
+    cdate: Optional[str] = None
+    ctime: Optional[str] = None
+    cdatetime: Optional[datetime] = None
+
+
 class StoreTransferReadBase(BaseModel):
     """Base read DTO for store transfer"""
     id: str
@@ -37,6 +49,7 @@ class StoreTransferReadBase(BaseModel):
     created_by: str
     items: List[StoreTransferItemRead] = Field(default_factory=list, description="Products being transferred")
     total_qty: int = Field(0, description="Sum of quantities across all items")
+    approvals: List[StoreTransferApprovalRead] = Field(default_factory=list, description="Approve/reject decision history")
     source_location_name: Optional[str] = Field(None, description="Source location name")
     destination_location_name: Optional[str] = Field(None, description="Destination location name")
     created_by_name: Optional[str] = Field(None, description="Creator full name")

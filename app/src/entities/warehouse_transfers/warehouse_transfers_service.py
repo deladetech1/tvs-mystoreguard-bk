@@ -187,8 +187,47 @@ def _fetch_items_map(tenant_id: str, org_id: str, bus_id: str, transfer_ids: Lis
     return items_map
 
 
-def _build_transfer_read_dict(header_row: dict, items_map: dict) -> dict:
-    """Build a read-DTO-ready dict from a transfer header row plus its items."""
+def _fetch_approvals_map(tenant_id: str, org_id: str, bus_id: str, transfer_ids: List[str], cursor) -> dict:
+    """Fetch approve/reject decisions for the given transfer ids, grouped by transfer_id.
+
+    Returns {transfer_id: [{id, action, reason, performed_by, performed_by_name,
+    cdate, ctime, cdatetime}, ...]} ordered oldest-first.
+    """
+    if not transfer_ids:
+        return {}
+
+    placeholders = ", ".join(["%s"] * len(transfer_ids))
+    cursor.execute(
+        f"""SELECT a.id, a.transfer_id, a.action, a.reason, a.performed_by,
+                   a.cdate, a.ctime, a.cdatetime,
+                   u.fullname as performed_by_name
+        FROM {db_settings.MSG_PRODUCT_TRANSFER_APPROVALS_TABLE} a
+        LEFT JOIN {db_settings.CORE_PLATFORM_USERS_TABLE} u
+            ON a.performed_by = u.id AND a.tenant_id = u.tenant_id
+        WHERE a.tenant_id = %s AND a.org_id = %s AND a.bus_id = %s
+        AND a.transfer_id IN ({placeholders})
+        ORDER BY a.cdatetime ASC, a.id ASC""",
+        [tenant_id, org_id, bus_id] + list(transfer_ids),
+    )
+    rows = cursor.fetchall()
+
+    approvals_map: dict = {}
+    for row in rows:
+        approvals_map.setdefault(row['transfer_id'], []).append({
+            'id': row['id'],
+            'action': row['action'],
+            'reason': row.get('reason'),
+            'performed_by': row['performed_by'],
+            'performed_by_name': row.get('performed_by_name'),
+            'cdate': row.get('cdate'),
+            'ctime': row.get('ctime'),
+            'cdatetime': row.get('cdatetime'),
+        })
+    return approvals_map
+
+
+def _build_transfer_read_dict(header_row: dict, items_map: dict, approvals_map: Optional[dict] = None) -> dict:
+    """Build a read-DTO-ready dict from a transfer header row plus its items and approvals."""
     transfer_dict = dict(header_row)
     transfer_dict = _extract_cdate_ctime_from_dict(transfer_dict)
     # Map source and destination to source_type and destination_type
@@ -197,6 +236,7 @@ def _build_transfer_read_dict(header_row: dict, items_map: dict) -> dict:
     items = items_map.get(header_row['id'], [])
     transfer_dict['items'] = items
     transfer_dict['total_qty'] = sum(item['qty'] for item in items)
+    transfer_dict['approvals'] = approvals_map.get(header_row['id'], []) if approvals_map else []
     return transfer_dict
 
 
@@ -960,6 +1000,21 @@ class WarehouseTransfersService:
                             error="TRANSFER_EXECUTION_FAILED",
                         )
 
+                # Record the approve/reject decision (with the optional reason/message)
+                now = Helper.current_date_time()
+                approval_id = Helper.generate_unique_identifier(prefix="tfa")
+                cursor.execute(
+                    f"""INSERT INTO {db_settings.MSG_PRODUCT_TRANSFER_APPROVALS_TABLE}
+                    (id, tenant_id, org_id, bus_id, transfer_id, action, reason, performed_by,
+                     cdate, ctime, cdatetime)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (
+                        approval_id, tenant_id, org_id, bus_id, data.transfer_id,
+                        new_status, data.reason, approved_by,
+                        now["cdate"], now["ctime"], now["cdatetime"],
+                    ),
+                )
+
                 # Get updated transfer header with details
                 cursor.execute(
                     f"""SELECT pt.*,
@@ -983,6 +1038,7 @@ class WarehouseTransfersService:
                 updated_transfer = cursor.fetchone()
 
                 items_map = _fetch_items_map(tenant_id, org_id, bus_id, [data.transfer_id], cursor)
+                approvals_map = _fetch_approvals_map(tenant_id, org_id, bus_id, [data.transfer_id], cursor)
 
                 # Log activity
                 try:
@@ -1006,7 +1062,7 @@ class WarehouseTransfersService:
                 except Exception as log_err:
                     logger.warning(f"Activity log failed: {log_err}", exc_info=True)
 
-                transfer_dict = _build_transfer_read_dict(updated_transfer, items_map)
+                transfer_dict = _build_transfer_read_dict(updated_transfer, items_map, approvals_map)
                 transfer_read = ApproveWarehouseTransferServiceReadDto(**transfer_dict)
 
                 action_msg = "approved" if new_status == 'APPROVED' else "rejected"
@@ -1073,7 +1129,8 @@ class WarehouseTransfersService:
                     )
 
                 items_map = _fetch_items_map(tenant_id, org_id, bus_id, [transfer_id], cursor)
-                transfer_dict = _build_transfer_read_dict(transfer, items_map)
+                approvals_map = _fetch_approvals_map(tenant_id, org_id, bus_id, [transfer_id], cursor)
+                transfer_dict = _build_transfer_read_dict(transfer, items_map, approvals_map)
                 transfer_read = GetWarehouseTransferServiceReadDto(**transfer_dict)
 
                 return Respons(
@@ -1180,10 +1237,11 @@ class WarehouseTransfersService:
 
                 transfer_ids = [transfer['id'] for transfer in transfers]
                 items_map = _fetch_items_map(tenant_id, org_id, bus_id, transfer_ids, cursor)
+                approvals_map = _fetch_approvals_map(tenant_id, org_id, bus_id, transfer_ids, cursor)
 
                 transfers_list = []
                 for transfer in transfers:
-                    transfer_dict = _build_transfer_read_dict(transfer, items_map)
+                    transfer_dict = _build_transfer_read_dict(transfer, items_map, approvals_map)
                     transfers_list.append(GetWarehouseTransfersServiceReadDto(**transfer_dict))
 
                 return Respons(

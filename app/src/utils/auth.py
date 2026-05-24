@@ -725,210 +725,77 @@ def check_subscription_active(
             - If expired/not found: (False, error_message describing why subscription is inactive)
     """
     try:
-        query = f'''
-            SELECT
-                id,
-                app_subscription_id,
-                start_at,
-                end_at,
-                is_active,
-                delete_status,
-                cdatetime
-            FROM {db_settings.CORE_PLATFORM_APP_SUBSCRIPTION_HISTORY_TABLE}
-            WHERE tenant_id = %s
-            AND business_id = %s
-            AND app_id = %s
-            AND is_active = true
-            AND delete_status = 'NOT_DELETED'
-            ORDER BY cdatetime DESC NULLS LAST, start_at DESC NULLS LAST
-            LIMIT 1
-        '''
+        # 1) Tenant-wide free trial window. The first subscription opens one
+        #    lifetime window on cp_tenants; while it is open EVERY app is usable
+        #    for free, no card required.
+        trial_rows = DatabaseManager.execute_query(
+            f'''SELECT (free_trial_ends_at IS NOT NULL AND free_trial_ends_at > now()) AS in_window
+                FROM {db_settings.CORE_PLATFORM_TENANTS_TABLE}
+                WHERE id = %s''',
+            (tenant_id,),
+        )
+        if trial_rows and trial_rows[0].get("in_window"):
+            logger.debug(
+                "Access allowed via active tenant free-trial window",
+                extra={"extra_fields": {"tenant_id": tenant_id, "user_id": user_id}},
+            )
+            return True, None
 
-        logger.debug(
-            "Executing subscription check query",
-            extra={
-                "extra_fields": {
-                    "tenant_id": tenant_id,
-                    "business_id": business_id,
-                    "user_id": user_id,
-                    "app_id": APP_ID,
-                    "table": db_settings.CORE_PLATFORM_APP_SUBSCRIPTION_HISTORY_TABLE,
-                }
-            },
+        # 2) Otherwise require a paid (ACTIVE) subscription for this
+        #    (tenant, business, app). status lives on the live cp_app_subscriptions
+        #    row and is the source of truth: ACTIVE allows; anything else blocks.
+        result = DatabaseManager.execute_query(
+            f'''SELECT id, status
+                FROM {db_settings.CORE_PLATFORM_APP_SUBSCRIPTIONS_TABLE}
+                WHERE tenant_id = %s AND business_id = %s AND app_id = %s
+                  AND delete_status = 'NOT_DELETED'
+                ORDER BY cdatetime DESC NULLS LAST
+                LIMIT 1''',
+            (tenant_id, business_id, APP_ID),
         )
 
-        result = DatabaseManager.execute_query(query, (tenant_id, business_id, APP_ID))
-        
-        logger.debug(
-            "Subscription query result",
-            extra={
-                "extra_fields": {
-                    "tenant_id": tenant_id,
-                    "user_id": user_id,
-                    "result_count": len(result) if result else 0,
-                    "has_result": bool(result and len(result) > 0),
-                }
-            },
-        )
-        
         if not result or len(result) == 0:
             logger.warning(
-                "No active subscription found for (tenant, business, app)",
-                extra={
-                    "extra_fields": {
-                        "tenant_id": tenant_id,
-                        "business_id": business_id,
-                        "user_id": user_id,
-                        "app_id": APP_ID,
-                        "table": db_settings.CORE_PLATFORM_APP_SUBSCRIPTION_HISTORY_TABLE,
-                    }
-                },
+                "No subscription found for (tenant, business, app)",
+                extra={"extra_fields": {
+                    "tenant_id": tenant_id, "business_id": business_id,
+                    "user_id": user_id, "app_id": APP_ID,
+                }},
             )
             return False, (
                 "This business has not subscribed to this app. "
                 "Visit the App Store to get started."
             )
-        
-        subscription = result[0]
-        end_at = subscription.get('end_at')
-        
+
+        status = (result[0].get("status") or "").upper()
         logger.debug(
-            "Subscription record found",
-            extra={
-                "extra_fields": {
-                    "tenant_id": tenant_id,
-                    "user_id": user_id,
-                    "subscription_id": subscription.get('id'),
-                    "user_subscription_id": subscription.get('user_subscription_id'),
-                    "start_at": subscription.get('start_at'),
-                    "end_at": str(end_at) if end_at else "NULL",
-                    "is_active": subscription.get('is_active'),
-                    "delete_status": subscription.get('delete_status'),
-                }
-            },
+            "Subscription status resolved",
+            extra={"extra_fields": {
+                "tenant_id": tenant_id, "user_id": user_id,
+                "subscription_id": result[0].get("id"), "status": status,
+            }},
         )
-        
-        # Check if subscription has ended
-        if end_at:
-            try:
-                from dateutil import parser as date_parser
-                from datetime import timezone
-                
-                # Parse end_at timestamp (stored as TEXT in format: "2025-12-07 13:42:00+00")
-                # dateutil parser handles PostgreSQL timestamp format well: "YYYY-MM-DD HH:MM:SS+TZ"
-                if isinstance(end_at, str):
-                    # Normalize the format if needed - ensure timezone is properly formatted
-                    # Handle formats like "2025-12-07 13:42:00+00" or "2025-12-07 13:42:00+00:00"
-                    end_at_normalized = end_at.strip()
-                    
-                    # dateutil parser handles this format directly
-                    end_datetime = date_parser.parse(end_at_normalized)
-                elif isinstance(end_at, datetime):
-                    end_datetime = end_at
-                else:
-                    # Convert to string and parse
-                    end_datetime = date_parser.parse(str(end_at))
-                
-                # Compare with current time (UTC)
-                current_time = datetime.now(timezone.utc)
-                
-                # Ensure end_datetime has timezone info (assume UTC if None)
-                if end_datetime.tzinfo is None:
-                    end_datetime = end_datetime.replace(tzinfo=timezone.utc)
-                
-                # Normalize both to UTC for comparison
-                if end_datetime.tzinfo != timezone.utc:
-                    end_datetime = end_datetime.astimezone(timezone.utc)
-                
-                logger.debug(
-                    "Comparing subscription end date with current time",
-                    extra={
-                        "extra_fields": {
-                            "tenant_id": tenant_id,
-                            "user_id": user_id,
-                            "subscription_id": subscription.get('id'),
-                            "end_at_raw": str(end_at),
-                            "end_datetime_utc": end_datetime.isoformat(),
-                            "current_time_utc": current_time.isoformat(),
-                            "is_expired": end_datetime < current_time,
-                            "time_until_expiry_seconds": (end_datetime - current_time).total_seconds() if end_datetime >= current_time else None,
-                        }
-                    },
-                )
-                
-                if end_datetime < current_time:
-                    logger.warning(
-                        "Subscription has ended",
-                        extra={
-                            "extra_fields": {
-                                "tenant_id": tenant_id,
-                                "user_id": user_id,
-                                "subscription_id": subscription.get('id'),
-                                "end_at": str(end_at),
-                                "end_datetime": end_datetime.isoformat(),
-                                "current_time": current_time.isoformat(),
-                            }
-                        },
-                    )
-                    # Format the date nicely for the user
-                    end_date_str = end_datetime.strftime('%Y-%m-%d %H:%M:%S UTC')
-                    return False, f"Your subscription ended on {end_date_str}. Please renew your subscription to continue."
-            except Exception as e:
-                logger.error(
-                    f"Error parsing subscription end date: {str(e)}",
-                    extra={
-                        "extra_fields": {
-                            "tenant_id": tenant_id,
-                            "user_id": user_id,
-                            "end_at": str(end_at),
-                            "end_at_type": type(end_at).__name__,
-                            "error": str(e),
-                            "traceback": str(e.__traceback__) if hasattr(e, '__traceback__') else None,
-                        }
-                    },
-                )
-                # If we can't parse the date, fail securely - block the request
-                # This prevents allowing operations when we can't verify subscription status
-                logger.warning("Could not parse end_at date, blocking request for security")
-                return False, "Unable to verify subscription status. Please contact support."
-        
-        # Subscription is active (end_at is NULL or in the future)
-        if end_at:
-            logger.debug(
-                "Subscription is active - end date is in the future",
-                extra={
-                    "extra_fields": {
-                        "tenant_id": tenant_id,
-                        "user_id": user_id,
-                        "subscription_id": subscription.get('id'),
-                        "end_at": str(end_at),
-                    }
-                },
-            )
-        else:
-            logger.debug(
-                "Subscription is active - no end date (NULL)",
-                extra={
-                    "extra_fields": {
-                        "tenant_id": tenant_id,
-                        "user_id": user_id,
-                        "subscription_id": subscription.get('id'),
-                        "end_at": "NULL",
-                    }
-                },
-            )
-        return True, None
-        
+
+        if status == "ACTIVE":
+            return True, None
+        if status == "TRIALING":
+            # Trial window has closed (step 1 already returned for open windows)
+            # and no payment has been made yet.
+            return False, "Your free trial has ended. Add a payment card to continue."
+        if status == "PENDING_PAYMENT":
+            return False, "Payment is required before you can use this app. Please add a card to activate."
+        if status == "PAST_DUE":
+            return False, "Your last payment failed. Please update your card to continue."
+        if status == "SUSPENDED":
+            return False, "Your subscription is suspended. Please contact support."
+        if status == "CANCELLED":
+            return False, "Your subscription was cancelled. Resubscribe to continue."
+        return False, "Your subscription is not active. Please renew to continue."
+
     except Exception as e:
         logger.error(
             f"Error checking subscription status: {str(e)}",
-            extra={
-                "extra_fields": {
-                    "tenant_id": tenant_id,
-                    "user_id": user_id,
-                    "error": str(e),
-                }
-            },
+            extra={"extra_fields": {"tenant_id": tenant_id, "user_id": user_id, "error": str(e)}},
         )
         # Fail securely - deny access on error to prevent unauthorized operations
         return False, "Error verifying subscription status. Please contact support."
