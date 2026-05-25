@@ -729,10 +729,11 @@ def check_subscription_active(
         #    lifetime window on cp_tenants; while it is open EVERY app is usable
         #    for free, no card required.
         trial_rows = DatabaseManager.execute_query(
-            f'''SELECT (free_trial_ends_at IS NOT NULL AND free_trial_ends_at > now()) AS in_window
+            f'''SELECT (free_trial_ends_at IS NOT NULL
+                        AND free_trial_ends_at + make_interval(days => %s) > now()) AS in_window
                 FROM {db_settings.CORE_PLATFORM_TENANTS_TABLE}
                 WHERE id = %s''',
-            (tenant_id,),
+            (db_settings.SUBSCRIPTION_GRACE_DAYS, tenant_id),
         )
         if trial_rows and trial_rows[0].get("in_window"):
             logger.debug(
@@ -745,13 +746,15 @@ def check_subscription_active(
         #    (tenant, business, app). status lives on the live cp_app_subscriptions
         #    row and is the source of truth: ACTIVE allows; anything else blocks.
         result = DatabaseManager.execute_query(
-            f'''SELECT id, status
+            f'''SELECT id, status, is_enterprise,
+                   (current_period_end IS NOT NULL
+                    AND current_period_end + make_interval(days => %s) > now()) AS period_in_grace
                 FROM {db_settings.CORE_PLATFORM_APP_SUBSCRIPTIONS_TABLE}
                 WHERE tenant_id = %s AND business_id = %s AND app_id = %s
                   AND delete_status = 'NOT_DELETED'
                 ORDER BY cdatetime DESC NULLS LAST
                 LIMIT 1''',
-            (tenant_id, business_id, APP_ID),
+            (db_settings.SUBSCRIPTION_GRACE_DAYS, tenant_id, business_id, APP_ID),
         )
 
         if not result or len(result) == 0:
@@ -776,16 +779,23 @@ def check_subscription_active(
             }},
         )
 
+        if result[0].get("is_enterprise"):
+            # Enterprise plans are billed off-platform; never gated here.
+            return True, None
         if status == "ACTIVE":
             return True, None
+        if status == "PAST_DUE" and result[0].get("period_in_grace"):
+            # Within the grace window after the period ended — incl. trials that
+            # were converted to PAST_DUE at trial end. Still allowed.
+            return True, None
         if status == "TRIALING":
-            # Trial window has closed (step 1 already returned for open windows)
+            # Trial + grace window has closed (step 1 covers the open window)
             # and no payment has been made yet.
             return False, "Your free trial has ended. Add a payment card to continue."
         if status == "PENDING_PAYMENT":
             return False, "Payment is required before you can use this app. Please add a card to activate."
         if status == "PAST_DUE":
-            return False, "Your last payment failed. Please update your card to continue."
+            return False, "Your subscription is overdue. Please pay to continue."
         if status == "SUSPENDED":
             return False, "Your subscription is suspended. Please contact support."
         if status == "CANCELLED":
