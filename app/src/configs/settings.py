@@ -35,6 +35,7 @@ class Settings:
     CORE_PLATFORM_USERS_TABLE = os.getenv("CORE_PLATFORM_USERS_TABLE", "core_platform.cp_users")
     CORE_PLATFORM_MEMBERS_TABLE = os.getenv("CORE_PLATFORM_MEMBERS_TABLE", "core_platform.cp_members")
     CORE_PLATFORM_RESOURCE_ID_TABLE = os.getenv("CORE_PLATFORM_RESOURCE_ID_TABLE", "core_platform.cp_shared_resource_ids")
+    CORE_PLATFORM_TENANTS_TABLE = os.getenv("CORE_PLATFORM_TENANTS_TABLE", "core_platform.cp_tenants")
     CORE_PLATFORM_APP_SUBSCRIPTIONS_TABLE = os.getenv("CORE_PLATFORM_APP_SUBSCRIPTIONS_TABLE", "core_platform.cp_app_subscriptions")
     CORE_PLATFORM_APP_SUBSCRIPTION_HISTORY_TABLE = os.getenv("CORE_PLATFORM_APP_SUBSCRIPTION_HISTORY_TABLE", "core_platform.cp_app_subscription_histories")
     CORE_PLATFORM_APPS_TABLE = os.getenv("CORE_PLATFORM_APPS_TABLE", "core_platform.cp_apps")
@@ -136,6 +137,7 @@ class Settings:
     # Product transfers table
     MSG_PRODUCT_TRANSFERS_TABLE = os.getenv("MSG_PRODUCT_TRANSFERS_TABLE", "mystoreguard.msg_product_transfers")
     MSG_PRODUCT_TRANSFER_ITEMS_TABLE = os.getenv("MSG_PRODUCT_TRANSFER_ITEMS_TABLE", "mystoreguard.msg_product_transfer_items")
+    MSG_PRODUCT_TRANSFER_APPROVALS_TABLE = os.getenv("MSG_PRODUCT_TRANSFER_APPROVALS_TABLE", "mystoreguard.msg_product_transfer_approvals")
     
     # Appointments table
     MSG_APPOINTMENTS_TABLE = os.getenv("MSG_APPOINTMENTS_TABLE", "mystoreguard.msg_appointments")

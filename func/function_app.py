@@ -1,3 +1,4 @@
+# Redeploy trigger: 2026-05-24 — re-publish mystoreguard function app.
 import azure.functions as func
 import datetime
 import logging
