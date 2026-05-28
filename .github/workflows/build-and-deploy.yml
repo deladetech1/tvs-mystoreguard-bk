@@ -5,7 +5,7 @@ on:
     branches:
       - main
       - dev
-      - bidtl-prod
+      - bgclt-prod
     paths:
       - "app/**"
       - "func/**"
@@ -68,12 +68,12 @@ jobs:
             echo "subscription_id=${{ secrets.TROVESUITE_PROD_AZURE_SUBSCRIPTION_ID }}" >> "$GITHUB_OUTPUT"
             echo "container_app_name=trovesuite-prod-mystoreguard-ca" >> "$GITHUB_OUTPUT"
             echo "resource_group=${{ vars.PROD_RESOURCE_GROUP }}" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.ref_name }}" == "bidtl-prod" ]]; then
-            echo "env=bidtl-prod" >> "$GITHUB_OUTPUT"
-            echo "acr_name=tvsbidtlprodacr" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.ref_name }}" == "bgclt-prod" ]]; then
+            echo "env=bgclt-prod" >> "$GITHUB_OUTPUT"
+            echo "acr_name=tvsbgcltprodacr" >> "$GITHUB_OUTPUT"
             echo "subscription_id=149c2fed-e354-4dd3-9fd8-4c0448ccaf71" >> "$GITHUB_OUTPUT"
-            echo "container_app_name=tvs-bidtl-prod-mystoreguard-ca" >> "$GITHUB_OUTPUT"
-            echo "resource_group=tvs-bidtl-prod-appservers-rg" >> "$GITHUB_OUTPUT"
+            echo "container_app_name=tvs-bgclt-prod-mystoreguard-ca" >> "$GITHUB_OUTPUT"
+            echo "resource_group=tvs-bgclt-prod-appservers-rg" >> "$GITHUB_OUTPUT"
           else
             echo "env=dev" >> "$GITHUB_OUTPUT"
             echo "acr_name=${{ vars.DEV_CONTAINER_REGISTRY_NAME }}" >> "$GITHUB_OUTPUT"
@@ -85,7 +85,7 @@ jobs:
       - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.TROVESUITE_AZURE_CLIENT_ID }}
+          client-id: ${{ github.ref_name == 'bgclt-prod' && '3d23bd3a-85c1-4242-8e08-c7b8592b01f6' || secrets.TROVESUITE_AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ steps.env.outputs.subscription_id }}
 
@@ -136,11 +136,11 @@ jobs:
             echo "subscription_id=${{ secrets.TROVESUITE_PROD_AZURE_SUBSCRIPTION_ID }}" >> "$GITHUB_OUTPUT"
             echo "function_app_name=trovesuite-prod-mystoreguard-func" >> "$GITHUB_OUTPUT"
             echo "resource_group=${{ vars.PROD_RESOURCE_GROUP }}" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.ref_name }}" == "bidtl-prod" ]]; then
-            echo "env=bidtl-prod" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.ref_name }}" == "bgclt-prod" ]]; then
+            echo "env=bgclt-prod" >> "$GITHUB_OUTPUT"
             echo "subscription_id=149c2fed-e354-4dd3-9fd8-4c0448ccaf71" >> "$GITHUB_OUTPUT"
-            echo "function_app_name=tvs-bidtl-prod-mystoreguard-func" >> "$GITHUB_OUTPUT"
-            echo "resource_group=tvs-bidtl-prod-appservers-rg" >> "$GITHUB_OUTPUT"
+            echo "function_app_name=tvs-bgclt-prod-mystoreguard-func" >> "$GITHUB_OUTPUT"
+            echo "resource_group=tvs-bgclt-prod-appservers-rg" >> "$GITHUB_OUTPUT"
           else
             echo "env=dev" >> "$GITHUB_OUTPUT"
             echo "subscription_id=${{ secrets.TROVESUITE_DEV_AZURE_SUBSCRIPTION_ID }}" >> "$GITHUB_OUTPUT"
@@ -161,7 +161,7 @@ jobs:
       - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.TROVESUITE_AZURE_CLIENT_ID }}
+          client-id: ${{ github.ref_name == 'bgclt-prod' && '3d23bd3a-85c1-4242-8e08-c7b8592b01f6' || secrets.TROVESUITE_AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ steps.env.outputs.subscription_id }}
 
