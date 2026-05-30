@@ -413,7 +413,7 @@ class ActivityLogService:
 
         Args:
             tenant_id: The tenant ID
-            resource_type: The type of resource (e.g., 'rt-expenses', 'rt-warehouse', 'rt-shop', 'rt-clients', 'rt-creditors', 'rt-depositors', 'rt-returns', 'rt-invoice', 'rt-sales', 'rt-suppliers')
+            resource_type: The type of resource (e.g., 'rt-expenses', 'rt-warehouse', 'rt-shop', 'rt-clients', 'rt-invoice', 'rt-sales', 'rt-suppliers')
             resource_id: The ID of the resource
             action: The action performed (e.g., 'create', 'update', 'delete')
             old_data: The old data before the change (optional, for updates/deletes)
