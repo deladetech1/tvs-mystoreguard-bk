@@ -38,6 +38,8 @@ class Settings:
     CORE_PLATFORM_TENANTS_TABLE = os.getenv("CORE_PLATFORM_TENANTS_TABLE", "core_platform.cp_tenants")
     CORE_PLATFORM_APP_SUBSCRIPTIONS_TABLE = os.getenv("CORE_PLATFORM_APP_SUBSCRIPTIONS_TABLE", "core_platform.cp_app_subscriptions")
     CORE_PLATFORM_APP_SUBSCRIPTION_HISTORY_TABLE = os.getenv("CORE_PLATFORM_APP_SUBSCRIPTION_HISTORY_TABLE", "core_platform.cp_app_subscription_histories")
+    # Grace window (days) past period/trial end before access is cut. Must match core-platform.
+    SUBSCRIPTION_GRACE_DAYS = int(os.getenv("SUBSCRIPTION_GRACE_DAYS", "4"))
     CORE_PLATFORM_APPS_TABLE = os.getenv("CORE_PLATFORM_APPS_TABLE", "core_platform.cp_apps")
 
     # =============================================================================
