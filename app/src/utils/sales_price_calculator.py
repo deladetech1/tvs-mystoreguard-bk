@@ -464,7 +464,12 @@ class SalesPriceCalculator:
                             'adjustment_percentage': condition.get('adjustment_percentage')
                         })
 
-                    # Evaluate logical operators
+                    # Evaluate logical operators to decide whether the rule's
+                    # conditions FIRE. Conditions only ever RELIEVE tax (exempt
+                    # or reduce it); they never gate whether tax is charged in
+                    # the first place. So the default is full tax, and we only
+                    # touch it when the chained conditions are satisfied — a
+                    # condition that is NOT met must leave the normal tax in place.
                     if condition_results:
                         final_result = condition_results[0]['met']
                         for i in range(1, len(condition_results)):
@@ -476,23 +481,25 @@ class SalesPriceCalculator:
                             else:  # OR
                                 final_result = final_result or curr_result['met']
 
-                        if not final_result:
-                            should_apply_tax = False
-
-                        # Calculate tax reduction if conditions met
+                        # Conditions fire -> grant the relief they describe.
+                        # Conditions do not fire -> full tax stays applied.
                         if final_result:
                             for cond in condition_results:
-                                if cond['type'] == 'TAX_REDUCTION':
+                                # In an OR chain the overall result can be true
+                                # while individual conditions are unmet; only act
+                                # on the conditions that actually matched.
+                                if not cond['met']:
+                                    continue
+                                if cond['type'] == 'TAX_EXEMPTION':
+                                    should_apply_tax = False
+                                    break
+                                elif cond['type'] == 'TAX_REDUCTION':
                                     if cond.get('adjustment_value'):
                                         tax_reduction += Decimal(str(cond['adjustment_value']))
                                     elif cond.get('adjustment_percentage'):
                                         # Reduce the tax amount by a percentage (e.g., 50% reduction = half the tax)
                                         reduction_percent = Decimal(str(cond['adjustment_percentage']))
                                         tax_reduction_pct += reduction_percent
-                                elif cond['type'] == 'TAX_EXEMPTION':
-                                    if cond['met']:
-                                        should_apply_tax = False
-                                        break
 
                 if not should_apply_tax:
                     continue
