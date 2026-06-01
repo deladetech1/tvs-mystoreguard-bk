@@ -488,16 +488,20 @@ class ProductPriceCalculator:
         product_metadata: Optional[Dict[str, str]] = None
     ) -> Dict[str, Any]:
         """
-        Apply tax rules to price (SIMPLE - NO CONDITIONS).
-        
-        This is a simple tax calculation for products display.
-        It applies taxes directly without evaluating conditions.
-        For tax conditions, use SalesPriceCalculator.apply_tax_rules.
-        
+        Apply tax rules to price WITH CONDITIONS.
+
+        Shared tax engine used for product display (products/store/warehouse) and sales
+        checkout. Evaluates each tax rule's conditions (item price, total price, quantity)
+        and grants TAX_EXEMPTION / TAX_REDUCTION relief accordingly, so the tax shown on a
+        product matches what sales verify_price computes for the same price and quantity.
+        SalesPriceCalculator.apply_tax_rules delegates here.
+
         Returns a dict with:
         - final_price: Price after tax
         - tax_amount: Total tax amount
         - taxes_applied: List of taxes applied
+        - tax_rules_applied: All applied tax rules
+        - tax_rule_applied: Primary (first) applied rule, for backward compatibility
         
         Args:
             cursor: Database cursor
@@ -506,8 +510,8 @@ class ProductPriceCalculator:
             org_id: Organization ID
             bus_id: Business ID
             base_price: Price before tax
-            quantity: Quantity (not used, kept for compatibility)
-            item_price: Item price (not used, kept for compatibility)
+            quantity: Quantity (for tax rule conditions; defaults to 1 for display)
+            item_price: Item price (for tax rule conditions; defaults to base_price)
             location_id: Optional location ID
             sku: Optional SKU
             product_metadata: Optional dict with metadata IDs
@@ -516,6 +520,9 @@ class ProductPriceCalculator:
             Dict with final_price, tax_amount, and taxes_applied
         """
         try:
+            if item_price is None:
+                item_price = base_price
+
             # Get applicable tax rules
             rule_conditions = [
                 "r.tenant_id = %s",
@@ -559,7 +566,7 @@ class ProductPriceCalculator:
             rule_conditions.append(f"({' OR '.join(target_conditions)})")
             where_clause = " AND ".join(rule_conditions)
             
-            # Get applicable tax rules with tax details (NO CONDITIONS CHECK)
+            # Get applicable tax rules with tax details
             cursor.execute(
                 f"""SELECT r.id as tax_rule_id, r.name as tax_rule_name, r.rule_type, r.rule_target_id, r.priority,
                        r.tax_id, t.rate, t.is_inclusive, t.name as tax_name
@@ -581,6 +588,18 @@ class ProductPriceCalculator:
                     'tax_amount': Decimal('0'),
                     'taxes_applied': [],
                     'tax_rules_applied': [],
+                    'tax_rule_applied': {
+                        'tax_rule_id': None,
+                        'tax_rule_name': None,
+                        'tax_rule_type': None,
+                        'tax_rule_target_id': None,
+                        'tax_id': None,
+                        'tax_name': None,
+                        'rate': None,
+                        'is_inclusive': None,
+                        'tax_amount': None,
+                        'priority': None
+                    },
                 }
             
             total_tax_amount = Decimal('0')
@@ -589,19 +608,11 @@ class ProductPriceCalculator:
             # Keep full precision during calculations - round only at the end
             current_price = base_price
 
-            # First pass: compute combined inclusive rate for correct extraction
-            combined_inclusive_rate = Decimal('0')
-            for rule in tax_rules:
-                if rule.get('is_inclusive', False):
-                    combined_inclusive_rate += Decimal(str(rule['rate']))
-
-            # Pre-tax base for inclusive taxes (extract all inclusive taxes together)
-            if combined_inclusive_rate > Decimal('0'):
-                pre_tax_base = base_price / (Decimal('1') + (combined_inclusive_rate / Decimal('100')))
-            else:
-                pre_tax_base = base_price
-
-            # Second pass: calculate individual tax amounts
+            # First pass: evaluate each rule's conditions and collect the taxes that apply.
+            # Conditions only ever RELIEVE tax (exempt or reduce it); they never gate whether
+            # tax is charged in the first place. So the default is full tax, and relief is
+            # granted only when the chained conditions are satisfied.
+            applicable_taxes = []
             for rule in tax_rules:
                 tax_rule_id = rule.get('tax_rule_id')
                 tax_rule_name = rule.get('tax_rule_name')
@@ -612,6 +623,133 @@ class ProductPriceCalculator:
                 is_inclusive = rule.get('is_inclusive', False)
                 tax_name = rule.get('tax_name', 'Unknown Tax')
 
+                # Get tax rule conditions
+                cursor.execute(
+                    f"""SELECT condition_type, condition, comparison_operator,
+                           comparison_value, adjustment_value, adjustment_percentage,
+                           logical_operator, priority
+                    FROM {db_settings.MSG_TAX_RULE_CONDITIONS_TABLE}
+                    WHERE tax_rule_id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s
+                    ORDER BY priority ASC""",
+                    (rule['tax_rule_id'], tenant_id, org_id, bus_id)
+                )
+                conditions = cursor.fetchall()
+
+                should_apply_tax = True
+                tax_reduction = Decimal('0')
+                tax_reduction_pct = Decimal('0')
+
+                if conditions:
+                    condition_results = []
+
+                    for condition in conditions:
+                        condition_type = condition['condition_type']
+                        condition_field = condition['condition']
+                        operator = condition['comparison_operator']
+                        comparison_value = Decimal(str(condition['comparison_value']))
+
+                        # Get value to compare
+                        if condition_field == 'IF_ITEM_PRICE':
+                            compare_value = item_price
+                        elif condition_field == 'IF_TOTAL_PRICE':
+                            compare_value = base_price * quantity
+                        elif condition_field == 'IF_ITEM_QTY':
+                            compare_value = Decimal(str(quantity))
+                        else:
+                            compare_value = None
+
+                        if compare_value is None:
+                            continue
+
+                        # Evaluate comparison
+                        condition_met = False
+                        if operator == 'EQUALS':
+                            condition_met = (compare_value == comparison_value)
+                        elif operator == 'NOT_EQUALS':
+                            condition_met = (compare_value != comparison_value)
+                        elif operator == 'GREATER_THAN':
+                            condition_met = (compare_value > comparison_value)
+                        elif operator == 'LESS_THAN':
+                            condition_met = (compare_value < comparison_value)
+                        elif operator == 'GREATER_THAN_OR_EQUALS':
+                            condition_met = (compare_value >= comparison_value)
+                        elif operator == 'LESS_THAN_OR_EQUALS':
+                            condition_met = (compare_value <= comparison_value)
+
+                        condition_results.append({
+                            'met': condition_met,
+                            'type': condition_type,
+                            'logical_operator': condition.get('logical_operator', 'AND'),
+                            'adjustment_value': condition.get('adjustment_value'),
+                            'adjustment_percentage': condition.get('adjustment_percentage')
+                        })
+
+                    # Chain the conditions via their logical operators. If the chain fires,
+                    # grant the relief the matched conditions describe; if it does not fire,
+                    # the normal full tax stays in place.
+                    if condition_results:
+                        final_result = condition_results[0]['met']
+                        for i in range(1, len(condition_results)):
+                            prev_result = condition_results[i-1]
+                            curr_result = condition_results[i]
+
+                            if prev_result['logical_operator'] == 'AND':
+                                final_result = final_result and curr_result['met']
+                            else:  # OR
+                                final_result = final_result or curr_result['met']
+
+                        if final_result:
+                            for cond in condition_results:
+                                # In an OR chain the overall result can be true while
+                                # individual conditions are unmet; only act on matches.
+                                if not cond['met']:
+                                    continue
+                                if cond['type'] == 'TAX_EXEMPTION':
+                                    should_apply_tax = False
+                                    break
+                                elif cond['type'] == 'TAX_REDUCTION':
+                                    if cond.get('adjustment_value'):
+                                        tax_reduction += Decimal(str(cond['adjustment_value']))
+                                    elif cond.get('adjustment_percentage'):
+                                        # Reduce the tax amount by a percentage (e.g. 50% = half the tax)
+                                        tax_reduction_pct += Decimal(str(cond['adjustment_percentage']))
+
+                if not should_apply_tax:
+                    continue
+
+                applicable_taxes.append({
+                    'tax_rule_id': tax_rule_id,
+                    'tax_rule_name': tax_rule_name,
+                    'tax_rule_type': tax_rule_type,
+                    'tax_rule_target_id': tax_rule_target_id,
+                    'tax_id': tax_id,
+                    'tax_rate': tax_rate,
+                    'is_inclusive': is_inclusive,
+                    'tax_name': tax_name,
+                    'tax_reduction': tax_reduction,
+                    'tax_reduction_pct': tax_reduction_pct,
+                    'priority': rule.get('priority', 0)
+                })
+
+            # Compute combined inclusive rate for correct extraction
+            combined_inclusive_rate = Decimal('0')
+            for tax_info in applicable_taxes:
+                if tax_info['is_inclusive']:
+                    combined_inclusive_rate += tax_info['tax_rate']
+
+            # Pre-tax base for inclusive taxes (extract all inclusive taxes together)
+            if combined_inclusive_rate > Decimal('0'):
+                pre_tax_base = base_price / (Decimal('1') + (combined_inclusive_rate / Decimal('100')))
+            else:
+                pre_tax_base = base_price
+
+            # Second pass: calculate individual tax amounts
+            for tax_info in applicable_taxes:
+                tax_rate = tax_info['tax_rate']
+                is_inclusive = tax_info['is_inclusive']
+                tax_reduction = tax_info['tax_reduction']
+                tax_reduction_pct = tax_info['tax_reduction_pct']
+
                 # Inclusive taxes: calculate on pre_tax_base (extract from shelf price)
                 # Exclusive taxes: calculate on base_price (the shelf price customers see)
                 if is_inclusive:
@@ -619,28 +757,33 @@ class ProductPriceCalculator:
                 else:
                     tax_amount = (base_price * tax_rate) / Decimal('100')
 
-                # Keep full precision during calculation
-                tax_amount = max(Decimal('0'), tax_amount)
+                # Apply percentage reduction to the tax amount
+                if tax_reduction_pct > Decimal('0'):
+                    tax_amount = tax_amount * (Decimal('100') - tax_reduction_pct) / Decimal('100')
+                # Apply fixed amount reduction
+                tax_amount = max(Decimal('0'), tax_amount - tax_reduction)
+
+                # Accumulate tax with full precision
                 total_tax_amount += tax_amount
 
                 # Track ALL applied tax rules (not just the first)
                 if tax_amount > 0:
                     tax_rules_applied.append({
-                        'tax_rule_id': tax_rule_id,
-                        'tax_rule_name': tax_rule_name,
-                        'tax_rule_type': tax_rule_type,
-                        'tax_rule_target_id': tax_rule_target_id,
-                        'tax_id': tax_id,
-                        'tax_name': tax_name,
+                        'tax_rule_id': tax_info['tax_rule_id'],
+                        'tax_rule_name': tax_info['tax_rule_name'],
+                        'tax_rule_type': tax_info['tax_rule_type'],
+                        'tax_rule_target_id': tax_info['tax_rule_target_id'],
+                        'tax_id': tax_info['tax_id'],
+                        'tax_name': tax_info['tax_name'],
                         'rate': float(tax_rate),
                         'is_inclusive': is_inclusive,
                         'tax_amount': float(round_money(tax_amount)),
-                        'priority': rule.get('priority', 0)
+                        'priority': tax_info['priority']
                     })
 
                 taxes_applied.append({
-                    'tax_id': tax_id,
-                    'tax_name': tax_name,
+                    'tax_id': tax_info['tax_id'],
+                    'tax_name': tax_info['tax_name'],
                     'rate': float(tax_rate),
                     'is_inclusive': is_inclusive,
                     'amount': float(round_money(tax_amount))  # Round only for display
@@ -653,11 +796,26 @@ class ProductPriceCalculator:
             # Round only at the end after all tax calculations
             final_price = round_money(max(Decimal('0'), current_price))
 
+            # Return the first applied rule as primary for backward compatibility
+            primary_tax_rule_applied = tax_rules_applied[0] if tax_rules_applied else {
+                'tax_rule_id': None,
+                'tax_rule_name': None,
+                'tax_rule_type': None,
+                'tax_rule_target_id': None,
+                'tax_id': None,
+                'tax_name': None,
+                'rate': None,
+                'is_inclusive': None,
+                'tax_amount': None,
+                'priority': None
+            }
+
             return {
                 'final_price': final_price,
                 'tax_amount': round_money(total_tax_amount),
                 'taxes_applied': taxes_applied,
                 'tax_rules_applied': tax_rules_applied,
+                'tax_rule_applied': primary_tax_rule_applied,
             }
             
         except Exception as e:
@@ -671,6 +829,18 @@ class ProductPriceCalculator:
                 'tax_amount': Decimal('0'),
                 'taxes_applied': [],
                 'tax_rules_applied': [],
+                'tax_rule_applied': {
+                    'tax_rule_id': None,
+                    'tax_rule_name': None,
+                    'tax_rule_type': None,
+                    'tax_rule_target_id': None,
+                    'tax_id': None,
+                    'tax_name': None,
+                    'rate': None,
+                    'is_inclusive': None,
+                    'tax_amount': None,
+                    'priority': None
+                },
                 'error': f"Tax rule error: {str(e)}"
             }
 
