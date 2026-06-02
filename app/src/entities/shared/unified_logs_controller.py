@@ -22,7 +22,7 @@ logger = get_logger("unified_logs")
 def get_unified_activity_logs(
     resource_types: Optional[List[str]] = Query(
         None,
-        description="Optional list of resource types to filter by (e.g., rt-expenses, rt-warehouse, rt-shop, rt-clients, rt-creditors, rt-depositors, rt-returns, rt-invoice, rt-sales, rt-suppliers). If omitted, all logs will be returned.",
+        description="Optional list of resource types to filter by (e.g., rt-expenses, rt-warehouse, rt-shop, rt-clients, rt-invoice, rt-sales, rt-suppliers). If omitted, all logs will be returned.",
     ),
     actions: Optional[List[str]] = Query(
         None,
