@@ -63,23 +63,23 @@ jobs:
         id: env
         run: |
           if [[ "${{ github.ref_name }}" == "main" ]]; then
-            echo "env=prod" >> "$GITHUB_OUTPUT"
-            echo "acr_name=${{ vars.PROD_CONTAINER_REGISTRY_NAME }}" >> "$GITHUB_OUTPUT"
+            echo "env=prd" >> "$GITHUB_OUTPUT"
+            echo "acr_name=tvssnprdacr" >> "$GITHUB_OUTPUT"
             echo "subscription_id=${{ secrets.TROVESUITE_PROD_AZURE_SUBSCRIPTION_ID }}" >> "$GITHUB_OUTPUT"
-            echo "container_app_name=trovesuite-prod-mystoreguard-ca" >> "$GITHUB_OUTPUT"
-            echo "resource_group=${{ vars.PROD_RESOURCE_GROUP }}" >> "$GITHUB_OUTPUT"
+            echo "container_app_name=tvs-sn-prd-mystoreguard-ca" >> "$GITHUB_OUTPUT"
+            echo "resource_group=tvs-sn-prd-mystoreguard-rg" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.ref_name }}" == "bgclt-prod" ]]; then
-            echo "env=bgclt-prod" >> "$GITHUB_OUTPUT"
-            echo "acr_name=tvsbgcltprodacr" >> "$GITHUB_OUTPUT"
+            echo "env=bgclt-prd" >> "$GITHUB_OUTPUT"
+            echo "acr_name=tvssnbgcltprdacr" >> "$GITHUB_OUTPUT"
             echo "subscription_id=149c2fed-e354-4dd3-9fd8-4c0448ccaf71" >> "$GITHUB_OUTPUT"
-            echo "container_app_name=tvs-bgclt-prod-mystoreguard-ca" >> "$GITHUB_OUTPUT"
-            echo "resource_group=tvs-bgclt-prod-appservers-rg" >> "$GITHUB_OUTPUT"
+            echo "container_app_name=tvs-sn-bgclt-prd-mystoreguard-ca" >> "$GITHUB_OUTPUT"
+            echo "resource_group=tvs-sn-bgclt-prd-mystoreguard-rg" >> "$GITHUB_OUTPUT"
           else
-            echo "env=dev" >> "$GITHUB_OUTPUT"
-            echo "acr_name=${{ vars.DEV_CONTAINER_REGISTRY_NAME }}" >> "$GITHUB_OUTPUT"
+            echo "env=stg" >> "$GITHUB_OUTPUT"
+            echo "acr_name=tvssnstgacr" >> "$GITHUB_OUTPUT"
             echo "subscription_id=${{ secrets.TROVESUITE_DEV_AZURE_SUBSCRIPTION_ID }}" >> "$GITHUB_OUTPUT"
-            echo "container_app_name=trovesuite-dev-mystoreguard-ca" >> "$GITHUB_OUTPUT"
-            echo "resource_group=${{ vars.DEV_RESOURCE_GROUP }}" >> "$GITHUB_OUTPUT"
+            echo "container_app_name=tvs-sn-stg-mystoreguard-ca" >> "$GITHUB_OUTPUT"
+            echo "resource_group=tvs-sn-stg-mystoreguard-rg" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Azure Login (OIDC)
@@ -132,20 +132,20 @@ jobs:
         id: env
         run: |
           if [[ "${{ github.ref_name }}" == "main" ]]; then
-            echo "env=prod" >> "$GITHUB_OUTPUT"
+            echo "env=prd" >> "$GITHUB_OUTPUT"
             echo "subscription_id=${{ secrets.TROVESUITE_PROD_AZURE_SUBSCRIPTION_ID }}" >> "$GITHUB_OUTPUT"
-            echo "function_app_name=trovesuite-prod-mystoreguard-func" >> "$GITHUB_OUTPUT"
-            echo "resource_group=${{ vars.PROD_RESOURCE_GROUP }}" >> "$GITHUB_OUTPUT"
+            echo "function_app_name=tvs-sn-prd-mystoreguard-func" >> "$GITHUB_OUTPUT"
+            echo "resource_group=tvs-sn-prd-mystoreguard-rg" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.ref_name }}" == "bgclt-prod" ]]; then
-            echo "env=bgclt-prod" >> "$GITHUB_OUTPUT"
+            echo "env=bgclt-prd" >> "$GITHUB_OUTPUT"
             echo "subscription_id=149c2fed-e354-4dd3-9fd8-4c0448ccaf71" >> "$GITHUB_OUTPUT"
-            echo "function_app_name=tvs-bgclt-prod-mystoreguard-func" >> "$GITHUB_OUTPUT"
-            echo "resource_group=tvs-bgclt-prod-appservers-rg" >> "$GITHUB_OUTPUT"
+            echo "function_app_name=tvs-sn-bgclt-prd-mystoreguard-func" >> "$GITHUB_OUTPUT"
+            echo "resource_group=tvs-sn-bgclt-prd-mystoreguard-rg" >> "$GITHUB_OUTPUT"
           else
-            echo "env=dev" >> "$GITHUB_OUTPUT"
+            echo "env=stg" >> "$GITHUB_OUTPUT"
             echo "subscription_id=${{ secrets.TROVESUITE_DEV_AZURE_SUBSCRIPTION_ID }}" >> "$GITHUB_OUTPUT"
-            echo "function_app_name=trovesuite-dev-mystoreguard-func" >> "$GITHUB_OUTPUT"
-            echo "resource_group=${{ vars.DEV_RESOURCE_GROUP }}" >> "$GITHUB_OUTPUT"
+            echo "function_app_name=tvs-sn-stg-mystoreguard-func" >> "$GITHUB_OUTPUT"
+            echo "resource_group=tvs-sn-stg-mystoreguard-rg" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Set up Python
