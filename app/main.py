@@ -130,6 +130,28 @@ app.add_exception_handler(Exception, generic_exception_handler)
 app.add_middleware(LoggingMiddleware)
 app.add_middleware(SecurityLoggingMiddleware)
 
+
+# Catch unhandled exceptions HERE, inside CORSMiddleware, and convert them to a
+# JSONResponse. This middleware is registered before CORSMiddleware below, so it
+# ends up *inside* the CORS layer: the error response it returns flows back out
+# through CORSMiddleware and receives the Access-Control-Allow-Origin header.
+#
+# Without this, an unhandled exception propagates up to Starlette's
+# ServerErrorMiddleware (which sits OUTSIDE CORSMiddleware). The resulting 500
+# response has no CORS headers, so the browser reports it as a CORS failure
+# ("No 'Access-Control-Allow-Origin' header is present") and the real server
+# error is hidden from the frontend.
+@app.middleware("http")
+async def cors_safe_exception_middleware(request, call_next):
+    try:
+        return await call_next(request)
+    except Exception as exc:
+        # HTTPException / ResponseException are already handled by their own
+        # handlers in the inner ExceptionMiddleware, so only genuinely unhandled
+        # exceptions reach here. generic_exception_handler logs and returns a 500.
+        return await generic_exception_handler(request, exc)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=db_settings.cors_origins_list,
