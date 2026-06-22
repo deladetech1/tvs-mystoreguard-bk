@@ -1,11 +1,11 @@
 name: Build & Deploy MyStoreGuard Backend (TVS)
 
 on:
+  # Prod (main / bgclt-prod) deploys are MANUAL — use the Actions "Run workflow"
+  # button (workflow_dispatch) on that branch. Only dev auto-deploys on push.
   push:
     branches:
-      - main
       - dev
-      - bgclt-prod
     paths:
       - "app/**"
       - "func/**"
@@ -47,9 +47,30 @@ jobs:
               - 'func/**'
               - '.github/workflows/build-and-deploy-tvs.yml'
 
+  # Apply this app's schema via the central migrator (tvs-sqlscript) BEFORE the
+  # new image rolls out. Branch → target:
+  #   main        → saas / prod            dev → saas / dev
+  #   bgclt-prod  → enterprise-bgclt / prod
+  # DATABASE_URL + prod reviewers live on tvs-sqlscript's <scope>-<environment>
+  # environments — never in this repo. `secrets: inherit` forwards PACKAGES_TOKEN
+  # so the reusable workflow can check out the migrator source.
+  migrate:
+    name: Migrate database (tvs-sqlscript)
+    needs: detect-changes
+    if: >-
+      needs.detect-changes.outputs.app_changed == 'true'
+      || needs.detect-changes.outputs.func_changed == 'true'
+      || github.event_name == 'workflow_dispatch'
+    uses: deladetech1/tvs-sqlscript/.github/workflows/migrate.yml@main
+    with:
+      scope: ${{ github.ref_name == 'bgclt-prod' && 'enterprise-bgclt' || 'saas' }}
+      environment: ${{ github.ref_name == 'dev' && 'dev' || 'prod' }}
+      module: mystoreguard
+    secrets: inherit
+
   build-and-deploy-app:
     name: Build & Deploy Container App
-    needs: detect-changes
+    needs: [detect-changes, migrate]
     if: needs.detect-changes.outputs.app_changed == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
@@ -64,29 +85,29 @@ jobs:
         run: |
           if [[ "${{ github.ref_name }}" == "main" ]]; then
             echo "env=prod" >> "$GITHUB_OUTPUT"
-            echo "acr_name=tvsprodacr" >> "$GITHUB_OUTPUT"
-            echo "subscription_id=81e2c7de-1a2f-4947-9fb9-cdd43f54a8ac" >> "$GITHUB_OUTPUT"
+            echo "acr_name=${{ vars.TVS_PROD_ACR }}" >> "$GITHUB_OUTPUT"
+            echo "subscription_id=${{ vars.TVS_PROD_SUBSCRIPTION_ID }}" >> "$GITHUB_OUTPUT"
             echo "container_app_name=tvs-prod-mystoreguard-ca" >> "$GITHUB_OUTPUT"
-            echo "resource_group=tvs-prod-appservers-rg" >> "$GITHUB_OUTPUT"
+            echo "resource_group=${{ vars.TVS_PROD_APPSERVERS_RG }}" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.ref_name }}" == "bgclt-prod" ]]; then
             echo "env=bgclt-prod" >> "$GITHUB_OUTPUT"
-            echo "acr_name=bgcltprodacr" >> "$GITHUB_OUTPUT"
-            echo "subscription_id=149c2fed-e354-4dd3-9fd8-4c0448ccaf71" >> "$GITHUB_OUTPUT"
+            echo "acr_name=${{ vars.BGCLT_PROD_ACR }}" >> "$GITHUB_OUTPUT"
+            echo "subscription_id=${{ vars.BGCLT_SUBSCRIPTION_ID }}" >> "$GITHUB_OUTPUT"
             echo "container_app_name=bgclt-prod-mystoreguard-ca" >> "$GITHUB_OUTPUT"
-            echo "resource_group=bgclt-prod-appservers-rg" >> "$GITHUB_OUTPUT"
+            echo "resource_group=${{ vars.BGCLT_PROD_APPSERVERS_RG }}" >> "$GITHUB_OUTPUT"
           else
             echo "env=dev" >> "$GITHUB_OUTPUT"
-            echo "acr_name=tvsdevacr" >> "$GITHUB_OUTPUT"
-            echo "subscription_id=94e81654-0f7e-46ea-9f21-c0640cdc6c97" >> "$GITHUB_OUTPUT"
+            echo "acr_name=${{ vars.TVS_DEV_ACR }}" >> "$GITHUB_OUTPUT"
+            echo "subscription_id=${{ vars.TVS_DEV_SUBSCRIPTION_ID }}" >> "$GITHUB_OUTPUT"
             echo "container_app_name=tvs-dev-mystoreguard-ca" >> "$GITHUB_OUTPUT"
-            echo "resource_group=tvs-dev-appservers-rg" >> "$GITHUB_OUTPUT"
+            echo "resource_group=${{ vars.TVS_DEV_APPSERVERS_RG }}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
-          client-id: ${{ github.ref_name == 'bgclt-prod' && '3d23bd3a-85c1-4242-8e08-c7b8592b01f6' || secrets.TROVESUITE_AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          client-id: ${{ github.ref_name == 'bgclt-prod' && vars.BGCLT_AZURE_CLIENT_ID || vars.TVS_AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.TVS_TENANT_ID }}
           subscription-id: ${{ steps.env.outputs.subscription_id }}
 
       - name: Login to Azure Container Registry
@@ -118,7 +139,7 @@ jobs:
 
   deploy-functions:
     name: Deploy Azure Functions
-    needs: detect-changes
+    needs: [detect-changes, migrate]
     if: needs.detect-changes.outputs.func_changed == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
@@ -133,19 +154,19 @@ jobs:
         run: |
           if [[ "${{ github.ref_name }}" == "main" ]]; then
             echo "env=prod" >> "$GITHUB_OUTPUT"
-            echo "subscription_id=81e2c7de-1a2f-4947-9fb9-cdd43f54a8ac" >> "$GITHUB_OUTPUT"
+            echo "subscription_id=${{ vars.TVS_PROD_SUBSCRIPTION_ID }}" >> "$GITHUB_OUTPUT"
             echo "function_app_name=tvs-prod-mystoreguard-func" >> "$GITHUB_OUTPUT"
-            echo "resource_group=tvs-prod-appservers-rg" >> "$GITHUB_OUTPUT"
+            echo "resource_group=${{ vars.TVS_PROD_APPSERVERS_RG }}" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.ref_name }}" == "bgclt-prod" ]]; then
             echo "env=bgclt-prod" >> "$GITHUB_OUTPUT"
-            echo "subscription_id=149c2fed-e354-4dd3-9fd8-4c0448ccaf71" >> "$GITHUB_OUTPUT"
+            echo "subscription_id=${{ vars.BGCLT_SUBSCRIPTION_ID }}" >> "$GITHUB_OUTPUT"
             echo "function_app_name=bgclt-prod-mystoreguard-func" >> "$GITHUB_OUTPUT"
-            echo "resource_group=bgclt-prod-appservers-rg" >> "$GITHUB_OUTPUT"
+            echo "resource_group=${{ vars.BGCLT_PROD_APPSERVERS_RG }}" >> "$GITHUB_OUTPUT"
           else
             echo "env=dev" >> "$GITHUB_OUTPUT"
-            echo "subscription_id=94e81654-0f7e-46ea-9f21-c0640cdc6c97" >> "$GITHUB_OUTPUT"
+            echo "subscription_id=${{ vars.TVS_DEV_SUBSCRIPTION_ID }}" >> "$GITHUB_OUTPUT"
             echo "function_app_name=tvs-dev-mystoreguard-func" >> "$GITHUB_OUTPUT"
-            echo "resource_group=tvs-dev-appservers-rg" >> "$GITHUB_OUTPUT"
+            echo "resource_group=${{ vars.TVS_DEV_APPSERVERS_RG }}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Set up Python
@@ -161,8 +182,8 @@ jobs:
       - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
-          client-id: ${{ github.ref_name == 'bgclt-prod' && '3d23bd3a-85c1-4242-8e08-c7b8592b01f6' || secrets.TROVESUITE_AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          client-id: ${{ github.ref_name == 'bgclt-prod' && vars.BGCLT_AZURE_CLIENT_ID || vars.TVS_AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.TVS_TENANT_ID }}
           subscription-id: ${{ steps.env.outputs.subscription_id }}
 
       - name: Deploy Azure Functions
