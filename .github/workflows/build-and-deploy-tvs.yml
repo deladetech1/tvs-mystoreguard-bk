@@ -47,30 +47,9 @@ jobs:
               - 'func/**'
               - '.github/workflows/build-and-deploy-tvs.yml'
 
-  # Apply this app's schema via the central migrator (tvs-sqlscript) BEFORE the
-  # new image rolls out. Branch → target:
-  #   main        → saas / prod            dev → saas / dev
-  #   bgclt-prod  → enterprise-bgclt / prod
-  # DATABASE_URL + prod reviewers live on tvs-sqlscript's <scope>-<environment>
-  # environments — never in this repo. `secrets: inherit` forwards PACKAGES_TOKEN
-  # so the reusable workflow can check out the migrator source.
-  migrate:
-    name: Migrate database (tvs-sqlscript)
-    needs: detect-changes
-    if: >-
-      needs.detect-changes.outputs.app_changed == 'true'
-      || needs.detect-changes.outputs.func_changed == 'true'
-      || github.event_name == 'workflow_dispatch'
-    uses: deladetech1/tvs-sqlscript/.github/workflows/migrate.yml@master
-    with:
-      scope: ${{ github.ref_name == 'bgclt-prod' && 'enterprise-bgclt' || 'saas' }}
-      environment: ${{ github.ref_name == 'dev' && 'dev' || 'prod' }}
-      module: mystoreguard
-    secrets: inherit
-
   build-and-deploy-app:
     name: Build & Deploy Container App
-    needs: [detect-changes, migrate]
+    needs: detect-changes
     if: needs.detect-changes.outputs.app_changed == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
@@ -139,7 +118,7 @@ jobs:
 
   deploy-functions:
     name: Deploy Azure Functions
-    needs: [detect-changes, migrate]
+    needs: detect-changes
     if: needs.detect-changes.outputs.func_changed == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
