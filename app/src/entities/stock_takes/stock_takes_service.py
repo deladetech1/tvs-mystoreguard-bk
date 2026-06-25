@@ -632,7 +632,7 @@ class StockTakesService:
                     # Pull the per-delivery breakdown at this location, oldest first (FIFO).
                     # batch_locations links to a product via its purchase batch.
                     cursor.execute(
-                        f"""SELECT bl.id, bl.qty
+                        f"""SELECT bl.id, bl.qty, bl.purchase_batche_id
                         FROM {db_settings.MSG_BATCH_LOCATIONS_TABLE} bl
                         JOIN {db_settings.MSG_PURCHASE_BATCHES_TABLE} pb
                             ON bl.purchase_batche_id = pb.id AND bl.tenant_id = pb.tenant_id
@@ -652,9 +652,11 @@ class StockTakesService:
                             error="BREAKDOWN_INSUFFICIENT",
                         )
 
-                    # Deduct FIFO. We touch ONLY msg_batch_locations here — NOT
-                    # purchase_batches.qty_remaining — so lost stock does not reappear
-                    # in the available-to-distribute pool.
+                    # Deduct FIFO, and log one OUT movement per delivery touched, attributed
+                    # to that delivery's batch so it appears in the batch movement history.
+                    # We touch ONLY msg_batch_locations — NOT purchase_batches.qty_remaining —
+                    # so lost stock does not reappear in the available-to-distribute pool.
+                    # All movements for one correction share reference_id = stock_take_id.
                     remaining = amount
                     for b in breakdown:
                         if remaining <= 0:
@@ -666,6 +668,20 @@ class StockTakesService:
                             WHERE tenant_id = %s AND org_id = %s AND bus_id = %s AND id = %s""",
                             (take, tenant_id, org_id, bus_id, b["id"]),
                         )
+                        mv_id = Helper.generate_unique_identifier(prefix="mov")
+                        cursor.execute(
+                            f"""INSERT INTO {db_settings.MSG_PRODUCT_MOVEMENTS_TABLE}
+                            (id, tenant_id, org_id, bus_id, product_id, batch_id, location_type, location_id,
+                             movement_type, qty, reason, reference_id, cdate, ctime, cdatetime, created_by)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                            (
+                                mv_id, tenant_id, org_id, bus_id, product_id, b["purchase_batche_id"],
+                                location_type, loc_id, "OUT", take,
+                                "STOCK_TAKE_ADJUSTMENT", stock_take_id, cdate, ctime, cdatetime, user_id,
+                            ),
+                        )
+                        if movement_id is None:
+                            movement_id = mv_id  # first movement; the rest share reference_id
                         remaining -= take
 
                     # Reduce the location total
@@ -674,21 +690,6 @@ class StockTakesService:
                         WHERE tenant_id = %s AND org_id = %s AND bus_id = %s
                         AND loc_id = %s AND product_id = %s""",
                         (amount, user_id, tenant_id, org_id, bus_id, loc_id, product_id),
-                    )
-
-                    # Log the loss (OUT). batch_id is NULL: the loss can span several FIFO
-                    # deliveries; all rows for this correction share reference_id = stock_take_id.
-                    movement_id = Helper.generate_unique_identifier(prefix="mov")
-                    cursor.execute(
-                        f"""INSERT INTO {db_settings.MSG_PRODUCT_MOVEMENTS_TABLE}
-                        (id, tenant_id, org_id, bus_id, product_id, batch_id, location_type, location_id,
-                         movement_type, qty, reason, reference_id, cdate, ctime, cdatetime, created_by)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                        (
-                            movement_id, tenant_id, org_id, bus_id, product_id, None,
-                            location_type, loc_id, "OUT", amount,
-                            "STOCK_TAKE_ADJUSTMENT", stock_take_id, cdate, ctime, cdatetime, user_id,
-                        ),
                     )
 
                 # Persist the new correction only when one was applied this call; otherwise
