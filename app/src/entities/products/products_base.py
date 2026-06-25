@@ -11,6 +11,11 @@ DeleteStatusType = Literal['PENDING', 'DELETED', 'NOT_DELETED']
 BatchStatusType = Literal['RECEIVED', 'PARTIALLY_ALLOCATED', 'FULLY_ALLOCATED', 'VOID', 'CANCELLED']
 BatchType = Literal['PURCHASE', 'OPENING_STOCK', 'ADJUSTMENT']
 
+# Product split (break-bulk) literals
+SplitPriceModeType = Literal['AUTO', 'MANUAL']
+SplitDestinationType = Literal['EXISTING', 'NEW']
+SplitStatusType = Literal['ACTIVE', 'REVERSED']
+
 
 # =====================================================
 # PRODUCT BASE DTOs
