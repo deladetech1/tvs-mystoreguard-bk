@@ -358,13 +358,12 @@ class GetProductStatisticsServiceReadDto(ProductStatisticsReadBase):
     """Service DTO for product statistics"""
     pass
 
-
 # =====================================================
-# PRODUCT SPLIT (BREAK-BULK) READ DTOs
+# SPLIT (BREAK-BULK) READ DTOs
 # =====================================================
 
 class SourceBatchConsumedReadDto(BaseModel):
-    """A single source batch that was consumed by a split"""
+    """A single source batch that was consumed by a split item"""
     batch_id: str = Field(..., description="Source batch ID")
     batch_number: Optional[str] = Field(None, description="Source batch number")
     batch_location_id: Optional[str] = Field(None, description="Source batch-location row consumed (STORE/WAREHOUSE scope only)")
@@ -373,32 +372,59 @@ class SourceBatchConsumedReadDto(BaseModel):
     base_selling_price: Optional[float] = Field(None, description="Selling price of the source batch")
 
 
-class ProductSplitReadBase(BaseModel):
-    """Base read DTO for a product split record"""
-    id: str = Field(..., description="Split ID")
+class SplitItemReadDto(BaseModel):
+    """One product line within a split (independently reversible)."""
+    id: str = Field(..., description="Split item ID")
+    split_id: str = Field(..., description="Parent split ID")
     tenant_id: str
     org_id: str
     bus_id: str
+
     source_product_id: str = Field(..., description="Product the stock was taken from")
     source_product_name: Optional[str] = Field(None, description="Source product name")
     source_qty_taken: int = Field(..., description="Number of source units broken up")
     divisor: int = Field(..., description="Units each source unit became")
-    source_scope: str = Field('PRODUCT', description="Where stock was drawn from: PRODUCT, STORE, or WAREHOUSE")
-    location_type: Optional[str] = Field(None, description="STORE or WAREHOUSE (location-scoped splits only)")
-    loc_id: Optional[str] = Field(None, description="Location ID the split happened at (location-scoped splits only)")
+
     derived_product_id: str = Field(..., description="Product the new units were added to")
     derived_product_name: Optional[str] = Field(None, description="Derived product name")
     derived_batch_id: str = Field(..., description="Batch created to hold the new units")
     derived_batch_number: Optional[str] = Field(None, description="Derived batch number")
     derived_qty: int = Field(..., description="Total smaller units created (source_qty_taken * divisor)")
+
     unit_cost_price: Optional[float] = Field(None, description="Cost price assigned per smaller unit")
     unit_selling_price: Optional[float] = Field(None, description="Selling price assigned per smaller unit")
     price_mode: str = Field(..., description="AUTO or MANUAL")
     currency_id: Optional[str] = Field(None, description="Currency inherited from the source batch")
-    description: Optional[str] = Field(None, description="Optional note/reason recorded for this split")
-    split_batch_id: Optional[str] = Field(None, description="Group ID shared by all splits created together in one /split-batch call (null for single splits)")
+
     status: str = Field(..., description="ACTIVE or REVERSED")
     source_batches: List[SourceBatchConsumedReadDto] = Field(default_factory=list, description="Source batches consumed and how much was taken from each")
+
+    cdate: str
+    ctime: str
+    cdatetime: datetime
+    created_by: Optional[str] = None
+    reversed_by: Optional[str] = None
+    reversed_at: Optional[datetime] = None
+
+
+class SplitReadBase(BaseModel):
+    """A split (the parent you open) with its product line items inside."""
+    id: str = Field(..., description="Split ID")
+    split_number: Optional[str] = Field(None, description="Human-friendly split number (e.g. SPL-20260625-001)")
+    tenant_id: str
+    org_id: str
+    bus_id: str
+
+    description: Optional[str] = Field(None, description="Optional note/reason for the split")
+    source_scope: str = Field('STORE', description="Where stock was drawn from: PRODUCT, STORE, or WAREHOUSE")
+    location_type: Optional[str] = Field(None, description="STORE or WAREHOUSE (location-scoped splits only)")
+    loc_id: Optional[str] = Field(None, description="Location the split happened at (location-scoped splits only)")
+
+    status: str = Field(..., description="ACTIVE, PARTIALLY_REVERSED, or REVERSED")
+    item_count: int = Field(default=0, description="Number of product items in this split")
+
+    items: List[SplitItemReadDto] = Field(default_factory=list, description="The product lines split under this split")
+
     cdate: str
     ctime: str
     cdatetime: datetime
@@ -408,66 +434,65 @@ class ProductSplitReadBase(BaseModel):
     reversed_at: Optional[datetime] = None
 
 
-class SplitProductControllerReadDto(ProductSplitReadBase):
-    """Controller DTO for split product read operations"""
+class CreateSplitControllerReadDto(SplitReadBase):
+    """Controller DTO for create split"""
     pass
 
 
-class SplitProductServiceReadDto(ProductSplitReadBase):
-    """Service DTO for split product read operations"""
+class CreateSplitServiceReadDto(SplitReadBase):
+    """Service DTO for create split"""
     pass
 
 
-class GetSplitsControllerReadDto(ProductSplitReadBase):
+class GetSplitControllerReadDto(SplitReadBase):
+    """Controller DTO for a single split"""
+    pass
+
+
+class GetSplitServiceReadDto(SplitReadBase):
+    """Service DTO for a single split"""
+    pass
+
+
+class GetSplitsControllerReadDto(SplitReadBase):
     """Controller DTO for listing splits"""
     pass
 
 
-class GetSplitsServiceReadDto(ProductSplitReadBase):
+class GetSplitsServiceReadDto(SplitReadBase):
     """Service DTO for listing splits"""
     pass
 
 
-class ReverseSplitReadBase(BaseModel):
-    """Base read DTO for reverse split result"""
-    split_id: str
-    message: str
-
-
-class ReverseSplitControllerReadDto(ReverseSplitReadBase):
-    """Controller DTO for reverse split read operations"""
-    pass
-
-
-class ReverseSplitServiceReadDto(ReverseSplitReadBase):
-    """Service DTO for reverse split read operations"""
-    pass
-
+# =====================================================
+# SPLIT STATISTICS READ DTOs
+# =====================================================
 
 class SplitStatisticsReadBase(BaseModel):
-    """Statistics for product splits at the current location.
+    """Statistics for splits at the current location.
 
-    Counts cover all splits; quantity & money cover ACTIVE splits only (reversed
-    splits were undone, so they don't add to standing quantity/value). PRODUCT-scope
-    (pool) splits are not location-bound and are excluded from these per-location stats.
+    Counts cover splits/items; quantity & money cover ACTIVE items only (reversed items
+    were undone). PRODUCT-scope (pool) splits are not location-bound and are excluded.
     """
     loc_id: Optional[str] = Field(None, description="Location these stats are scoped to")
 
-    # --- Counts & health ---
+    # counts & health
     total_splits: int = Field(default=0, description="All splits at this location")
-    active_splits: int = Field(default=0, description="Splits still in effect")
-    reversed_splits: int = Field(default=0, description="Splits that were reversed")
-    reversal_rate: float = Field(default=0, description="Percentage of splits reversed (0-100)")
+    active_splits: int = Field(default=0, description="Splits still fully active")
+    reversed_splits: int = Field(default=0, description="Splits fully reversed")
+    partially_reversed_splits: int = Field(default=0, description="Splits with some items reversed")
+    reversal_rate: float = Field(default=0, description="Percentage of splits fully reversed (0-100)")
     splits_today: int = Field(default=0, description="Splits created today")
     splits_last_7_days: int = Field(default=0, description="Splits created in the last 7 days")
     splits_last_30_days: int = Field(default=0, description="Splits created in the last 30 days")
 
-    # --- Quantity flow (active splits) ---
+    # quantity flow (ACTIVE items)
+    total_items: int = Field(default=0, description="Total product items split")
     total_source_qty_taken: int = Field(default=0, description="Total source units broken up")
     total_derived_qty: int = Field(default=0, description="Total smaller units produced")
-    average_divisor: float = Field(default=0, description="Average divisor across splits")
+    average_divisor: float = Field(default=0, description="Average divisor across items")
 
-    # --- Money (active splits) ---
+    # money (ACTIVE items)
     derived_selling_value: float = Field(default=0, description="Sum of unit_selling_price x derived_qty")
     derived_cost_value: float = Field(default=0, description="Sum of unit_cost_price x derived_qty")
     original_selling_value: float = Field(default=0, description="Selling value of the source units before splitting")
@@ -482,4 +507,3 @@ class GetSplitStatisticsControllerReadDto(SplitStatisticsReadBase):
 class GetSplitStatisticsServiceReadDto(SplitStatisticsReadBase):
     """Service DTO for split statistics"""
     pass
-

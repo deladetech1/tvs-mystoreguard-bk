@@ -2,55 +2,48 @@
 
 Base path: `/api/v1/products`. All endpoints require auth and the permission
 `permission-msg-products-split` (read-only ones also accept `permission-msg-products-get`).
-The store/warehouse **location is taken from the auth context** — it is never sent in the body.
+The store/warehouse **location is taken from the auth context** — never sent in the body.
+
+## Model: a Split has many Items
+
+A **Split** is the parent you open. It contains one or more **Items** — one per product you
+broke up (pole, curtain, …). Each item is independently reversible; the split header shows
+overall status (`ACTIVE` / `PARTIALLY_REVERSED` / `REVERSED`).
+
+```
+Split  S-0007  "Counter break-bulk"  Store A  [PARTIALLY_REVERSED]
+├─ item: Pole    → 5 ÷2 → 10 Half Poles    [ACTIVE]
+└─ item: Curtain → 2 ÷2 → 4 Half Curtains  [REVERSED]
+```
 
 ---
 
 ## Response envelope (every endpoint)
-
 ```ts
 type Respons<T> = {
   success: boolean;
-  detail: string | null;        // human-readable message
-  error: string | null;         // error code when success=false, else null
-  status_code: number;          // 200, 400, 403, ...
-  data: T[] | null;             // payload — ALWAYS an array (single results = 1-item array)
-  pagination: {                 // present only on list endpoints, else null
-    page: number;
-    size: number;
-    total: number;
-    total_pages: number;
-    has_next: boolean;
-  } | null;
+  detail: string | null;
+  error: string | null;          // error code when success=false, else null
+  status_code: number;
+  data: T[] | null;              // payload — ALWAYS an array (single result = 1-item array)
+  pagination: { page: number; size: number; total: number; total_pages: number; has_next: boolean } | null;
 };
 ```
-
-### Error codes you may get back (`error` field)
-| code | meaning |
-|------|---------|
-| `VALIDATION_ERROR` | bad/missing input (see `detail`) |
-| `NOT_FOUND` | source/destination product, supplier, UoM, or split not found |
-| `INSUFFICIENT_STOCK` | not enough stock to take the requested quantity |
-| `CANNOT_REVERSE` | some split units already sold/moved — reversal blocked |
-| `ALREADY_REVERSED` | the split was already reversed |
-| `BATCH_ROLLED_BACK` | a batch op failed; **nothing** was applied/reversed |
-| `INTERNAL_ERROR` | unexpected server error |
-
----
+Error codes: `VALIDATION_ERROR`, `NOT_FOUND`, `INSUFFICIENT_STOCK`, `CANNOT_REVERSE`,
+`ALREADY_REVERSED`, `INTERNAL_ERROR`.
 
 ## Enums
-
 ```ts
-type SourceScope  = "PRODUCT" | "STORE" | "WAREHOUSE";  // default "STORE"
-type PriceMode    = "AUTO" | "MANUAL";                  // default "AUTO"
-type Destination  = "EXISTING" | "NEW";                 // required
-type SplitStatus  = "ACTIVE" | "REVERSED";
+type SourceScope   = "PRODUCT" | "STORE" | "WAREHOUSE";  // default "STORE"
+type PriceMode     = "AUTO" | "MANUAL";                  // default "AUTO"
+type Destination   = "EXISTING" | "NEW";                 // required per item
+type ItemStatus    = "ACTIVE" | "REVERSED";
+type SplitStatus   = "ACTIVE" | "PARTIALLY_REVERSED" | "REVERSED";
 ```
 
 ---
 
-## Core payload: `Split`
-Returned by `POST /split`, `POST /split-batch`, `GET /splits`, `GET /split-detail`.
+## Payload types
 
 ```ts
 type SourceBatchConsumed = {
@@ -62,58 +55,59 @@ type SourceBatchConsumed = {
   base_selling_price: number | null;
 };
 
-type Split = {
+type SplitItem = {
   id: string;
-  tenant_id: string;
-  org_id: string;
-  bus_id: string;
-
+  split_id: string;
+  tenant_id: string; org_id: string; bus_id: string;
   source_product_id: string;
   source_product_name: string | null;
   source_qty_taken: number;
   divisor: number;
-  source_scope: SourceScope;
-  location_type: "STORE" | "WAREHOUSE" | null;  // null for PRODUCT scope
-  loc_id: string | null;                        // null for PRODUCT scope
-
   derived_product_id: string;
   derived_product_name: string | null;
   derived_batch_id: string;
   derived_batch_number: string | null;
-  derived_qty: number;                          // = source_qty_taken * divisor
-
+  derived_qty: number;                 // source_qty_taken * divisor
   unit_cost_price: number | null;
   unit_selling_price: number | null;
   price_mode: PriceMode;
   currency_id: string | null;
-  description: string | null;          // optional note/reason
-  split_batch_id: string | null;       // group id shared by items split together; null for single splits
-
-  status: SplitStatus;
+  status: ItemStatus;
   source_batches: SourceBatchConsumed[];
+  cdate: string; ctime: string; cdatetime: string;
+  created_by: string | null;
+  reversed_by: string | null;
+  reversed_at: string | null;
+};
 
-  cdate: string;        // "YYYY-MM-DD"
-  ctime: string;        // "HH:MM:SS"
-  cdatetime: string;    // ISO datetime
+type Split = {                          // the parent you open
+  id: string;
+  split_number: string | null;          // e.g. "SPL-20260625-001"
+  tenant_id: string; org_id: string; bus_id: string;
+  description: string | null;
+  source_scope: SourceScope;
+  location_type: "STORE" | "WAREHOUSE" | null;  // null for PRODUCT scope
+  loc_id: string | null;
+  status: SplitStatus;
+  item_count: number;
+  items: SplitItem[];                   // the product lines
+  cdate: string; ctime: string; cdatetime: string;
   created_by: string | null;
   created_by_name: string | null;
   reversed_by: string | null;
-  reversed_at: string | null;   // ISO datetime, set when status="REVERSED"
+  reversed_at: string | null;
 };
 ```
 
 ---
 
-## 1. `POST /products/split` — split one item
+## 1. `POST /products/split` — create a split (one or more items, all-or-none)
 
-Request:
 ```ts
-type SplitRequest = {
+type SplitItemRequest = {
   source_product_id: string;                 // required
   source_qty_taken: number;                  // required, > 0
   divisor: number;                           // required, >= 1
-  source_scope?: SourceScope;                // default "STORE"
-  description?: string | null;               // optional note/reason for this split
   price_mode?: PriceMode;                    // default "AUTO"
   unit_selling_price?: number | null;        // required if price_mode="MANUAL"
   unit_cost_price?: number | null;           // optional override; else source cost / divisor
@@ -124,136 +118,78 @@ type SplitRequest = {
   new_product_bar_code?: string | null;
   new_product_description?: string | null;
   metadata_ids?: string[];                   // default []
-  unit_of_measure_id?: string | null;        // default: source batch's
-  supplier_id?: string | null;               // default: source batch's
+  unit_of_measure_id?: string | null;
+  supplier_id?: string | null;
   size?: string | null;
   expire_date?: string | null;               // "YYYY-MM-DD"
 };
+
+type CreateSplitRequest = {
+  description?: string | null;               // note/reason for the whole split
+  source_scope?: SourceScope;                // default "STORE", applies to every item
+  items: SplitItemRequest[];                 // 1..50
+};
 ```
-Response: `Respons<Split>` (data = 1-item array).
+Response: `Respons<Split>` (the created split, with its items). All-or-none: if any item
+fails, nothing is applied (`success=false`, `data=null`).
 
-Conditional rules (server-enforced):
-- `price_mode="MANUAL"` ⇒ `unit_selling_price` required
-- `destination="EXISTING"` ⇒ `destination_product_id` required
-- `destination="NEW"` ⇒ `new_product_name` required
-
----
-
-## 2. `POST /products/split-batch` — split many (all-or-none)
-
-Request:
+## 2. `PUT /products/reverse-split` — reverse a whole split
 ```ts
-type SplitBatchRequest = { splits: SplitRequest[] };  // 1..50 items
+{ split_id: string }
 ```
-Response: `Respons<Split>` (data = one `Split` per item).
-If any item fails the whole batch is rolled back: `success=false`, `error="BATCH_ROLLED_BACK"`, `data=null`.
+Reverses all still-active items (all-or-none). Response: `Respons<Split>` (the updated split).
 
----
-
-## 3. `PUT /products/reverse-split` — reverse one
-
-Request:
+## 3. `PUT /products/reverse-split-item` — reverse one product item
 ```ts
-type ReverseSplitRequest = { split_id: string };
+{ item_id: string }
 ```
-Response: `Respons<{ split_id: string; message: string }>`.
+Reverses a single item; the others stay. Response: `Respons<Split>` (the updated parent
+split — its `status` becomes `PARTIALLY_REVERSED` or `REVERSED`).
 
----
-
-## 4. `PUT /products/reverse-splits` — reverse one / some / all (all-or-none)
-
-Request:
-```ts
-type ReverseSplitsRequest = { split_ids: string[] };  // 1..50; duplicates ignored
-```
-Response: `Respons<{ split_id: string; message: string }>` (one entry per reversed split).
-If any cannot be reversed: `success=false`, `error="BATCH_ROLLED_BACK"`, nothing reversed.
-
-Examples:
-```json
-{ "split_ids": ["spl_curtain"] }                  // only curtains, leave the pole
-{ "split_ids": ["spl_pole", "spl_curtain"] }      // all of them
-```
-
----
-
-## 5. `GET /products/splits` — list (paginated)
-
-Query params (all optional):
+## 4. `GET /products/splits` — list splits (paginated)
+Query (all optional):
 ```ts
 {
-  source_product_id?: string;
-  status?: SplitStatus;                 // "ACTIVE" | "REVERSED"
-  source_scope?: SourceScope;           // "PRODUCT" | "STORE" | "WAREHOUSE"
-  split_batch_id?: string;              // returns all splits done together in one /split-batch call
-  page?: number;                        // default 1
-  size?: number;                        // default 20, max 100
+  status?: SplitStatus;
+  source_scope?: SourceScope;
+  source_product_id?: string;   // splits that include this source product
+  page?: number;                // default 1
+  size?: number;                // default 20, max 100
 }
 ```
-Response: `Respons<Split>` with `data: Split[]` AND `pagination` populated.
+Response: `Respons<Split>` with `data: Split[]` (each with its items) AND `pagination`.
 
-> **Open a whole batch:** the `POST /split-batch` response returns each `Split` with the
-> same `split_batch_id`. To view that batch later, call
-> `GET /products/splits?split_batch_id=<id>`. Each item is still its own record, so you can
-> reverse any single one (`PUT /products/reverse-split`) or all of them
-> (`PUT /products/reverse-splits` with all their `split_id`s).
+## 5. `GET /products/split-detail` — one split
+Query: `{ split_id: string }` → `Respons<Split>`.
 
----
-
-## 6. `GET /products/split-detail` — one split
-
-Query params:
-```ts
-{ split_id: string }   // required
-```
-Response: `Respons<Split>` (data = 1-item array).
-
----
-
-## 7. `GET /products/split-statistics` — stats for current location
-
-Query params: none (location from auth context).
-
-Response: `Respons<SplitStatistics>`:
+## 6. `GET /products/split-statistics` — stats for current location
+No query (location from auth). Response: `Respons<SplitStatistics>`:
 ```ts
 type SplitStatistics = {
   loc_id: string | null;
-
-  // counts & health (all splits)
-  total_splits: number;
-  active_splits: number;
-  reversed_splits: number;
-  reversal_rate: number;          // 0–100
-
-  splits_today: number;
-  splits_last_7_days: number;
-  splits_last_30_days: number;
-
-  // quantity flow (ACTIVE splits)
-  total_source_qty_taken: number;
-  total_derived_qty: number;
-  average_divisor: number;
-
-  // money (ACTIVE splits)
-  derived_selling_value: number;
-  derived_cost_value: number;
-  original_selling_value: number;
-  rounding_drift: number;         // derived_selling_value - original_selling_value
+  total_splits: number; active_splits: number; reversed_splits: number;
+  partially_reversed_splits: number; reversal_rate: number;  // 0–100
+  splits_today: number; splits_last_7_days: number; splits_last_30_days: number;
+  total_items: number; total_source_qty_taken: number; total_derived_qty: number; average_divisor: number;
+  derived_selling_value: number; derived_cost_value: number;
+  original_selling_value: number; rounding_drift: number;
 };
 ```
-Note: covers STORE/WAREHOUSE splits done at the current location; PRODUCT (pool) splits are not location-bound and are excluded here.
 
 ---
 
-## Example: split request body
+## Example: create a split with two products
 ```json
 {
-  "source_product_id": "prd_pole",
-  "source_qty_taken": 5,
-  "divisor": 2,
+  "description": "Customer wanted halves",
   "source_scope": "STORE",
-  "price_mode": "AUTO",
-  "destination": "NEW",
-  "new_product_name": "Half Pole"
+  "items": [
+    { "source_product_id": "prd_pole",    "source_qty_taken": 5, "divisor": 2,
+      "price_mode": "AUTO", "destination": "NEW", "new_product_name": "Half Pole" },
+    { "source_product_id": "prd_curtain", "source_qty_taken": 2, "divisor": 2,
+      "price_mode": "AUTO", "destination": "NEW", "new_product_name": "Half Curtain" }
+  ]
 }
 ```
+The response `Split` has `items: [pole-item, curtain-item]`. To reverse only the curtain
+later: `PUT /products/reverse-split-item { "item_id": "<curtain item id>" }` — the pole stays.

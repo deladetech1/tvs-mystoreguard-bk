@@ -50,90 +50,61 @@ Prices are rounded to 2 dp (ROUND_HALF_UP). Note `200 ÷ 3 = 66.67`, so three un
    core-platform DB (same way other `permission-msg-products-*` rows are seeded) and grant
    it to the appropriate roles.
 
+## Model: a Split (parent) has Items (lines)
+
+A **split** is the operation you open; it holds one or more **items**, one per product you
+broke up. Each item is independently reversible. The split header status is `ACTIVE`,
+`PARTIALLY_REVERSED` (some items reversed), or `REVERSED` (all reversed). Two tables:
+`msg_product_splits` (header) and `msg_product_split_items` (lines).
+
 ## Endpoints
 
 All under `/api/v1/products`. Require `permission-msg-products-split`.
+Full field/response shapes: see [PRODUCT_SPLIT_API_SCHEMAS.md](PRODUCT_SPLIT_API_SCHEMAS.md).
 
-### `POST /products/split`
+### `POST /products/split` — create a split with 1+ items (all-or-none)
+One transaction: if any item fails, nothing is applied. `source_scope` applies to all items.
 ```jsonc
 {
-  "source_product_id": "prd_pole",
-  "source_qty_taken": 5,          // take 5 poles
-  "divisor": 2,                   // each becomes 2 -> 10 units total
-  "source_scope": "STORE",        // STORE (default) | WAREHOUSE | PRODUCT
-  "price_mode": "AUTO",           // or "MANUAL"
-  "unit_selling_price": null,     // required when price_mode = MANUAL
-  "unit_cost_price": null,        // optional override
-
-  "destination": "NEW",           // "NEW" or "EXISTING"
-
-  // when destination = "EXISTING":
-  "destination_product_id": null,
-
-  // when destination = "NEW":
-  "new_product_name": "Half Pole (10ft)",
-  "new_product_sku": null,
-  "new_product_bar_code": null,
-  "new_product_description": null,
-  "metadata_ids": [],
-
-  // optional batch details (default to the source batch's values):
-  "unit_of_measure_id": null,
-  "supplier_id": null,
-  "size": null,
-  "expire_date": null
-}
-```
-Returns the split record (source/derived product names, derived batch number, per-unit
-prices, consumed source batches).
-
-### `PUT /products/reverse-split`
-```json
-{ "split_id": "spl_xxx" }
-```
-Voids the derived batch and returns the taken quantity to the source. **Only allowed while
-the derived batch is untouched** (none of the split units distributed to a location or
-sold).
-
-### `GET /products/splits`
-Query: `source_product_id?`, `status?` (`ACTIVE`/`REVERSED`), `page`, `size`.
-
-### `GET /products/split-detail`
-Query: `split_id`.
-
-### `POST /products/split-batch` — split many items at once (all-or-none)
-Runs every split in **one transaction**. If any item fails (bad input, insufficient
-stock, …), the whole batch is rolled back and **nothing** changes.
-```json
-{
-  "splits": [
+  "description": "Customer wanted halves",   // optional note for the whole split
+  "source_scope": "STORE",                   // STORE (default) | WAREHOUSE | PRODUCT
+  "items": [
     { "source_product_id": "prd_pole", "source_qty_taken": 5, "divisor": 2,
-      "source_scope": "STORE", "price_mode": "AUTO",
-      "destination": "NEW", "new_product_name": "Half Pole" },
+      "price_mode": "AUTO", "destination": "NEW", "new_product_name": "Half Pole" },
     { "source_product_id": "prd_curtain", "source_qty_taken": 2, "divisor": 2,
-      "source_scope": "STORE", "price_mode": "AUTO",
-      "destination": "NEW", "new_product_name": "Half Curtain" }
+      "price_mode": "MANUAL", "unit_selling_price": 40,
+      "destination": "EXISTING", "destination_product_id": "prd_half_curtain" }
   ]
 }
 ```
-Each item takes the same fields as `POST /products/split`. Returns the created split
-records. Guard: max 50 items per request.
+Returns the `Split` with its `items`. Guard: 1..50 items.
 
-### `PUT /products/reverse-splits` — reverse one, some, or all (all-or-none)
-Pass just the IDs you want to undo — one product, a few, or every split from a batch.
-Runs in one transaction: if any can't be reversed (e.g. some units already sold), the
-whole request is rolled back and **nothing** is reversed.
+### `PUT /products/reverse-split` — reverse a whole split
 ```json
-{ "split_ids": ["spl_curtain"] }          // reverse only curtains, leave the pole
+{ "split_id": "spl_xxx" }
 ```
+Reverses all still-active items (all-or-none). Returns the updated `Split`.
+
+### `PUT /products/reverse-split-item` — reverse one product item (others stay)
 ```json
-{ "split_ids": ["spl_pole", "spl_curtain"] }   // reverse all
+{ "item_id": "spli_curtain" }
 ```
-Guards: duplicate IDs are ignored; max 50 per request.
+Reverses just that item — e.g. undo the curtain, leave the pole. Returns the updated `Split`
+(header becomes `PARTIALLY_REVERSED`, or `REVERSED` once all items are undone).
+
+### `GET /products/splits`
+Query: `status?`, `source_scope?`, `source_product_id?`, `page`, `size`. Returns headers with
+their items.
+
+### `GET /products/split-detail`
+Query: `split_id`. Returns the split with its items.
+
+### `GET /products/split-statistics`
+Stats for the caller's current location.
 
 ## Notes
 
 - For `STORE`/`WAREHOUSE` splits, the location is the caller's current location. To split
   warehouse stock, call from a warehouse context with `source_scope: "WAREHOUSE"`.
-- Reversal requires the derived units to be fully intact (none sold or moved). For location
-  splits the derived batch must still hold the full `derived_qty` on the shelf.
+- An item can be reversed only while its derived units are fully intact (none sold or moved).
+  For location splits the derived batch must still hold the full `derived_qty` on the shelf.

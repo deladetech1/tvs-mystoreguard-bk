@@ -90,8 +90,9 @@ class Settings:
     MSG_PRODUCTS_TABLE = os.getenv("MSG_PRODUCTS_TABLE", "mystoreguard.msg_products")
     MSG_PRODUCT_DOCUMENT_IDS_TABLE = os.getenv("MSG_PRODUCT_DOCUMENT_IDS_TABLE", "mystoreguard.msg_product_document_ids")
     MSG_PURCHASE_BATCHES_TABLE = os.getenv("MSG_PURCHASE_BATCHES_TABLE", "mystoreguard.msg_purchase_batches")
-    # Product splits (break-bulk) table
+    # Product splits (break-bulk): header + line items
     MSG_PRODUCT_SPLITS_TABLE = os.getenv("MSG_PRODUCT_SPLITS_TABLE", "mystoreguard.msg_product_splits")
+    MSG_PRODUCT_SPLIT_ITEMS_TABLE = os.getenv("MSG_PRODUCT_SPLIT_ITEMS_TABLE", "mystoreguard.msg_product_split_items")
 
     # Product metadata assignments table
     MSG_ASSIGN_METADATA_TO_PRODUCTS_TABLE = os.getenv("MSG_ASSIGN_METADATA_TO_PRODUCTS_TABLE", "mystoreguard.msg_assign_metadata_to_products")

@@ -195,117 +195,90 @@ class DeleteMovementServiceWriteDto(DeleteMovementWriteBase):
     """Service DTO for deleting a movement"""
     pass
 
-
 # =====================================================
-# SPLIT PRODUCT (BREAK-BULK) WRITE DTOs
+# SPLIT (BREAK-BULK) WRITE DTOs
 # =====================================================
 
-class SplitProductWriteBase(BaseModel):
-    """Base write DTO for splitting (breaking-bulk) a product into smaller units.
-
-    Takes `source_qty_taken` units off the source product (FIFO across its batches),
-    multiplies each by `divisor`, and lands the resulting smaller units as a new batch
-    on either an existing product (destination='EXISTING') or a brand new product
-    (destination='NEW').
-    """
-    # --- Source ---
+class SplitItemWriteBase(BaseModel):
+    """One product line within a split (the source product and how to break it up)."""
     source_product_id: str = Field(..., description="Product to take stock from (e.g. the full pole)")
     source_qty_taken: int = Field(..., gt=0, description="How many source units to break up (e.g. 5)")
     divisor: int = Field(..., ge=1, description="How many smaller units each source unit becomes (e.g. 2 -> halves)")
-    source_scope: SplitSourceScopeType = Field(
-        'STORE',
-        description="Where to draw stock from: STORE/WAREHOUSE = shelf stock at the current location; PRODUCT = the unallocated purchase-batch pool",
-    )
-    description: Optional[str] = Field(None, description="Optional note/reason for this split (e.g. 'customer wanted half a pole')")
 
-    # --- Pricing ---
+    # Pricing
     price_mode: SplitPriceModeType = Field('AUTO', description="AUTO = source price / divisor; MANUAL = use prices provided below")
     unit_selling_price: Optional[float] = Field(None, ge=0, description="Selling price per smaller unit (required when price_mode='MANUAL')")
     unit_cost_price: Optional[float] = Field(None, ge=0, description="Cost price per smaller unit (optional override; defaults to source cost / divisor)")
 
-    # --- Destination ---
+    # Destination
     destination: SplitDestinationType = Field(..., description="EXISTING = add to a product that already exists; NEW = create a new product")
     destination_product_id: Optional[str] = Field(None, description="Existing product to add the new batch to (required when destination='EXISTING')")
-
-    # --- New product details (used only when destination='NEW') ---
     new_product_name: Optional[str] = Field(None, description="Name for the new product (required when destination='NEW')")
     new_product_sku: Optional[str] = Field(None, description="SKU for the new product")
     new_product_bar_code: Optional[str] = Field(None, description="Barcode for the new product")
     new_product_description: Optional[str] = Field(None, description="Description for the new product")
     metadata_ids: List[str] = Field(default_factory=list, description="Metadata IDs to assign to the new product")
 
-    # --- New batch details ---
-    unit_of_measure_id: Optional[str] = Field(None, description="Unit of measure for the new batch (defaults to source batch's)")
-    supplier_id: Optional[str] = Field(None, description="Supplier for the new batch (defaults to source batch's)")
+    # New batch details (default to the source batch's values)
+    unit_of_measure_id: Optional[str] = Field(None, description="Unit of measure for the new batch")
+    supplier_id: Optional[str] = Field(None, description="Supplier for the new batch")
     size: Optional[str] = Field(None, description="Product size for the new batch")
     expire_date: Optional[str] = Field(None, description="Expiry date for the new batch (YYYY-MM-DD)")
 
 
-class SplitProductControllerWriteDto(SplitProductWriteBase):
-    """Controller DTO for splitting a product"""
+class CreateSplitWriteBase(BaseModel):
+    """Create one split (the parent) containing one or more product items.
+
+    All items are processed together in a single transaction (all-or-none): if any
+    item fails, nothing is applied. `source_scope` applies to every item.
+    """
+    description: Optional[str] = Field(None, description="Optional note/reason for the whole split (e.g. 'customer wanted half a pole')")
+    source_scope: SplitSourceScopeType = Field(
+        'STORE',
+        description="Where to draw stock from for all items: STORE/WAREHOUSE = shelf stock at the current location; PRODUCT = the unallocated purchase-batch pool",
+    )
+    items: List[SplitItemWriteBase] = Field(default_factory=list, description="Product lines to split (1..50)")
+
+
+class CreateSplitControllerWriteDto(CreateSplitWriteBase):
+    """Controller DTO for creating a split"""
     pass
 
 
-class SplitProductServiceWriteDto(SplitProductWriteBase):
-    """Service DTO for splitting a product"""
+class CreateSplitServiceWriteDto(CreateSplitWriteBase):
+    """Service DTO for creating a split"""
     pass
 
 
 # =====================================================
-# REVERSE SPLIT WRITE DTOs
+# REVERSE WRITE DTOs
 # =====================================================
 
 class ReverseSplitWriteBase(BaseModel):
-    """Base write DTO for reversing a product split"""
-    split_id: str = Field(..., description="ID of the split to reverse")
+    """Reverse a whole split (all of its still-active items)."""
+    split_id: str = Field(..., description="ID of the split (header) to reverse")
 
 
 class ReverseSplitControllerWriteDto(ReverseSplitWriteBase):
-    """Controller DTO for reversing a product split"""
+    """Controller DTO for reversing a whole split"""
     pass
 
 
 class ReverseSplitServiceWriteDto(ReverseSplitWriteBase):
-    """Service DTO for reversing a product split"""
+    """Service DTO for reversing a whole split"""
     pass
 
 
-# =====================================================
-# BATCH SPLIT / BATCH REVERSE WRITE DTOs (all-or-none)
-# =====================================================
-
-class SplitProductsBatchWriteBase(BaseModel):
-    """Split several items together. All-or-none: if any item fails, nothing is applied."""
-    splits: List[SplitProductWriteBase] = Field(
-        default_factory=list,
-        description="List of splits to perform together in one transaction (all-or-none)",
-    )
+class ReverseSplitItemWriteBase(BaseModel):
+    """Reverse a single product item within a split (others stay)."""
+    item_id: str = Field(..., description="ID of the split item (product line) to reverse")
 
 
-class SplitProductsBatchControllerWriteDto(SplitProductsBatchWriteBase):
-    """Controller DTO for batch split"""
+class ReverseSplitItemControllerWriteDto(ReverseSplitItemWriteBase):
+    """Controller DTO for reversing a single split item"""
     pass
 
 
-class SplitProductsBatchServiceWriteDto(SplitProductsBatchWriteBase):
-    """Service DTO for batch split"""
+class ReverseSplitItemServiceWriteDto(ReverseSplitItemWriteBase):
+    """Service DTO for reversing a single split item"""
     pass
-
-
-class ReverseSplitsBatchWriteBase(BaseModel):
-    """Reverse one, some, or all splits together. All-or-none."""
-    split_ids: List[str] = Field(
-        default_factory=list,
-        description="Split IDs to reverse together (one for a single product, many for all). All-or-none.",
-    )
-
-
-class ReverseSplitsBatchControllerWriteDto(ReverseSplitsBatchWriteBase):
-    """Controller DTO for batch reverse"""
-    pass
-
-
-class ReverseSplitsBatchServiceWriteDto(ReverseSplitsBatchWriteBase):
-    """Service DTO for batch reverse"""
-    pass
-
