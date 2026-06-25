@@ -403,7 +403,9 @@ class SplitItemReadDto(BaseModel):
     ctime: str
     cdatetime: datetime
     created_by: Optional[str] = None
+    created_by_name: Optional[str] = Field(None, description="Fullname of user who created the item")
     reversed_by: Optional[str] = None
+    reversed_by_name: Optional[str] = Field(None, description="Fullname of user who reversed the item")
     reversed_at: Optional[datetime] = None
 
 
@@ -431,6 +433,7 @@ class SplitReadBase(BaseModel):
     created_by: Optional[str] = None
     created_by_name: Optional[str] = Field(None, description="Fullname of user who created the split")
     reversed_by: Optional[str] = None
+    reversed_by_name: Optional[str] = Field(None, description="Fullname of user who reversed the split")
     reversed_at: Optional[datetime] = None
 
 

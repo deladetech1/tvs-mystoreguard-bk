@@ -3034,7 +3034,9 @@ class ProductsService:
             ctime=d['ctime'],
             cdatetime=d['cdatetime'],
             created_by=d.get('created_by'),
+            created_by_name=d.get('created_by_name'),
             reversed_by=d.get('reversed_by'),
+            reversed_by_name=d.get('reversed_by_name'),
             reversed_at=d.get('reversed_at'),
         )
 
@@ -3044,11 +3046,15 @@ class ProductsService:
             f"""SELECT si.*,
                    sp.name as source_product_name,
                    dp.name as derived_product_name,
-                   db.batch_number as derived_batch_number
+                   db.batch_number as derived_batch_number,
+                   creator.fullname as created_by_name,
+                   reverser.fullname as reversed_by_name
             FROM {db_settings.MSG_PRODUCT_SPLIT_ITEMS_TABLE} si
             LEFT JOIN {db_settings.MSG_PRODUCTS_TABLE} sp ON si.source_product_id = sp.id AND si.tenant_id = sp.tenant_id
             LEFT JOIN {db_settings.MSG_PRODUCTS_TABLE} dp ON si.derived_product_id = dp.id AND si.tenant_id = dp.tenant_id
             LEFT JOIN {db_settings.MSG_PURCHASE_BATCHES_TABLE} db ON si.derived_batch_id = db.id AND si.tenant_id = db.tenant_id
+            LEFT JOIN {db_settings.CORE_PLATFORM_USERS_TABLE} creator ON si.created_by = creator.id AND si.tenant_id = creator.tenant_id
+            LEFT JOIN {db_settings.CORE_PLATFORM_USERS_TABLE} reverser ON si.reversed_by = reverser.id AND si.tenant_id = reverser.tenant_id
             WHERE si.split_id = %s AND si.tenant_id = %s AND si.org_id = %s AND si.bus_id = %s
             AND si.delete_status = 'NOT_DELETED'
             ORDER BY si.cdatetime ASC""",
@@ -3059,9 +3065,12 @@ class ProductsService:
     @staticmethod
     def _fetch_split_header(cursor, split_id, tenant_id, org_id, bus_id):
         cursor.execute(
-            f"""SELECT h.*, creator.fullname as created_by_name
+            f"""SELECT h.*,
+                   creator.fullname as created_by_name,
+                   reverser.fullname as reversed_by_name
             FROM {db_settings.MSG_PRODUCT_SPLITS_TABLE} h
             LEFT JOIN {db_settings.CORE_PLATFORM_USERS_TABLE} creator ON h.created_by = creator.id AND h.tenant_id = creator.tenant_id
+            LEFT JOIN {db_settings.CORE_PLATFORM_USERS_TABLE} reverser ON h.reversed_by = reverser.id AND h.tenant_id = reverser.tenant_id
             WHERE h.id = %s AND h.tenant_id = %s AND h.org_id = %s AND h.bus_id = %s
             AND h.delete_status = 'NOT_DELETED'""",
             (split_id, tenant_id, org_id, bus_id),
@@ -3091,6 +3100,7 @@ class ProductsService:
             created_by=h.get('created_by'),
             created_by_name=h.get('created_by_name'),
             reversed_by=h.get('reversed_by'),
+            reversed_by_name=h.get('reversed_by_name'),
             reversed_at=h.get('reversed_at'),
         )
 
