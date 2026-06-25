@@ -26,6 +26,11 @@ class StockTakeItemCountBase(BaseModel):
         description="Unit price for this line, supplied by the caller (price lives per "
                     "delivery, not on the product). Snapshotted so the variance can be valued.",
     )
+    # Currency snapshotted per line: items in one count may be priced in different
+    # currencies. Frozen as plain text so the take never shifts if the currency changes.
+    currency_id: Optional[str] = Field(None, description="Currency id for this line (snapshot)")
+    currency_name: Optional[str] = Field(None, description="Currency name for this line (snapshot)")
+    currency_symbol: Optional[str] = Field(None, description="Currency symbol for this line (snapshot)")
     note: Optional[str] = Field(None, description="Optional note for this counted line")
 
 

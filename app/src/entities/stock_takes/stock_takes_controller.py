@@ -52,7 +52,7 @@ def create_stock_take(
 
 
 # 2. List stock takes for the current location
-@stock_takes_router.get("", response_model=Respons[GetStockTakeControllerReadDto])
+@stock_takes_router.get("/list", response_model=Respons[GetStockTakeControllerReadDto])
 def list_stock_takes(
     status: Optional[str] = Query(None, description="Filter by status (DRAFT|COMPLETED|CANCELLED)"),
     location_type: Optional[str] = Query(

@@ -8,6 +8,7 @@ from src.entities.stock_takes.stock_takes_read_dto import (
     StockTakeItemReadDto,
     StockTakeVarianceSummary,
     StockTakeStatisticsReadDto,
+    CurrencyMoneyDto,
     TopShortageProductDto,
 )
 from src.entities.shared.sh_response import Respons, PaginationMeta
@@ -174,12 +175,14 @@ class StockTakesService:
                     cursor.execute(
                         f"""INSERT INTO {db_settings.MSG_STOCK_TAKE_ITEMS_TABLE}
                         (id, tenant_id, org_id, bus_id, stock_take_id, product_id,
-                         counted_qty, system_qty, variance_qty, unit_price, match_status, resolution_status,
+                         counted_qty, system_qty, variance_qty, unit_price,
+                         currency_id, currency_name, currency_symbol, match_status, resolution_status,
                          note, adjustment_qty, cdate, ctime, cdatetime)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                         (
                             item_id, tenant_id, org_id, bus_id, stock_take_id, line.product_id,
-                            line.counted_qty, system_qty, variance, line.unit_price, match_status, "PENDING",
+                            line.counted_qty, system_qty, variance, line.unit_price,
+                            line.currency_id, line.currency_name, line.currency_symbol, match_status, "PENDING",
                             line.note, 0, cdate, ctime, cdatetime,
                         ),
                     )
@@ -191,6 +194,8 @@ class StockTakesService:
                         counted_qty=line.counted_qty,
                         system_qty=system_qty, variance_qty=variance,
                         unit_price=line.unit_price, variance_value=variance_value,
+                        currency_id=line.currency_id, currency_name=line.currency_name,
+                        currency_symbol=line.currency_symbol,
                         match_status=match_status,
                         resolution_status="PENDING", note=line.note, adjustment_qty=0,
                         cdatetime=cdatetime,
@@ -209,7 +214,8 @@ class StockTakesService:
                 result = StockTakeReadDto(
                     id=stock_take_id, loc_id=loc_id, location_type=data.location_type,
                     stock_take_number=stock_take_number, status="DRAFT",
-                    description=data.description, cdatetime=cdatetime, created_by=created_by,
+                    description=data.description,
+                    cdatetime=cdatetime, created_by=created_by,
                     summary=summary, items=items_out,
                 )
                 return Respons(
@@ -310,8 +316,7 @@ class StockTakesService:
                 )
                 hc = cursor.fetchone() or {}
 
-                # Line-level counts, accuracy inputs and money roll-ups. unit_price may be
-                # NULL on a line; those lines contribute NULL (ignored by SUM) to the money.
+                # Line-level counts (currency-independent).
                 cursor.execute(
                     f"""SELECT
                         COUNT(*) AS total_lines,
@@ -319,13 +324,7 @@ class StockTakesService:
                         COUNT(*) FILTER (WHERE sti.match_status = 'OVER') AS over_count,
                         COUNT(*) FILTER (WHERE sti.match_status = 'SHORT') AS short_count,
                         COUNT(*) FILTER (WHERE sti.match_status <> 'MATCH'
-                                         AND sti.resolution_status <> 'RESOLVED') AS unresolved,
-                        COALESCE(SUM(CASE WHEN sti.variance_qty < 0
-                                          THEN sti.variance_qty * sti.unit_price END), 0) AS shortage_signed,
-                        COALESCE(SUM(CASE WHEN sti.variance_qty > 0
-                                          THEN sti.variance_qty * sti.unit_price END), 0) AS overage_value,
-                        COALESCE(SUM(sti.variance_qty * sti.unit_price), 0) AS net_value,
-                        COALESCE(SUM(sti.adjustment_qty * sti.unit_price), 0) AS corrected_signed
+                                         AND sti.resolution_status <> 'RESOLVED') AS unresolved
                     FROM {db_settings.MSG_STOCK_TAKE_ITEMS_TABLE} sti
                     JOIN {db_settings.MSG_STOCK_TAKES_TABLE} st
                         ON sti.stock_take_id = st.id AND sti.tenant_id = st.tenant_id
@@ -336,9 +335,43 @@ class StockTakesService:
                 )
                 lc = cursor.fetchone() or {}
 
-                # Worst offenders by shortage value (priced) then by units short
+                # Money roll-ups GROUPED PER CURRENCY — values are never summed across
+                # currencies. Only priced lines (unit_price IS NOT NULL) contribute.
+                cursor.execute(
+                    f"""SELECT sti.currency_id, sti.currency_name, sti.currency_symbol,
+                        -COALESCE(SUM(CASE WHEN sti.variance_qty < 0
+                                           THEN sti.variance_qty * sti.unit_price END), 0) AS shortage_value,
+                        COALESCE(SUM(CASE WHEN sti.variance_qty > 0
+                                          THEN sti.variance_qty * sti.unit_price END), 0) AS overage_value,
+                        COALESCE(SUM(sti.variance_qty * sti.unit_price), 0) AS net_value,
+                        -COALESCE(SUM(sti.adjustment_qty * sti.unit_price), 0) AS corrected_value
+                    FROM {db_settings.MSG_STOCK_TAKE_ITEMS_TABLE} sti
+                    JOIN {db_settings.MSG_STOCK_TAKES_TABLE} st
+                        ON sti.stock_take_id = st.id AND sti.tenant_id = st.tenant_id
+                        AND sti.org_id = st.org_id AND sti.bus_id = st.bus_id
+                    WHERE st.tenant_id = %s AND st.org_id = %s AND st.bus_id = %s AND st.loc_id = %s
+                    AND st.delete_status = 'NOT_DELETED' AND sti.unit_price IS NOT NULL{lt_st}
+                    GROUP BY sti.currency_id, sti.currency_name, sti.currency_symbol
+                    ORDER BY shortage_value DESC""",
+                    params_s,
+                )
+                money_by_currency = [
+                    CurrencyMoneyDto(
+                        currency_id=r.get("currency_id"),
+                        currency_name=r.get("currency_name"),
+                        currency_symbol=r.get("currency_symbol"),
+                        total_shortage_value=float(r["shortage_value"] or 0),
+                        total_overage_value=float(r["overage_value"] or 0),
+                        net_variance_value=float(r["net_value"] or 0),
+                        total_corrected_value=float(r["corrected_value"] or 0),
+                    )
+                    for r in cursor.fetchall()
+                ]
+
+                # Worst offenders by shortage value, per product+currency.
                 cursor.execute(
                     f"""SELECT sti.product_id, p.name AS product_name,
+                        sti.currency_id, sti.currency_name, sti.currency_symbol,
                         COALESCE(SUM(sti.variance_qty), 0) AS short_qty_signed,
                         -COALESCE(SUM(sti.variance_qty * sti.unit_price), 0) AS shortage_value
                     FROM {db_settings.MSG_STOCK_TAKE_ITEMS_TABLE} sti
@@ -350,7 +383,7 @@ class StockTakesService:
                         AND sti.org_id = p.org_id AND sti.bus_id = p.bus_id
                     WHERE st.tenant_id = %s AND st.org_id = %s AND st.bus_id = %s AND st.loc_id = %s
                     AND st.delete_status = 'NOT_DELETED' AND sti.variance_qty < 0{lt_st}
-                    GROUP BY sti.product_id, p.name
+                    GROUP BY sti.product_id, p.name, sti.currency_id, sti.currency_name, sti.currency_symbol
                     ORDER BY shortage_value DESC, short_qty_signed ASC
                     LIMIT 5""",
                     params_s,
@@ -361,6 +394,9 @@ class StockTakesService:
                         product_name=r.get("product_name"),
                         short_qty=abs(int(r["short_qty_signed"] or 0)),
                         shortage_value=float(r["shortage_value"] or 0),
+                        currency_id=r.get("currency_id"),
+                        currency_name=r.get("currency_name"),
+                        currency_symbol=r.get("currency_symbol"),
                     )
                     for r in cursor.fetchall()
                 ]
@@ -380,10 +416,7 @@ class StockTakesService:
                     short=int(lc.get("short_count") or 0),
                     unresolved_variances=int(lc.get("unresolved") or 0),
                     accuracy_rate=accuracy,
-                    total_shortage_value=abs(float(lc.get("shortage_signed") or 0)),
-                    total_overage_value=float(lc.get("overage_value") or 0),
-                    net_variance_value=float(lc.get("net_value") or 0),
-                    total_corrected_value=abs(float(lc.get("corrected_signed") or 0)),
+                    money_by_currency=money_by_currency,
                     top_shortage_products=top,
                 )
                 return Respons(success=True, detail="Stock take statistics retrieved", data=[stats])
@@ -421,7 +454,8 @@ class StockTakesService:
                     item_filter = " AND sti.match_status <> 'MATCH'"
                 cursor.execute(
                     f"""SELECT sti.id, sti.stock_take_id, sti.product_id, p.name AS product_name,
-                    sti.counted_qty, sti.system_qty, sti.variance_qty, sti.unit_price, sti.match_status,
+                    sti.counted_qty, sti.system_qty, sti.variance_qty, sti.unit_price,
+                    sti.currency_id, sti.currency_name, sti.currency_symbol, sti.match_status,
                     sti.resolution_status, sti.note, sti.resolution_note, sti.adjustment_qty,
                     sti.adjustment_movement_id, sti.resolved_by, sti.resolved_datetime, sti.cdatetime
                     FROM {db_settings.MSG_STOCK_TAKE_ITEMS_TABLE} sti

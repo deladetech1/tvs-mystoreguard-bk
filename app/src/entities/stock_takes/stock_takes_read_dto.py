@@ -18,6 +18,9 @@ class StockTakeItemReadDto(BaseModel):
     system_qty: int = Field(..., description="On-hand qty the system believed at count time")
     variance_qty: int = Field(..., description="counted_qty - system_qty (negative = short, positive = over)")
     unit_price: Optional[float] = Field(None, description="Unit price snapshotted at count time")
+    currency_id: Optional[str] = Field(None, description="Currency id snapshot for this line")
+    currency_name: Optional[str] = Field(None, description="Currency name snapshot for this line")
+    currency_symbol: Optional[str] = Field(None, description="Currency symbol snapshot for this line")
     variance_value: Optional[float] = Field(
         None, description="Value of the variance = variance_qty * unit_price (null if no price given)"
     )
@@ -101,17 +104,31 @@ class CompleteStockTakeControllerReadDto(StockTakeReadDto):
 # STATISTICS READ DTOs
 # =====================================================
 
+class CurrencyMoneyDto(BaseModel):
+    """Money roll-ups for one currency. Values are never summed across currencies."""
+    currency_id: Optional[str] = None
+    currency_name: Optional[str] = None
+    currency_symbol: Optional[str] = None
+    total_shortage_value: float = Field(0, description="Value short, positive magnitude")
+    total_overage_value: float = Field(0, description="Value over, positive magnitude")
+    net_variance_value: float = Field(0, description="Overage minus shortage; negative = net short")
+    total_corrected_value: float = Field(0, description="Value of stock corrected via resolutions, positive magnitude")
+
+
 class TopShortageProductDto(BaseModel):
-    """A product ranked by how much value it is short across stock takes."""
+    """A product ranked by how much value it is short, in its line's currency."""
     product_id: str
     product_name: Optional[str] = None
     short_qty: int = Field(0, description="Total units short (positive magnitude)")
     shortage_value: float = Field(0, description="Total shortage value (positive magnitude)")
+    currency_id: Optional[str] = None
+    currency_name: Optional[str] = None
+    currency_symbol: Optional[str] = None
 
 
 class StockTakeStatisticsReadDto(BaseModel):
     """Aggregate stock-take statistics for a location."""
-    # Counts
+    # Counts (currency-independent)
     total_stock_takes: int = 0
     draft: int = 0
     completed: int = 0
@@ -123,12 +140,9 @@ class StockTakeStatisticsReadDto(BaseModel):
     unresolved_variances: int = 0
     # Accuracy
     accuracy_rate: float = Field(0, description="Matched lines / total lines, as a percentage (0-100)")
-    # Money (priced lines only; lines without unit_price contribute 0)
-    total_shortage_value: float = Field(0, description="Value short, positive magnitude")
-    total_overage_value: float = Field(0, description="Value over, positive magnitude")
-    net_variance_value: float = Field(0, description="Overage minus shortage; negative = net short")
-    total_corrected_value: float = Field(0, description="Value of stock corrected via resolutions, positive magnitude")
-    # Worst offenders
+    # Money — grouped per currency; lines without unit_price are excluded
+    money_by_currency: List[CurrencyMoneyDto] = Field(default_factory=list)
+    # Worst offenders (each carries its own currency)
     top_shortage_products: List[TopShortageProductDto] = Field(default_factory=list)
 
 
