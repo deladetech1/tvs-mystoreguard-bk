@@ -711,6 +711,46 @@ def get_org_bus_loc_with_permission(
     }
 
 
+def get_org_bus_with_permission(
+    org_id: str = Header(..., alias="org-id", description="Organization ID"),
+    bus_id: str = Header(..., alias="bus-id", description="Business ID"),
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+):
+    """
+    Extract and validate org_id and bus_id from request headers for
+    BUSINESS-SCOPED resources that are not tied to a single location
+    (e.g. tasks & workflow templates span locations).
+
+    Unlike get_org_bus_loc_with_permission, this does not require a loc-id
+    or app-id header and does not run per-location access checks; the caller
+    is already authenticated via get_current_user and route-level permission
+    checks still apply.
+
+    Raises:
+        HTTPException: 400 if headers are invalid (e.g. "undefined" values)
+
+    Returns:
+        dict: Contains org_id and bus_id
+    """
+    invalid_values = ["undefined", "null", "None", ""]
+
+    if org_id in invalid_values or not org_id or org_id.strip() in invalid_values:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid org_id header: '{org_id}'. Please provide a valid organization ID."
+        )
+    if bus_id in invalid_values or not bus_id or bus_id.strip() in invalid_values:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid bus_id header: '{bus_id}'. Please provide a valid business ID."
+        )
+
+    return {
+        "org_id": org_id.strip(),
+        "bus_id": bus_id.strip(),
+    }
+
+
 def check_subscription_active(
     tenant_id: str, business_id: str, user_id: str
 ) -> Tuple[bool, Optional[str]]:

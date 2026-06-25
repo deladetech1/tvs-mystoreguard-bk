@@ -90,7 +90,10 @@ class Settings:
     MSG_PRODUCTS_TABLE = os.getenv("MSG_PRODUCTS_TABLE", "mystoreguard.msg_products")
     MSG_PRODUCT_DOCUMENT_IDS_TABLE = os.getenv("MSG_PRODUCT_DOCUMENT_IDS_TABLE", "mystoreguard.msg_product_document_ids")
     MSG_PURCHASE_BATCHES_TABLE = os.getenv("MSG_PURCHASE_BATCHES_TABLE", "mystoreguard.msg_purchase_batches")
-    
+    # Product splits (break-bulk): header + line items
+    MSG_PRODUCT_SPLITS_TABLE = os.getenv("MSG_PRODUCT_SPLITS_TABLE", "mystoreguard.msg_product_splits")
+    MSG_PRODUCT_SPLIT_ITEMS_TABLE = os.getenv("MSG_PRODUCT_SPLIT_ITEMS_TABLE", "mystoreguard.msg_product_split_items")
+
     # Product metadata assignments table
     MSG_ASSIGN_METADATA_TO_PRODUCTS_TABLE = os.getenv("MSG_ASSIGN_METADATA_TO_PRODUCTS_TABLE", "mystoreguard.msg_assign_metadata_to_products")
     
@@ -135,7 +138,11 @@ class Settings:
     
     # Stock taking audit table
     MSG_STOCK_TAKING_AUDIT_TABLE = os.getenv("MSG_STOCK_TAKING_AUDIT_TABLE", "mystoreguard.msg_stock_taking_audit")
-    
+
+    # Manual stock take tables (count + investigate/resolve)
+    MSG_STOCK_TAKES_TABLE = os.getenv("MSG_STOCK_TAKES_TABLE", "mystoreguard.msg_stock_takes")
+    MSG_STOCK_TAKE_ITEMS_TABLE = os.getenv("MSG_STOCK_TAKE_ITEMS_TABLE", "mystoreguard.msg_stock_take_items")
+
     # Product transfers table
     MSG_PRODUCT_TRANSFERS_TABLE = os.getenv("MSG_PRODUCT_TRANSFERS_TABLE", "mystoreguard.msg_product_transfers")
     MSG_PRODUCT_TRANSFER_ITEMS_TABLE = os.getenv("MSG_PRODUCT_TRANSFER_ITEMS_TABLE", "mystoreguard.msg_product_transfer_items")
@@ -143,7 +150,20 @@ class Settings:
     
     # Appointments table
     MSG_APPOINTMENTS_TABLE = os.getenv("MSG_APPOINTMENTS_TABLE", "mystoreguard.msg_appointments")
-    
+
+    # Tasks & workflows tables
+    MSG_WORKFLOW_TEMPLATES_TABLE = os.getenv("MSG_WORKFLOW_TEMPLATES_TABLE", "mystoreguard.msg_workflow_templates")
+    MSG_WORKFLOW_TEMPLATE_STEPS_TABLE = os.getenv("MSG_WORKFLOW_TEMPLATE_STEPS_TABLE", "mystoreguard.msg_workflow_template_steps")
+    MSG_WORKFLOW_TEMPLATE_STEP_DEPS_TABLE = os.getenv("MSG_WORKFLOW_TEMPLATE_STEP_DEPS_TABLE", "mystoreguard.msg_workflow_template_step_deps")
+    MSG_WORKFLOW_TEMPLATE_STEP_TARGETS_TABLE = os.getenv("MSG_WORKFLOW_TEMPLATE_STEP_TARGETS_TABLE", "mystoreguard.msg_workflow_template_step_targets")
+    MSG_TASKS_TABLE = os.getenv("MSG_TASKS_TABLE", "mystoreguard.msg_tasks")
+    MSG_TASK_STEPS_TABLE = os.getenv("MSG_TASK_STEPS_TABLE", "mystoreguard.msg_task_steps")
+    MSG_TASK_STEP_DEPS_TABLE = os.getenv("MSG_TASK_STEP_DEPS_TABLE", "mystoreguard.msg_task_step_deps")
+    MSG_TASK_STEP_TARGETS_TABLE = os.getenv("MSG_TASK_STEP_TARGETS_TABLE", "mystoreguard.msg_task_step_targets")
+    MSG_TASK_NOTIFICATION_SETTINGS_TABLE = os.getenv("MSG_TASK_NOTIFICATION_SETTINGS_TABLE", "mystoreguard.msg_task_notification_settings")
+    MSG_TASK_NOTIFICATIONS_TABLE = os.getenv("MSG_TASK_NOTIFICATIONS_TABLE", "mystoreguard.msg_task_notifications")
+    CORE_PLATFORM_GROUPS_TABLE = os.getenv("CORE_PLATFORM_GROUPS_TABLE", "core_platform.cp_groups")
+
     # Sales tables
     MSG_SALES_TABLE = os.getenv("MSG_SALES_TABLE", "mystoreguard.msg_sales")
     MSG_SALES_ITEMS_TABLE = os.getenv("MSG_SALES_ITEMS_TABLE", "mystoreguard.msg_sales_items")

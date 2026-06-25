@@ -26,8 +26,17 @@ MSG_MEETINGS_TABLE = os.getenv("MSG_MEETINGS_TABLE", "mystoreguard.msg_meetings"
 MSG_MEETING_PARTICIPANTS_TABLE = os.getenv("MSG_MEETING_PARTICIPANTS_TABLE", "mystoreguard.msg_meeting_participants")
 MSG_SUPPLIERS_TABLE = os.getenv("MSG_SUPPLIERS_TABLE", "mystoreguard.msg_suppliers")
 
+# Tasks & workflow tables
+MSG_TASKS_TABLE = os.getenv("MSG_TASKS_TABLE", "mystoreguard.msg_tasks")
+MSG_TASK_STEPS_TABLE = os.getenv("MSG_TASK_STEPS_TABLE", "mystoreguard.msg_task_steps")
+MSG_TASK_STEP_DEPS_TABLE = os.getenv("MSG_TASK_STEP_DEPS_TABLE", "mystoreguard.msg_task_step_deps")
+MSG_TASK_STEP_TARGETS_TABLE = os.getenv("MSG_TASK_STEP_TARGETS_TABLE", "mystoreguard.msg_task_step_targets")
+MSG_TASK_NOTIFICATION_SETTINGS_TABLE = os.getenv("MSG_TASK_NOTIFICATION_SETTINGS_TABLE", "mystoreguard.msg_task_notification_settings")
+MSG_TASK_NOTIFICATIONS_TABLE = os.getenv("MSG_TASK_NOTIFICATIONS_TABLE", "mystoreguard.msg_task_notifications")
+
 # Core platform tables
 CP_NOTIFICATION_EMAIL_CREDENTIALS_TABLE = os.getenv("CP_NOTIFICATION_EMAIL_CREDENTIALS_TABLE", "core_platform.cp_notification_email_credentials")
 CP_LOCATIONS_TABLE = os.getenv("CP_LOCATIONS_TABLE", "core_platform.cp_locations")
 CP_USERS_TABLE = os.getenv("CP_USERS_TABLE", "core_platform.cp_users")
 CP_ASSIGN_ROLES_TABLE = os.getenv("CP_ASSIGN_ROLES_TABLE", "core_platform.cp_assign_roles")
+CP_USER_GROUPS_TABLE = os.getenv("CP_USER_GROUPS_TABLE", "core_platform.cp_user_groups")
