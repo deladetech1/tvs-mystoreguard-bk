@@ -7,6 +7,8 @@ from src.entities.stock_takes.stock_takes_read_dto import (
     StockTakeReadDto,
     StockTakeItemReadDto,
     StockTakeVarianceSummary,
+    StockTakeStatisticsReadDto,
+    TopShortageProductDto,
 )
 from src.entities.shared.sh_response import Respons, PaginationMeta
 from src.entities.filemanager.fmg_service import FileUploadService
@@ -269,6 +271,109 @@ class StockTakesService:
         except Exception as e:
             logger.error(f"Failed to list stock takes: {e}", exc_info=True)
             return Respons(success=False, detail="Failed to list stock takes", error=str(e))
+
+    # =====================================================
+    # STATISTICS (aggregate for a location)
+    # =====================================================
+    @staticmethod
+    def get_statistics(tenant_id: str, org_id: str, bus_id: str, loc_id: str) -> Respons:
+        scope = (tenant_id, org_id, bus_id, loc_id)
+        try:
+            with DatabaseManager.transaction() as cursor:
+                # Stock-take header counts by status
+                cursor.execute(
+                    f"""SELECT
+                        COUNT(*) AS total_stock_takes,
+                        COUNT(*) FILTER (WHERE status = 'DRAFT') AS draft,
+                        COUNT(*) FILTER (WHERE status = 'COMPLETED') AS completed,
+                        COUNT(*) FILTER (WHERE status = 'CANCELLED') AS cancelled
+                    FROM {db_settings.MSG_STOCK_TAKES_TABLE}
+                    WHERE tenant_id = %s AND org_id = %s AND bus_id = %s AND loc_id = %s
+                    AND delete_status = 'NOT_DELETED'""",
+                    scope,
+                )
+                hc = cursor.fetchone() or {}
+
+                # Line-level counts, accuracy inputs and money roll-ups. unit_price may be
+                # NULL on a line; those lines contribute NULL (ignored by SUM) to the money.
+                cursor.execute(
+                    f"""SELECT
+                        COUNT(*) AS total_lines,
+                        COUNT(*) FILTER (WHERE sti.match_status = 'MATCH') AS matched,
+                        COUNT(*) FILTER (WHERE sti.match_status = 'OVER') AS over_count,
+                        COUNT(*) FILTER (WHERE sti.match_status = 'SHORT') AS short_count,
+                        COUNT(*) FILTER (WHERE sti.match_status <> 'MATCH'
+                                         AND sti.resolution_status <> 'RESOLVED') AS unresolved,
+                        COALESCE(SUM(CASE WHEN sti.variance_qty < 0
+                                          THEN sti.variance_qty * sti.unit_price END), 0) AS shortage_signed,
+                        COALESCE(SUM(CASE WHEN sti.variance_qty > 0
+                                          THEN sti.variance_qty * sti.unit_price END), 0) AS overage_value,
+                        COALESCE(SUM(sti.variance_qty * sti.unit_price), 0) AS net_value,
+                        COALESCE(SUM(sti.adjustment_qty * sti.unit_price), 0) AS corrected_signed
+                    FROM {db_settings.MSG_STOCK_TAKE_ITEMS_TABLE} sti
+                    JOIN {db_settings.MSG_STOCK_TAKES_TABLE} st
+                        ON sti.stock_take_id = st.id AND sti.tenant_id = st.tenant_id
+                        AND sti.org_id = st.org_id AND sti.bus_id = st.bus_id
+                    WHERE st.tenant_id = %s AND st.org_id = %s AND st.bus_id = %s AND st.loc_id = %s
+                    AND st.delete_status = 'NOT_DELETED'""",
+                    scope,
+                )
+                lc = cursor.fetchone() or {}
+
+                # Worst offenders by shortage value (priced) then by units short
+                cursor.execute(
+                    f"""SELECT sti.product_id, p.name AS product_name,
+                        COALESCE(SUM(sti.variance_qty), 0) AS short_qty_signed,
+                        -COALESCE(SUM(sti.variance_qty * sti.unit_price), 0) AS shortage_value
+                    FROM {db_settings.MSG_STOCK_TAKE_ITEMS_TABLE} sti
+                    JOIN {db_settings.MSG_STOCK_TAKES_TABLE} st
+                        ON sti.stock_take_id = st.id AND sti.tenant_id = st.tenant_id
+                        AND sti.org_id = st.org_id AND sti.bus_id = st.bus_id
+                    LEFT JOIN {db_settings.MSG_PRODUCTS_TABLE} p
+                        ON sti.product_id = p.id AND sti.tenant_id = p.tenant_id
+                        AND sti.org_id = p.org_id AND sti.bus_id = p.bus_id
+                    WHERE st.tenant_id = %s AND st.org_id = %s AND st.bus_id = %s AND st.loc_id = %s
+                    AND st.delete_status = 'NOT_DELETED' AND sti.variance_qty < 0
+                    GROUP BY sti.product_id, p.name
+                    ORDER BY shortage_value DESC, short_qty_signed ASC
+                    LIMIT 5""",
+                    scope,
+                )
+                top = [
+                    TopShortageProductDto(
+                        product_id=r["product_id"],
+                        product_name=r.get("product_name"),
+                        short_qty=abs(int(r["short_qty_signed"] or 0)),
+                        shortage_value=float(r["shortage_value"] or 0),
+                    )
+                    for r in cursor.fetchall()
+                ]
+
+                total_lines = int(lc.get("total_lines") or 0)
+                matched = int(lc.get("matched") or 0)
+                accuracy = round((matched / total_lines) * 100, 2) if total_lines else 0.0
+
+                stats = StockTakeStatisticsReadDto(
+                    total_stock_takes=int(hc.get("total_stock_takes") or 0),
+                    draft=int(hc.get("draft") or 0),
+                    completed=int(hc.get("completed") or 0),
+                    cancelled=int(hc.get("cancelled") or 0),
+                    total_lines=total_lines,
+                    matched=matched,
+                    over=int(lc.get("over_count") or 0),
+                    short=int(lc.get("short_count") or 0),
+                    unresolved_variances=int(lc.get("unresolved") or 0),
+                    accuracy_rate=accuracy,
+                    total_shortage_value=abs(float(lc.get("shortage_signed") or 0)),
+                    total_overage_value=float(lc.get("overage_value") or 0),
+                    net_variance_value=float(lc.get("net_value") or 0),
+                    total_corrected_value=abs(float(lc.get("corrected_signed") or 0)),
+                    top_shortage_products=top,
+                )
+                return Respons(success=True, detail="Stock take statistics retrieved", data=[stats])
+        except Exception as e:
+            logger.error(f"Failed to get stock take statistics: {e}", exc_info=True)
+            return Respons(success=False, detail="Failed to get stock take statistics", error=str(e))
 
     # =====================================================
     # DETAIL (variance report)

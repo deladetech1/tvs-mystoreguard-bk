@@ -21,6 +21,15 @@ from messaging.email_builder import (
     build_message_sms_text,
     build_meeting_reminder_sms_text,
 )
+from task_reminders.queries import (
+    generate_due_task_reminders,
+    pick_up_pending_task_notifications,
+    get_recipient,
+    get_task_brief,
+    mark_notification_sent,
+    mark_notification_failed,
+)
+from task_reminders.email_builder import build_task_notification_email_html
 from stock_alerts.queries import (
     get_store_configs_with_out_of_stock_notifications,
     get_warehouse_configs_with_out_of_stock_notifications,
@@ -398,6 +407,84 @@ def process_meeting_reminders(timer: func.TimerRequest) -> None:
 
     except Exception as e:
         logger.error(f"Meeting reminders function failed: {e}", exc_info=True)
+        if conn:
+            conn.rollback()
+        raise
+    finally:
+        if conn:
+            conn.close()
+
+
+# ══════════════════════════════════════════════════
+# Task Notifications & Reminders (every 5 min)
+# ══════════════════════════════════════════════════
+
+@app.timer_trigger(schedule="0 */5 * * * *", arg_name="timer", run_on_startup=False)
+def process_task_notifications(timer: func.TimerRequest) -> None:
+    """Generates 'still pending' reminders, then emails all pending task
+    notifications (assignment / ready / needs-approval / reminder)."""
+    logger.info("Task notifications check triggered at %s", datetime.datetime.utcnow().isoformat())
+
+    if timer.past_due:
+        logger.warning("Task notifications timer is past due — running catch-up execution.")
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            # 1) Top up recurring reminders for work still pending on people.
+            try:
+                created = generate_due_task_reminders(cursor)
+                conn.commit()
+                if created:
+                    logger.info(f"Generated {created} task reminder(s).")
+            except Exception as gen_err:
+                logger.error(f"Failed generating task reminders: {gen_err}", exc_info=True)
+                conn.rollback()
+
+            # 2) Dispatch all pending notifications.
+            notifications = pick_up_pending_task_notifications(cursor)
+            conn.commit()
+
+            if not notifications:
+                logger.info("No task notifications pending.")
+                return
+
+            logger.info(f"Picked up {len(notifications)} task notification(s).")
+            total_sent = 0
+
+            for note in notifications:
+                tenant_id = note["tenant_id"]
+                note_id = note["id"]
+
+                recipient = get_recipient(cursor, tenant_id, note["recipient_user_id"])
+                to_email = recipient.get("email") if recipient else None
+                if not to_email:
+                    mark_notification_failed(cursor, tenant_id, note_id, "No recipient email")
+                    conn.commit()
+                    continue
+
+                sender_email_addr, sender_password = get_notification_email_credentials(cursor, tenant_id)
+                if not sender_email_addr or not sender_password:
+                    mark_notification_failed(cursor, tenant_id, note_id, "No sender credentials")
+                    conn.commit()
+                    continue
+
+                brief = get_task_brief(cursor, tenant_id, note["task_id"], note.get("step_id"))
+                subject, body = build_task_notification_email_html(
+                    note["kind"], recipient.get("fullname") if recipient else None, brief)
+
+                if send_email(sender_email_addr, sender_password, to_email, subject, body):
+                    mark_notification_sent(cursor, tenant_id, note_id)
+                    total_sent += 1
+                else:
+                    mark_notification_failed(cursor, tenant_id, note_id, "Email delivery failed")
+                conn.commit()
+
+            logger.info(f"Task notifications complete. {total_sent} email(s) sent.")
+
+    except Exception as e:
+        logger.error(f"Task notifications function failed: {e}", exc_info=True)
         if conn:
             conn.rollback()
         raise

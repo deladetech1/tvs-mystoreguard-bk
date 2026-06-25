@@ -11,6 +11,7 @@ from src.entities.stock_takes.stock_takes_read_dto import (
     GetStockTakeControllerReadDto,
     CompleteStockTakeControllerReadDto,
     ResolveStockTakeItemControllerReadDto,
+    StockTakeStatisticsControllerReadDto,
 )
 from src.entities.shared.sh_response import Respons
 from src.configs.logging import get_logger
@@ -73,7 +74,26 @@ def list_stock_takes(
     )
 
 
-# 3. Get one stock take with its variance report
+# 3. Statistics for the current location (registered before /{stock_take_id} so
+# "statistics" is not captured as a stock take id).
+@stock_takes_router.get("/statistics", response_model=Respons[StockTakeStatisticsControllerReadDto])
+def get_stock_take_statistics(
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    _subscription_check: dict = Depends(verify_subscription_active),
+    org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
+):
+    """Aggregate stock-take statistics for the current location: counts, accuracy,
+    shrinkage value, and top shortage products."""
+    _authorize(current_user, ["permission-msg-stock-takes-get"])
+    return StockTakesService.get_statistics(
+        tenant_id=current_user.data[0].tenant_id,
+        org_id=org_bus_loc["org_id"],
+        bus_id=org_bus_loc["bus_id"],
+        loc_id=org_bus_loc["loc_id"],
+    )
+
+
+# 4. Get one stock take with its variance report
 @stock_takes_router.get("/{stock_take_id}", response_model=Respons[GetStockTakeControllerReadDto])
 def get_stock_take(
     stock_take_id: str,
