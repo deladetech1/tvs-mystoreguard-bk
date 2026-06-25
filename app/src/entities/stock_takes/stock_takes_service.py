@@ -83,6 +83,47 @@ def _generate_stock_take_number(tenant_id: str, org_id: str, bus_id: str, loc_id
     return f"{prefix}-{date_str}-{str(count + 1).zfill(2)}"
 
 
+def _load_items_and_summary(cursor, tenant_id, org_id, bus_id, stock_take_id, only_variances=False):
+    """Load a stock take's items (with product name + image urls + variance value) and
+    its variance summary. Shared by the single-get and the list."""
+    item_filter = " AND sti.match_status <> 'MATCH'" if only_variances else ""
+    cursor.execute(
+        f"""SELECT sti.id, sti.stock_take_id, sti.product_id, p.name AS product_name,
+        sti.counted_qty, sti.system_qty, sti.variance_qty, sti.unit_price,
+        sti.currency_id, sti.currency_name, sti.currency_symbol, sti.match_status,
+        sti.resolution_status, sti.note, sti.resolution_note, sti.adjustment_qty,
+        sti.adjustment_movement_id, sti.resolved_by, sti.resolved_datetime, sti.cdatetime
+        FROM {db_settings.MSG_STOCK_TAKE_ITEMS_TABLE} sti
+        LEFT JOIN {db_settings.MSG_PRODUCTS_TABLE} p
+            ON sti.product_id = p.id AND sti.tenant_id = p.tenant_id
+            AND sti.org_id = p.org_id AND sti.bus_id = p.bus_id
+        WHERE sti.tenant_id = %s AND sti.org_id = %s AND sti.bus_id = %s
+        AND sti.stock_take_id = %s{item_filter}
+        ORDER BY sti.match_status, p.name""",
+        (tenant_id, org_id, bus_id, stock_take_id),
+    )
+    items = []
+    for r in cursor.fetchall():
+        row = dict(r)
+        price = row.get("unit_price")
+        row["unit_price"] = float(price) if price is not None else None
+        row["variance_value"] = row["variance_qty"] * row["unit_price"] if price is not None else None
+        row["image_urls"] = _product_image_urls(cursor, tenant_id, org_id, bus_id, row["product_id"])
+        items.append(StockTakeItemReadDto(**row))
+
+    summary = StockTakeVarianceSummary(total_lines=len(items))
+    for it in items:
+        if it.match_status == "MATCH":
+            summary.matched += 1
+        elif it.match_status == "OVER":
+            summary.over += 1
+        else:
+            summary.short += 1
+        if it.match_status != "MATCH" and it.resolution_status != "RESOLVED":
+            summary.unresolved_variances += 1
+    return items, summary
+
+
 class StockTakesService:
     # =====================================================
     # CREATE
@@ -269,7 +310,12 @@ class StockTakesService:
                     tuple(params + [size, (page - 1) * size]),
                 )
                 rows = cursor.fetchall()
-                stock_takes = [StockTakeReadDto(**dict(r)) for r in rows]
+                stock_takes = []
+                for r in rows:
+                    items, summary = _load_items_and_summary(
+                        cursor, tenant_id, org_id, bus_id, r["id"]
+                    )
+                    stock_takes.append(StockTakeReadDto(**dict(r), summary=summary, items=items))
 
                 pagination = PaginationMeta(
                     page=page, size=size, total=total,
@@ -449,47 +495,9 @@ class StockTakesService:
                 if not header:
                     return Respons(success=False, detail="Stock take not found", error="STOCK_TAKE_NOT_FOUND")
 
-                item_filter = ""
-                if only_variances:
-                    item_filter = " AND sti.match_status <> 'MATCH'"
-                cursor.execute(
-                    f"""SELECT sti.id, sti.stock_take_id, sti.product_id, p.name AS product_name,
-                    sti.counted_qty, sti.system_qty, sti.variance_qty, sti.unit_price,
-                    sti.currency_id, sti.currency_name, sti.currency_symbol, sti.match_status,
-                    sti.resolution_status, sti.note, sti.resolution_note, sti.adjustment_qty,
-                    sti.adjustment_movement_id, sti.resolved_by, sti.resolved_datetime, sti.cdatetime
-                    FROM {db_settings.MSG_STOCK_TAKE_ITEMS_TABLE} sti
-                    LEFT JOIN {db_settings.MSG_PRODUCTS_TABLE} p
-                        ON sti.product_id = p.id AND sti.tenant_id = p.tenant_id
-                        AND sti.org_id = p.org_id AND sti.bus_id = p.bus_id
-                    WHERE sti.tenant_id = %s AND sti.org_id = %s AND sti.bus_id = %s
-                    AND sti.stock_take_id = %s{item_filter}
-                    ORDER BY sti.match_status, p.name""",
-                    (tenant_id, org_id, bus_id, stock_take_id),
+                items, summary = _load_items_and_summary(
+                    cursor, tenant_id, org_id, bus_id, stock_take_id, only_variances
                 )
-                items = []
-                for r in cursor.fetchall():
-                    row = dict(r)
-                    price = row.get("unit_price")
-                    row["unit_price"] = float(price) if price is not None else None
-                    row["variance_value"] = (
-                        row["variance_qty"] * row["unit_price"] if price is not None else None
-                    )
-                    row["image_urls"] = _product_image_urls(
-                        cursor, tenant_id, org_id, bus_id, row["product_id"]
-                    )
-                    items.append(StockTakeItemReadDto(**row))
-
-                summary = StockTakeVarianceSummary(total_lines=len(items))
-                for it in items:
-                    if it.match_status == "MATCH":
-                        summary.matched += 1
-                    elif it.match_status == "OVER":
-                        summary.over += 1
-                    else:
-                        summary.short += 1
-                    if it.match_status != "MATCH" and it.resolution_status != "RESOLVED":
-                        summary.unresolved_variances += 1
 
                 result = StockTakeReadDto(**dict(header), summary=summary, items=items)
                 return Respons(success=True, detail="Stock take retrieved", data=[result])
