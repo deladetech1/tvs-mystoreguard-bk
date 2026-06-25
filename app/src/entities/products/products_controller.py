@@ -12,6 +12,8 @@ from src.entities.products.products_write_dto import (
     PermanentDeleteProductControllerWriteDto,
     SplitProductControllerWriteDto,
     ReverseSplitControllerWriteDto,
+    SplitProductsBatchControllerWriteDto,
+    ReverseSplitsBatchControllerWriteDto,
 )
 from src.entities.products.products_read_dto import (
     CreateProductControllerReadDto,
@@ -1121,4 +1123,83 @@ def get_split_statistics(
             bus_id=org_bus_loc["bus_id"],
             loc_id=org_bus_loc.get("loc_id"),
         )
+
+
+# 19. Batch Split (all-or-none)
+@products_router.post("/split-batch", response_model=Respons[SplitProductControllerReadDto])
+def split_products_batch(
+    data: SplitProductsBatchControllerWriteDto,
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    _subscription_check: dict = Depends(verify_subscription_active),
+    org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
+):
+    """Split several items together in one transaction. All-or-none."""
+    with LogContext(
+        "products",
+        "split_products_batch",
+        count=len(data.splits or []),
+    ):
+        is_authorized = AuthService.has_any_permission(
+            user_roles=current_user.data,
+            required_permissions=["permission-msg-products-split"]
+        )
+
+        if not is_authorized:
+            raise HTTPException(status_code=403, detail="Unauthorized access")
+
+        service_result = ProductsService.split_products_batch(
+            items=data.splits,
+            tenant_id=current_user.data[0].tenant_id,
+            org_id=org_bus_loc["org_id"],
+            bus_id=org_bus_loc["bus_id"],
+            created_by=current_user.data[0].user_id,
+            loc_id=org_bus_loc.get("loc_id"),
+        )
+
+        if not service_result.success:
+            logger.warning(
+                f"Batch split failed: {service_result.detail}",
+                extra={"extra_fields": {"endpoint": "/products/split-batch", "error": service_result.error, "status": "failed"}},
+            )
+
+        return service_result
+
+
+# 20. Batch Reverse (all-or-none)
+@products_router.put("/reverse-splits", response_model=Respons[ReverseSplitControllerReadDto])
+def reverse_splits_batch(
+    data: ReverseSplitsBatchControllerWriteDto,
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    _subscription_check: dict = Depends(verify_subscription_active),
+    org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
+):
+    """Reverse one, some, or all splits together in one transaction. All-or-none."""
+    with LogContext(
+        "products",
+        "reverse_splits_batch",
+        count=len(data.split_ids or []),
+    ):
+        is_authorized = AuthService.has_any_permission(
+            user_roles=current_user.data,
+            required_permissions=["permission-msg-products-split"]
+        )
+
+        if not is_authorized:
+            raise HTTPException(status_code=403, detail="Unauthorized access")
+
+        service_result = ProductsService.reverse_splits_batch(
+            split_ids=data.split_ids,
+            tenant_id=current_user.data[0].tenant_id,
+            org_id=org_bus_loc["org_id"],
+            bus_id=org_bus_loc["bus_id"],
+            updated_by=current_user.data[0].user_id,
+        )
+
+        if not service_result.success:
+            logger.warning(
+                f"Batch reverse failed: {service_result.detail}",
+                extra={"extra_fields": {"endpoint": "/products/reverse-splits", "error": service_result.error, "status": "failed"}},
+            )
+
+        return service_result
 

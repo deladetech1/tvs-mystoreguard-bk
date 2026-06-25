@@ -1,4 +1,5 @@
 from typing import Optional, List
+from contextlib import contextmanager
 from src.entities.products.products_read_dto import (
     CreateProductServiceReadDto,
     UpdateProductServiceReadDto,
@@ -2983,6 +2984,17 @@ class ProductsService:
         return cursor.fetchone()
 
     @staticmethod
+    @contextmanager
+    def _maybe_transaction(shared_cursor):
+        """Yield `shared_cursor` if given (so the caller controls the transaction —
+        used for all-or-none batch operations), otherwise open a fresh transaction."""
+        if shared_cursor is not None:
+            yield shared_cursor
+        else:
+            with DatabaseManager.transaction() as cursor:
+                yield cursor
+
+    @staticmethod
     def _location_product_table(location_type: str) -> str:
         """Return the per-location stock table for a STORE or WAREHOUSE."""
         return (
@@ -3035,6 +3047,7 @@ class ProductsService:
         bus_id: str,
         created_by: str,
         loc_id: Optional[str] = None,
+        shared_cursor=None,
     ) -> Respons[SplitProductServiceReadDto]:
         """Split (break-bulk) a product: take qty off a source product (FIFO), multiply
         each unit by `divisor`, and land the smaller units as a new batch on either an
@@ -3086,7 +3099,7 @@ class ProductsService:
         cdatetime = Helper.current_date_time()["cdatetime"]
 
         try:
-            with DatabaseManager.transaction() as cursor:
+            with ProductsService._maybe_transaction(shared_cursor) as cursor:
                 # 1. Verify source product exists
                 cursor.execute(
                     f"""SELECT id, name FROM {db_settings.MSG_PRODUCTS_TABLE}
@@ -3481,7 +3494,8 @@ class ProductsService:
         tenant_id: str,
         org_id: str,
         bus_id: str,
-        updated_by: str
+        updated_by: str,
+        shared_cursor=None,
     ) -> Respons[ReverseSplitServiceReadDto]:
         """Reverse a split: void the derived batch and return the taken quantity to the
         source batches. Only allowed when the derived batch is untouched (nothing sold)."""
@@ -3497,7 +3511,7 @@ class ProductsService:
         cdatetime = Helper.current_date_time()["cdatetime"]
 
         try:
-            with DatabaseManager.transaction() as cursor:
+            with ProductsService._maybe_transaction(shared_cursor) as cursor:
                 # Load the split
                 cursor.execute(
                     f"""SELECT * FROM {db_settings.MSG_PRODUCT_SPLITS_TABLE}
@@ -3856,4 +3870,139 @@ class ProductsService:
         except Exception as e:
             logger.error(f"Error getting split statistics: {str(e)}", exc_info=True)
             return Respons(success=False, detail=f"Failed to get split statistics: {str(e)}", error="INTERNAL_ERROR")
+
+    # Max items allowed in one batch split / batch reverse request
+    MAX_BATCH_SPLITS = 50
+
+    @staticmethod
+    def split_products_batch(
+        items: List[SplitProductServiceWriteDto],
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        created_by: str,
+        loc_id: Optional[str] = None,
+    ) -> Respons[SplitProductServiceReadDto]:
+        """Split several items together in a single transaction (all-or-none): if ANY
+        item fails, the whole batch is rolled back and nothing changes."""
+        # --- Guards ---
+        if not items:
+            return Respons(success=False, detail="No splits provided", error="VALIDATION_ERROR")
+        if len(items) > ProductsService.MAX_BATCH_SPLITS:
+            return Respons(
+                success=False,
+                detail=f"Too many splits in one request (max {ProductsService.MAX_BATCH_SPLITS}, got {len(items)})",
+                error="VALIDATION_ERROR",
+            )
+
+        logger.info(
+            "Processing batch split",
+            extra={"extra_fields": {"count": len(items), "created_by": created_by}},
+        )
+
+        try:
+            with DatabaseManager.transaction() as cursor:
+                created = []
+                for idx, item in enumerate(items):
+                    result = ProductsService.split_product(
+                        data=item,
+                        tenant_id=tenant_id,
+                        org_id=org_id,
+                        bus_id=bus_id,
+                        created_by=created_by,
+                        loc_id=loc_id,
+                        shared_cursor=cursor,
+                    )
+                    if not result.success or not result.data:
+                        # Abort the whole batch — rolls back every item already processed
+                        raise ValueError(
+                            f"Item {idx + 1} (product '{item.source_product_id}') failed: {result.detail}"
+                        )
+                    created.append(result.data[0])
+
+                logger.info(f"Batch split successful: {len(created)} split(s) created")
+                return Respons(
+                    success=True,
+                    detail=f"{len(created)} split(s) created successfully",
+                    data=created,
+                )
+        except ValueError as e:
+            logger.warning(f"Batch split rolled back: {str(e)}")
+            return Respons(
+                success=False,
+                detail=f"No splits were applied. {str(e)}",
+                error="BATCH_ROLLED_BACK",
+            )
+        except Exception as e:
+            logger.error(f"Error in batch split: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=f"Failed to perform batch split: {str(e)}", error="INTERNAL_ERROR")
+
+    @staticmethod
+    def reverse_splits_batch(
+        split_ids: List[str],
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        updated_by: str,
+    ) -> Respons[ReverseSplitServiceReadDto]:
+        """Reverse one, some, or all splits together in a single transaction (all-or-none):
+        if ANY reversal is not allowed (e.g. some units already sold), the whole batch is
+        rolled back and nothing is reversed."""
+        from src.entities.products.products_write_dto import ReverseSplitServiceWriteDto
+
+        # --- Guards ---
+        clean_ids = []
+        seen = set()
+        for sid in (split_ids or []):
+            if sid and sid not in seen:
+                seen.add(sid)
+                clean_ids.append(sid)
+
+        if not clean_ids:
+            return Respons(success=False, detail="No split IDs provided", error="VALIDATION_ERROR")
+        if len(clean_ids) > ProductsService.MAX_BATCH_SPLITS:
+            return Respons(
+                success=False,
+                detail=f"Too many splits in one request (max {ProductsService.MAX_BATCH_SPLITS}, got {len(clean_ids)})",
+                error="VALIDATION_ERROR",
+            )
+
+        logger.info(
+            "Processing batch split reversal",
+            extra={"extra_fields": {"count": len(clean_ids), "updated_by": updated_by}},
+        )
+
+        try:
+            with DatabaseManager.transaction() as cursor:
+                reversed_ids = []
+                for idx, sid in enumerate(clean_ids):
+                    result = ProductsService.reverse_split(
+                        data=ReverseSplitServiceWriteDto(split_id=sid),
+                        tenant_id=tenant_id,
+                        org_id=org_id,
+                        bus_id=bus_id,
+                        updated_by=updated_by,
+                        shared_cursor=cursor,
+                    )
+                    if not result.success:
+                        # Abort the whole batch — nothing is reversed
+                        raise ValueError(f"Split '{sid}' could not be reversed: {result.detail}")
+                    reversed_ids.append(sid)
+
+                logger.info(f"Batch reversal successful: {len(reversed_ids)} split(s) reversed")
+                return Respons(
+                    success=True,
+                    detail=f"{len(reversed_ids)} split(s) reversed successfully",
+                    data=[ReverseSplitServiceReadDto(split_id=sid, message="Reversed") for sid in reversed_ids],
+                )
+        except ValueError as e:
+            logger.warning(f"Batch reversal rolled back: {str(e)}")
+            return Respons(
+                success=False,
+                detail=f"No splits were reversed. {str(e)}",
+                error="BATCH_ROLLED_BACK",
+            )
+        except Exception as e:
+            logger.error(f"Error in batch reversal: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=f"Failed to perform batch reversal: {str(e)}", error="INTERNAL_ERROR")
 

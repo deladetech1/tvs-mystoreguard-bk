@@ -268,3 +268,43 @@ class ReverseSplitServiceWriteDto(ReverseSplitWriteBase):
     """Service DTO for reversing a product split"""
     pass
 
+
+# =====================================================
+# BATCH SPLIT / BATCH REVERSE WRITE DTOs (all-or-none)
+# =====================================================
+
+class SplitProductsBatchWriteBase(BaseModel):
+    """Split several items together. All-or-none: if any item fails, nothing is applied."""
+    splits: List[SplitProductWriteBase] = Field(
+        default_factory=list,
+        description="List of splits to perform together in one transaction (all-or-none)",
+    )
+
+
+class SplitProductsBatchControllerWriteDto(SplitProductsBatchWriteBase):
+    """Controller DTO for batch split"""
+    pass
+
+
+class SplitProductsBatchServiceWriteDto(SplitProductsBatchWriteBase):
+    """Service DTO for batch split"""
+    pass
+
+
+class ReverseSplitsBatchWriteBase(BaseModel):
+    """Reverse one, some, or all splits together. All-or-none."""
+    split_ids: List[str] = Field(
+        default_factory=list,
+        description="Split IDs to reverse together (one for a single product, many for all). All-or-none.",
+    )
+
+
+class ReverseSplitsBatchControllerWriteDto(ReverseSplitsBatchWriteBase):
+    """Controller DTO for batch reverse"""
+    pass
+
+
+class ReverseSplitsBatchServiceWriteDto(ReverseSplitsBatchWriteBase):
+    """Service DTO for batch reverse"""
+    pass
+

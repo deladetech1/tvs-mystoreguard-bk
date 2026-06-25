@@ -101,6 +101,36 @@ Query: `source_product_id?`, `status?` (`ACTIVE`/`REVERSED`), `page`, `size`.
 ### `GET /products/split-detail`
 Query: `split_id`.
 
+### `POST /products/split-batch` — split many items at once (all-or-none)
+Runs every split in **one transaction**. If any item fails (bad input, insufficient
+stock, …), the whole batch is rolled back and **nothing** changes.
+```json
+{
+  "splits": [
+    { "source_product_id": "prd_pole", "source_qty_taken": 5, "divisor": 2,
+      "source_scope": "STORE", "price_mode": "AUTO",
+      "destination": "NEW", "new_product_name": "Half Pole" },
+    { "source_product_id": "prd_curtain", "source_qty_taken": 2, "divisor": 2,
+      "source_scope": "STORE", "price_mode": "AUTO",
+      "destination": "NEW", "new_product_name": "Half Curtain" }
+  ]
+}
+```
+Each item takes the same fields as `POST /products/split`. Returns the created split
+records. Guard: max 50 items per request.
+
+### `PUT /products/reverse-splits` — reverse one, some, or all (all-or-none)
+Pass just the IDs you want to undo — one product, a few, or every split from a batch.
+Runs in one transaction: if any can't be reversed (e.g. some units already sold), the
+whole request is rolled back and **nothing** is reversed.
+```json
+{ "split_ids": ["spl_curtain"] }          // reverse only curtains, leave the pole
+```
+```json
+{ "split_ids": ["spl_pole", "spl_curtain"] }   // reverse all
+```
+Guards: duplicate IDs are ignored; max 50 per request.
+
 ## Notes
 
 - For `STORE`/`WAREHOUSE` splits, the location is the caller's current location. To split
