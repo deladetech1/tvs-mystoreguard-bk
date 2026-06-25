@@ -3335,7 +3335,7 @@ class ProductsService:
                 (
                     Helper.generate_unique_identifier(prefix="mov"), tenant_id, org_id, bus_id,
                     item.source_product_id, row['batch_id'], mov_location_type, mov_location_id,
-                    'OUT', take, f"SPLIT_OUT - {take} unit(s) taken to split into {item.divisor}", split_id,
+                    'OUT', take, f"SPLIT_OUT - {take} unit(s) taken to split", split_id,
                     cdate, ctime, cdatetime, created_by,
                 ),
             )
@@ -3393,7 +3393,7 @@ class ProductsService:
                 (
                     Helper.generate_unique_identifier(prefix="mov"), tenant_id, org_id, bus_id,
                     derived_product_id, derived_batch_id, 'SYSTEM', None,
-                    'IN', derived_qty, f"SPLIT_IN - {derived_qty} unit(s) from splitting product {item.source_product_id}", split_id,
+                    'IN', derived_qty, f"SPLIT_IN - {derived_qty} unit(s) added from split", split_id,
                     cdate, ctime, cdatetime, created_by,
                 ),
             )
@@ -3422,7 +3422,7 @@ class ProductsService:
                 (
                     Helper.generate_unique_identifier(prefix="mov"), tenant_id, org_id, bus_id,
                     derived_product_id, derived_batch_id, location_type, loc_id,
-                    'IN', derived_qty, f"SPLIT_IN - {derived_qty} unit(s) from splitting product {item.source_product_id}", split_id,
+                    'IN', derived_qty, f"SPLIT_IN - {derived_qty} unit(s) added from split", split_id,
                     cdate, ctime, cdatetime, created_by,
                 ),
             )
@@ -3695,7 +3695,7 @@ class ProductsService:
             (
                 Helper.generate_unique_identifier(prefix="mov"), tenant_id, org_id, bus_id,
                 derived_product_id, derived_batch_id, mov_location_type, mov_location_id,
-                'OUT', derived_qty, f"SPLIT_REVERSE - item {item_id} reversed, derived batch voided", item_id,
+                'OUT', derived_qty, f"SPLIT_REVERSE - {derived_qty} unit(s) removed", item_id,
                 cdate, ctime, cdatetime, updated_by,
             ),
         )
@@ -3741,7 +3741,7 @@ class ProductsService:
                     (
                         Helper.generate_unique_identifier(prefix="mov"), tenant_id, org_id, bus_id,
                         source_product_id, sb_id, mov_location_type, mov_location_id,
-                        'IN', qty_taken, f"SPLIT_REVERSE - {qty_taken} unit(s) returned to source from item {item_id}", item_id,
+                        'IN', qty_taken, f"SPLIT_REVERSE - {qty_taken} unit(s) returned", item_id,
                         cdate, ctime, cdatetime, updated_by,
                     ),
                 )
