@@ -441,3 +441,43 @@ class ReverseSplitServiceReadDto(ReverseSplitReadBase):
     """Service DTO for reverse split read operations"""
     pass
 
+
+class SplitStatisticsReadBase(BaseModel):
+    """Statistics for product splits at the current location.
+
+    Counts cover all splits; quantity & money cover ACTIVE splits only (reversed
+    splits were undone, so they don't add to standing quantity/value). PRODUCT-scope
+    (pool) splits are not location-bound and are excluded from these per-location stats.
+    """
+    loc_id: Optional[str] = Field(None, description="Location these stats are scoped to")
+
+    # --- Counts & health ---
+    total_splits: int = Field(default=0, description="All splits at this location")
+    active_splits: int = Field(default=0, description="Splits still in effect")
+    reversed_splits: int = Field(default=0, description="Splits that were reversed")
+    reversal_rate: float = Field(default=0, description="Percentage of splits reversed (0-100)")
+    splits_today: int = Field(default=0, description="Splits created today")
+    splits_last_7_days: int = Field(default=0, description="Splits created in the last 7 days")
+    splits_last_30_days: int = Field(default=0, description="Splits created in the last 30 days")
+
+    # --- Quantity flow (active splits) ---
+    total_source_qty_taken: int = Field(default=0, description="Total source units broken up")
+    total_derived_qty: int = Field(default=0, description="Total smaller units produced")
+    average_divisor: float = Field(default=0, description="Average divisor across splits")
+
+    # --- Money (active splits) ---
+    derived_selling_value: float = Field(default=0, description="Sum of unit_selling_price x derived_qty")
+    derived_cost_value: float = Field(default=0, description="Sum of unit_cost_price x derived_qty")
+    original_selling_value: float = Field(default=0, description="Selling value of the source units before splitting")
+    rounding_drift: float = Field(default=0, description="derived_selling_value - original_selling_value (rounding artifact)")
+
+
+class GetSplitStatisticsControllerReadDto(SplitStatisticsReadBase):
+    """Controller DTO for split statistics"""
+    pass
+
+
+class GetSplitStatisticsServiceReadDto(SplitStatisticsReadBase):
+    """Service DTO for split statistics"""
+    pass
+

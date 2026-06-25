@@ -19,6 +19,7 @@ from src.entities.products.products_read_dto import (
     GetSplitsServiceReadDto,
     ReverseSplitServiceReadDto,
     SourceBatchConsumedReadDto,
+    GetSplitStatisticsServiceReadDto,
 )
 from src.entities.products.products_write_dto import (
     CreateProductServiceWriteDto,
@@ -3776,4 +3777,83 @@ class ProductsService:
         except Exception as e:
             logger.error(f"Error listing splits: {str(e)}", exc_info=True)
             return Respons(success=False, detail=f"Failed to list splits: {str(e)}", error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_split_statistics(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        loc_id: str,
+    ) -> Respons[GetSplitStatisticsServiceReadDto]:
+        """Split statistics for the current location (STORE/WAREHOUSE splits done at
+        loc_id). Counts cover all splits; quantity & money cover ACTIVE splits only."""
+        if not loc_id:
+            return Respons(success=False, detail="A location is required for split statistics", error="VALIDATION_ERROR")
+
+        today = Helper.current_date_time()["cdate"]
+        try:
+            with DatabaseManager.transaction() as cursor:
+                # Counts + quantity/money sums (money/qty over ACTIVE only)
+                cursor.execute(
+                    f"""SELECT
+                        COUNT(*) AS total_splits,
+                        COUNT(*) FILTER (WHERE status = 'ACTIVE') AS active_splits,
+                        COUNT(*) FILTER (WHERE status = 'REVERSED') AS reversed_splits,
+                        COUNT(*) FILTER (WHERE cdate = %s) AS splits_today,
+                        COUNT(*) FILTER (WHERE cdatetime >= NOW() - INTERVAL '7 days') AS splits_last_7_days,
+                        COUNT(*) FILTER (WHERE cdatetime >= NOW() - INTERVAL '30 days') AS splits_last_30_days,
+                        COALESCE(SUM(source_qty_taken) FILTER (WHERE status = 'ACTIVE'), 0) AS total_source_qty_taken,
+                        COALESCE(SUM(derived_qty) FILTER (WHERE status = 'ACTIVE'), 0) AS total_derived_qty,
+                        COALESCE(AVG(divisor) FILTER (WHERE status = 'ACTIVE'), 0) AS average_divisor,
+                        COALESCE(SUM(unit_selling_price * derived_qty) FILTER (WHERE status = 'ACTIVE'), 0) AS derived_selling_value,
+                        COALESCE(SUM(unit_cost_price * derived_qty) FILTER (WHERE status = 'ACTIVE'), 0) AS derived_cost_value
+                    FROM {db_settings.MSG_PRODUCT_SPLITS_TABLE}
+                    WHERE tenant_id = %s AND org_id = %s AND bus_id = %s
+                    AND delete_status = 'NOT_DELETED' AND loc_id = %s""",
+                    (today, tenant_id, org_id, bus_id, loc_id),
+                )
+                agg = cursor.fetchone() or {}
+
+                # Original (pre-split) value of the source units, from source_batches JSON
+                cursor.execute(
+                    f"""SELECT
+                        COALESCE(SUM(sb.qty_taken * sb.base_selling_price), 0) AS original_selling_value,
+                        COALESCE(SUM(sb.qty_taken * sb.cost_price), 0) AS original_cost_value
+                    FROM {db_settings.MSG_PRODUCT_SPLITS_TABLE} ps
+                    CROSS JOIN LATERAL jsonb_to_recordset(COALESCE(ps.source_batches, '[]'::jsonb))
+                        AS sb(qty_taken numeric, base_selling_price numeric, cost_price numeric)
+                    WHERE ps.tenant_id = %s AND ps.org_id = %s AND ps.bus_id = %s
+                    AND ps.delete_status = 'NOT_DELETED' AND ps.loc_id = %s AND ps.status = 'ACTIVE'""",
+                    (tenant_id, org_id, bus_id, loc_id),
+                )
+                orig = cursor.fetchone() or {}
+
+                total = int(agg.get('total_splits') or 0)
+                reversed_count = int(agg.get('reversed_splits') or 0)
+                reversal_rate = ProductsService._money((reversed_count / total) * 100) if total else 0.0
+                derived_selling_value = ProductsService._money(agg.get('derived_selling_value') or 0)
+                original_selling_value = ProductsService._money(orig.get('original_selling_value') or 0)
+
+                stats = GetSplitStatisticsServiceReadDto(
+                    loc_id=loc_id,
+                    total_splits=total,
+                    active_splits=int(agg.get('active_splits') or 0),
+                    reversed_splits=reversed_count,
+                    reversal_rate=reversal_rate,
+                    splits_today=int(agg.get('splits_today') or 0),
+                    splits_last_7_days=int(agg.get('splits_last_7_days') or 0),
+                    splits_last_30_days=int(agg.get('splits_last_30_days') or 0),
+                    total_source_qty_taken=int(agg.get('total_source_qty_taken') or 0),
+                    total_derived_qty=int(agg.get('total_derived_qty') or 0),
+                    average_divisor=ProductsService._money(agg.get('average_divisor') or 0),
+                    derived_selling_value=derived_selling_value,
+                    derived_cost_value=ProductsService._money(agg.get('derived_cost_value') or 0),
+                    original_selling_value=original_selling_value,
+                    rounding_drift=ProductsService._money(derived_selling_value - original_selling_value),
+                )
+
+                return Respons(success=True, detail="Split statistics retrieved successfully", data=[stats])
+        except Exception as e:
+            logger.error(f"Error getting split statistics: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=f"Failed to get split statistics: {str(e)}", error="INTERNAL_ERROR")
 

@@ -27,6 +27,7 @@ from src.entities.products.products_read_dto import (
     SplitProductControllerReadDto,
     GetSplitsControllerReadDto,
     ReverseSplitControllerReadDto,
+    GetSplitStatisticsControllerReadDto,
 )
 from src.entities.shared.sh_response import Respons
 from src.configs.logging import get_logger
@@ -1091,5 +1092,33 @@ def get_split(
             tenant_id=current_user.data[0].tenant_id,
             org_id=org_bus_loc["org_id"],
             bus_id=org_bus_loc["bus_id"],
+        )
+
+
+# 18. Split Statistics (current location)
+@products_router.get("/split-statistics", response_model=Respons[GetSplitStatisticsControllerReadDto])
+def get_split_statistics(
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
+):
+    """Split statistics for the caller's current location"""
+    with LogContext(
+        "products",
+        "get_split_statistics",
+        tenant_id=current_user.data[0].tenant_id,
+    ):
+        is_authorized = AuthService.has_any_permission(
+            user_roles=current_user.data,
+            required_permissions=["permission-msg-products-split", "permission-msg-products-get"]
+        )
+
+        if not is_authorized:
+            raise HTTPException(status_code=403, detail="Unauthorized access")
+
+        return ProductsService.get_split_statistics(
+            tenant_id=current_user.data[0].tenant_id,
+            org_id=org_bus_loc["org_id"],
+            bus_id=org_bus_loc["bus_id"],
+            loc_id=org_bus_loc.get("loc_id"),
         )
 

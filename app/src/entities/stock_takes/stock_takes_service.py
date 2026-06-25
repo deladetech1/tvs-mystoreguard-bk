@@ -232,6 +232,7 @@ class StockTakesService:
         bus_id: str,
         loc_id: str,
         status: Optional[str] = None,
+        location_type: Optional[str] = None,
         page: int = 1,
         size: int = 10,
     ) -> Respons:
@@ -243,6 +244,9 @@ class StockTakesService:
                 if status:
                     filters.append("status = %s")
                     params.append(status)
+                if location_type:
+                    filters.append("location_type = %s")
+                    params.append(location_type)
                 where = " AND ".join(filters)
 
                 cursor.execute(
@@ -276,8 +280,20 @@ class StockTakesService:
     # STATISTICS (aggregate for a location)
     # =====================================================
     @staticmethod
-    def get_statistics(tenant_id: str, org_id: str, bus_id: str, loc_id: str) -> Respons:
-        scope = (tenant_id, org_id, bus_id, loc_id)
+    def get_statistics(
+        tenant_id: str, org_id: str, bus_id: str, loc_id: str,
+        location_type: Optional[str] = None,
+    ) -> Respons:
+        # Optional location_type filter, applied to the header table directly in the
+        # counts query and via the `st` alias in the line/top queries.
+        base = [tenant_id, org_id, bus_id, loc_id]
+        lt_header = lt_st = ""
+        if location_type:
+            lt_header = " AND location_type = %s"
+            lt_st = " AND st.location_type = %s"
+            base.append(location_type)
+        params_h = tuple(base)
+        params_s = tuple(base)
         try:
             with DatabaseManager.transaction() as cursor:
                 # Stock-take header counts by status
@@ -289,8 +305,8 @@ class StockTakesService:
                         COUNT(*) FILTER (WHERE status = 'CANCELLED') AS cancelled
                     FROM {db_settings.MSG_STOCK_TAKES_TABLE}
                     WHERE tenant_id = %s AND org_id = %s AND bus_id = %s AND loc_id = %s
-                    AND delete_status = 'NOT_DELETED'""",
-                    scope,
+                    AND delete_status = 'NOT_DELETED'{lt_header}""",
+                    params_h,
                 )
                 hc = cursor.fetchone() or {}
 
@@ -315,8 +331,8 @@ class StockTakesService:
                         ON sti.stock_take_id = st.id AND sti.tenant_id = st.tenant_id
                         AND sti.org_id = st.org_id AND sti.bus_id = st.bus_id
                     WHERE st.tenant_id = %s AND st.org_id = %s AND st.bus_id = %s AND st.loc_id = %s
-                    AND st.delete_status = 'NOT_DELETED'""",
-                    scope,
+                    AND st.delete_status = 'NOT_DELETED'{lt_st}""",
+                    params_s,
                 )
                 lc = cursor.fetchone() or {}
 
@@ -333,11 +349,11 @@ class StockTakesService:
                         ON sti.product_id = p.id AND sti.tenant_id = p.tenant_id
                         AND sti.org_id = p.org_id AND sti.bus_id = p.bus_id
                     WHERE st.tenant_id = %s AND st.org_id = %s AND st.bus_id = %s AND st.loc_id = %s
-                    AND st.delete_status = 'NOT_DELETED' AND sti.variance_qty < 0
+                    AND st.delete_status = 'NOT_DELETED' AND sti.variance_qty < 0{lt_st}
                     GROUP BY sti.product_id, p.name
                     ORDER BY shortage_value DESC, short_qty_signed ASC
                     LIMIT 5""",
-                    scope,
+                    params_s,
                 )
                 top = [
                     TopShortageProductDto(

@@ -55,6 +55,9 @@ def create_stock_take(
 @stock_takes_router.get("", response_model=Respons[GetStockTakeControllerReadDto])
 def list_stock_takes(
     status: Optional[str] = Query(None, description="Filter by status (DRAFT|COMPLETED|CANCELLED)"),
+    location_type: Optional[str] = Query(
+        None, pattern="^(STORE|WAREHOUSE)$", description="Filter by location type (STORE|WAREHOUSE)"
+    ),
     page: int = Query(1, ge=1, description="Page number"),
     size: int = Query(10, ge=1, le=100, description="Page size (max 100)"),
     current_user: dict = Depends(CustomAuthService.get_current_user),
@@ -69,6 +72,7 @@ def list_stock_takes(
         bus_id=org_bus_loc["bus_id"],
         loc_id=org_bus_loc["loc_id"],
         status=status,
+        location_type=location_type,
         page=page,
         size=size,
     )
@@ -78,6 +82,9 @@ def list_stock_takes(
 # "statistics" is not captured as a stock take id).
 @stock_takes_router.get("/statistics", response_model=Respons[StockTakeStatisticsControllerReadDto])
 def get_stock_take_statistics(
+    location_type: Optional[str] = Query(
+        None, pattern="^(STORE|WAREHOUSE)$", description="Filter by location type (STORE|WAREHOUSE)"
+    ),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     _subscription_check: dict = Depends(verify_subscription_active),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
@@ -90,6 +97,7 @@ def get_stock_take_statistics(
         org_id=org_bus_loc["org_id"],
         bus_id=org_bus_loc["bus_id"],
         loc_id=org_bus_loc["loc_id"],
+        location_type=location_type,
     )
 
 
