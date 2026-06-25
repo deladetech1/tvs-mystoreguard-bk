@@ -358,3 +358,82 @@ class GetProductStatisticsServiceReadDto(ProductStatisticsReadBase):
     """Service DTO for product statistics"""
     pass
 
+
+# =====================================================
+# PRODUCT SPLIT (BREAK-BULK) READ DTOs
+# =====================================================
+
+class SourceBatchConsumedReadDto(BaseModel):
+    """A single source batch that was consumed by a split"""
+    batch_id: str = Field(..., description="Source batch ID")
+    batch_number: Optional[str] = Field(None, description="Source batch number")
+    qty_taken: int = Field(..., description="Quantity taken from this source batch")
+    cost_price: Optional[float] = Field(None, description="Cost price of the source batch")
+    base_selling_price: Optional[float] = Field(None, description="Selling price of the source batch")
+
+
+class ProductSplitReadBase(BaseModel):
+    """Base read DTO for a product split record"""
+    id: str = Field(..., description="Split ID")
+    tenant_id: str
+    org_id: str
+    bus_id: str
+    source_product_id: str = Field(..., description="Product the stock was taken from")
+    source_product_name: Optional[str] = Field(None, description="Source product name")
+    source_qty_taken: int = Field(..., description="Number of source units broken up")
+    divisor: int = Field(..., description="Units each source unit became")
+    derived_product_id: str = Field(..., description="Product the new units were added to")
+    derived_product_name: Optional[str] = Field(None, description="Derived product name")
+    derived_batch_id: str = Field(..., description="Batch created to hold the new units")
+    derived_batch_number: Optional[str] = Field(None, description="Derived batch number")
+    derived_qty: int = Field(..., description="Total smaller units created (source_qty_taken * divisor)")
+    unit_cost_price: Optional[float] = Field(None, description="Cost price assigned per smaller unit")
+    unit_selling_price: Optional[float] = Field(None, description="Selling price assigned per smaller unit")
+    price_mode: str = Field(..., description="AUTO or MANUAL")
+    currency_id: Optional[str] = Field(None, description="Currency inherited from the source batch")
+    status: str = Field(..., description="ACTIVE or REVERSED")
+    source_batches: List[SourceBatchConsumedReadDto] = Field(default_factory=list, description="Source batches consumed and how much was taken from each")
+    cdate: str
+    ctime: str
+    cdatetime: datetime
+    created_by: Optional[str] = None
+    created_by_name: Optional[str] = Field(None, description="Fullname of user who created the split")
+    reversed_by: Optional[str] = None
+    reversed_at: Optional[datetime] = None
+
+
+class SplitProductControllerReadDto(ProductSplitReadBase):
+    """Controller DTO for split product read operations"""
+    pass
+
+
+class SplitProductServiceReadDto(ProductSplitReadBase):
+    """Service DTO for split product read operations"""
+    pass
+
+
+class GetSplitsControllerReadDto(ProductSplitReadBase):
+    """Controller DTO for listing splits"""
+    pass
+
+
+class GetSplitsServiceReadDto(ProductSplitReadBase):
+    """Service DTO for listing splits"""
+    pass
+
+
+class ReverseSplitReadBase(BaseModel):
+    """Base read DTO for reverse split result"""
+    split_id: str
+    message: str
+
+
+class ReverseSplitControllerReadDto(ReverseSplitReadBase):
+    """Controller DTO for reverse split read operations"""
+    pass
+
+
+class ReverseSplitServiceReadDto(ReverseSplitReadBase):
+    """Service DTO for reverse split read operations"""
+    pass
+

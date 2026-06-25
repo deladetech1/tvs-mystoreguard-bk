@@ -15,6 +15,10 @@ from src.entities.products.products_read_dto import (
     DeleteMovementServiceReadDto,
     PricingRuleAppliedReadDto,
     TaxRuleAppliedReadDto,
+    SplitProductServiceReadDto,
+    GetSplitsServiceReadDto,
+    ReverseSplitServiceReadDto,
+    SourceBatchConsumedReadDto,
 )
 from src.entities.products.products_write_dto import (
     CreateProductServiceWriteDto,
@@ -24,6 +28,8 @@ from src.entities.products.products_write_dto import (
     PermanentDeleteProductServiceWriteDto,
     DeleteBatchServiceWriteDto,
     DeleteMovementServiceWriteDto,
+    SplitProductServiceWriteDto,
+    ReverseSplitServiceWriteDto,
 )
 from src.entities.shared.sh_response import Respons, PaginationMeta
 from src.entities.shared.sh_service import ActivityLogService
@@ -2904,4 +2910,647 @@ class ProductsService:
                 detail=f"Failed to calculate product prices: {str(e)}",
                 error="INTERNAL_ERROR",
             )
+
+    # =====================================================
+    # PRODUCT SPLIT (BREAK-BULK) OPERATIONS
+    # =====================================================
+
+    @staticmethod
+    def _money(value) -> float:
+        """Round a monetary value to 2 decimal places (ROUND_HALF_UP), matching pricing logic."""
+        from decimal import Decimal, ROUND_HALF_UP
+        return float(Decimal(str(value)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+
+    @staticmethod
+    def _row_to_split_dto(row) -> SplitProductServiceReadDto:
+        """Convert a joined msg_product_splits row into a read DTO."""
+        import json as _json
+        d = dict(row)
+        source_batches = d.get('source_batches') or []
+        if isinstance(source_batches, str):
+            source_batches = _json.loads(source_batches)
+        source_batches_dto = [SourceBatchConsumedReadDto(**b) for b in source_batches]
+        return SplitProductServiceReadDto(
+            id=d['id'],
+            tenant_id=d['tenant_id'],
+            org_id=d['org_id'],
+            bus_id=d['bus_id'],
+            source_product_id=d['source_product_id'],
+            source_product_name=d.get('source_product_name'),
+            source_qty_taken=d['source_qty_taken'],
+            divisor=d['divisor'],
+            derived_product_id=d['derived_product_id'],
+            derived_product_name=d.get('derived_product_name'),
+            derived_batch_id=d['derived_batch_id'],
+            derived_batch_number=d.get('derived_batch_number'),
+            derived_qty=d['derived_qty'],
+            unit_cost_price=float(d['unit_cost_price']) if d.get('unit_cost_price') is not None else None,
+            unit_selling_price=float(d['unit_selling_price']) if d.get('unit_selling_price') is not None else None,
+            price_mode=d['price_mode'],
+            currency_id=d.get('currency_id'),
+            status=d['status'],
+            source_batches=source_batches_dto,
+            cdate=d['cdate'],
+            ctime=d['ctime'],
+            cdatetime=d['cdatetime'],
+            created_by=d.get('created_by'),
+            created_by_name=d.get('created_by_name'),
+            reversed_by=d.get('reversed_by'),
+            reversed_at=d.get('reversed_at'),
+        )
+
+    @staticmethod
+    def _fetch_split_row(cursor, split_id, tenant_id, org_id, bus_id):
+        """Fetch a single split joined with source/derived product names and batch number."""
+        cursor.execute(
+            f"""SELECT ps.*,
+                   sp.name as source_product_name,
+                   dp.name as derived_product_name,
+                   db.batch_number as derived_batch_number,
+                   creator.fullname as created_by_name
+            FROM {db_settings.MSG_PRODUCT_SPLITS_TABLE} ps
+            LEFT JOIN {db_settings.MSG_PRODUCTS_TABLE} sp ON ps.source_product_id = sp.id AND ps.tenant_id = sp.tenant_id
+            LEFT JOIN {db_settings.MSG_PRODUCTS_TABLE} dp ON ps.derived_product_id = dp.id AND ps.tenant_id = dp.tenant_id
+            LEFT JOIN {db_settings.MSG_PURCHASE_BATCHES_TABLE} db ON ps.derived_batch_id = db.id AND ps.tenant_id = db.tenant_id
+            LEFT JOIN {db_settings.CORE_PLATFORM_USERS_TABLE} creator ON ps.created_by = creator.id AND ps.tenant_id = creator.tenant_id
+            WHERE ps.id = %s AND ps.tenant_id = %s AND ps.org_id = %s AND ps.bus_id = %s""",
+            (split_id, tenant_id, org_id, bus_id),
+        )
+        return cursor.fetchone()
+
+    @staticmethod
+    def split_product(
+        data: SplitProductServiceWriteDto,
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        created_by: str
+    ) -> Respons[SplitProductServiceReadDto]:
+        """Split (break-bulk) a product: take qty off a source product (FIFO across its
+        batches), multiply each unit by `divisor`, and land the smaller units as a new
+        batch on either an existing product or a brand new product. Records a reversible
+        split row for lineage."""
+        import json as _json
+
+        logger.info(
+            "Processing product split",
+            extra={
+                "extra_fields": {
+                    "tenant_id": tenant_id,
+                    "org_id": org_id,
+                    "bus_id": bus_id,
+                    "source_product_id": data.source_product_id,
+                    "source_qty_taken": data.source_qty_taken,
+                    "divisor": data.divisor,
+                    "destination": data.destination,
+                    "created_by": created_by,
+                }
+            },
+        )
+
+        # --- Basic validation (beyond pydantic) ---
+        if data.divisor < 1:
+            return Respons(success=False, detail="divisor must be at least 1", error="VALIDATION_ERROR")
+        if data.price_mode == 'MANUAL' and data.unit_selling_price is None:
+            return Respons(success=False, detail="unit_selling_price is required when price_mode is MANUAL", error="VALIDATION_ERROR")
+        if data.destination == 'EXISTING' and not data.destination_product_id:
+            return Respons(success=False, detail="destination_product_id is required when destination is EXISTING", error="VALIDATION_ERROR")
+        if data.destination == 'NEW' and not data.new_product_name:
+            return Respons(success=False, detail="new_product_name is required when destination is NEW", error="VALIDATION_ERROR")
+
+        cdate = Helper.current_date_time()["cdate"]
+        ctime = Helper.current_date_time()["ctime"]
+        cdatetime = Helper.current_date_time()["cdatetime"]
+
+        try:
+            with DatabaseManager.transaction() as cursor:
+                # 1. Verify source product exists
+                cursor.execute(
+                    f"""SELECT id, name FROM {db_settings.MSG_PRODUCTS_TABLE}
+                    WHERE id = %s AND tenant_id = %s AND org_id = %s
+                    AND bus_id = %s AND delete_status = 'NOT_DELETED'""",
+                    (data.source_product_id, tenant_id, org_id, bus_id),
+                )
+                source_product = cursor.fetchone()
+                if not source_product:
+                    return Respons(success=False, detail=f"Source product '{data.source_product_id}' not found", error="NOT_FOUND")
+
+                # 2. Get source batches with available stock, FIFO (oldest first)
+                cursor.execute(
+                    f"""SELECT id, batch_number, qty_remaining, cost_price, base_selling_price,
+                           currency_id, unit_of_measure_id, supplier_id
+                    FROM {db_settings.MSG_PURCHASE_BATCHES_TABLE}
+                    WHERE product_id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s
+                    AND delete_status = 'NOT_DELETED'
+                    AND status NOT IN ('VOID', 'CANCELLED')
+                    AND qty_remaining > 0
+                    ORDER BY cdatetime ASC""",
+                    (data.source_product_id, tenant_id, org_id, bus_id),
+                )
+                source_batches = cursor.fetchall()
+
+                total_available = sum(int(b.get('qty_remaining') or 0) for b in source_batches)
+                if total_available < data.source_qty_taken:
+                    return Respons(
+                        success=False,
+                        detail=f"Insufficient stock to split. Available: {total_available}, requested: {data.source_qty_taken}",
+                        error="INSUFFICIENT_STOCK",
+                    )
+
+                # Reference batch for pricing/currency = most recently received available batch
+                reference_batch = source_batches[-1]
+                source_cost = reference_batch.get('cost_price')
+                source_selling = reference_batch.get('base_selling_price')
+                source_currency_id = reference_batch.get('currency_id')
+                default_uom_id = reference_batch.get('unit_of_measure_id')
+                default_supplier_id = reference_batch.get('supplier_id')
+
+                if not source_currency_id:
+                    return Respons(success=False, detail="Source batch has no currency; cannot create derived batch", error="VALIDATION_ERROR")
+
+                # 3. Compute per-unit prices
+                if data.price_mode == 'AUTO':
+                    unit_selling_price = ProductsService._money(
+                        (source_selling or 0) / data.divisor
+                    )
+                else:  # MANUAL
+                    unit_selling_price = ProductsService._money(data.unit_selling_price)
+
+                if data.unit_cost_price is not None:
+                    unit_cost_price = ProductsService._money(data.unit_cost_price)
+                else:
+                    unit_cost_price = ProductsService._money((source_cost or 0) / data.divisor)
+
+                derived_qty = data.source_qty_taken * data.divisor
+
+                # 4. Resolve destination product (existing or new)
+                uom_id = data.unit_of_measure_id or default_uom_id
+                supplier_id = data.supplier_id or default_supplier_id
+
+                # Validate optional unit of measure override
+                if data.unit_of_measure_id:
+                    cursor.execute(
+                        f"""SELECT id FROM {db_settings.CORE_PLATFORM_UNIT_OF_MEASURE_TABLE}
+                        WHERE tenant_id = %s AND id = %s""",
+                        (tenant_id, data.unit_of_measure_id),
+                    )
+                    if not cursor.fetchone():
+                        return Respons(success=False, detail=f"Unit of measure {data.unit_of_measure_id} not found", error="NOT_FOUND")
+
+                # Validate optional supplier override
+                if data.supplier_id:
+                    cursor.execute(
+                        f"""SELECT id FROM {db_settings.MSG_SUPPLIERS_TABLE}
+                        WHERE tenant_id = %s AND org_id = %s AND bus_id = %s
+                        AND id = %s AND delete_status = 'NOT_DELETED'""",
+                        (tenant_id, org_id, bus_id, data.supplier_id),
+                    )
+                    if not cursor.fetchone():
+                        return Respons(success=False, detail=f"Supplier {data.supplier_id} not found", error="NOT_FOUND")
+
+                if data.destination == 'EXISTING':
+                    cursor.execute(
+                        f"""SELECT id FROM {db_settings.MSG_PRODUCTS_TABLE}
+                        WHERE id = %s AND tenant_id = %s AND org_id = %s
+                        AND bus_id = %s AND delete_status = 'NOT_DELETED'""",
+                        (data.destination_product_id, tenant_id, org_id, bus_id),
+                    )
+                    if not cursor.fetchone():
+                        return Respons(success=False, detail=f"Destination product '{data.destination_product_id}' not found", error="NOT_FOUND")
+                    derived_product_id = data.destination_product_id
+                else:
+                    # Create a new product
+                    derived_product_id = Helper.generate_unique_identifier(prefix="prd")
+                    cursor.execute(
+                        f"""INSERT INTO {db_settings.MSG_PRODUCTS_TABLE}
+                        (id, tenant_id, org_id, bus_id, name, description, sku, bar_code,
+                         delete_status, is_active, cdate, ctime, cdatetime, created_by)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                        (
+                            derived_product_id, tenant_id, org_id, bus_id,
+                            data.new_product_name, data.new_product_description,
+                            data.new_product_sku, data.new_product_bar_code,
+                            'NOT_DELETED', True,
+                            cdate, ctime, cdatetime, created_by,
+                        ),
+                    )
+                    # Assign metadata to the new product
+                    for metadata_id in (data.metadata_ids or []):
+                        cursor.execute(
+                            f"""SELECT id FROM {db_settings.MSG_PRODUCT_METADATA_TABLE}
+                            WHERE tenant_id = %s AND org_id = %s AND bus_id = %s
+                            AND id = %s AND delete_status = 'NOT_DELETED'""",
+                            (tenant_id, org_id, bus_id, metadata_id),
+                        )
+                        if not cursor.fetchone():
+                            logger.warning(f"Metadata {metadata_id} not found during split, skipping")
+                            continue
+                        cursor.execute(
+                            f"""INSERT INTO {db_settings.MSG_ASSIGN_METADATA_TO_PRODUCTS_TABLE}
+                            (id, tenant_id, org_id, bus_id, product_metadata_id, product_id,
+                             cdate, ctime, cdatetime, created_by)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                            (
+                                Helper.generate_unique_identifier(prefix="map"), tenant_id, org_id, bus_id,
+                                metadata_id, derived_product_id, cdate, ctime, cdatetime, created_by,
+                            ),
+                        )
+
+                # 5. FIFO-consume the source quantity
+                remaining_to_take = data.source_qty_taken
+                consumed = []
+                for batch in source_batches:
+                    if remaining_to_take <= 0:
+                        break
+                    available = int(batch.get('qty_remaining') or 0)
+                    if available <= 0:
+                        continue
+                    take = min(available, remaining_to_take)
+
+                    cursor.execute(
+                        f"""UPDATE {db_settings.MSG_PURCHASE_BATCHES_TABLE}
+                        SET qty_remaining = qty_remaining - %s, updated_by = %s
+                        WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                        (take, created_by, batch['id'], tenant_id, org_id, bus_id),
+                    )
+
+                    # OUT movement from source batch
+                    cursor.execute(
+                        f"""INSERT INTO {db_settings.MSG_PRODUCT_MOVEMENTS_TABLE}
+                        (id, tenant_id, org_id, bus_id, product_id, batch_id, location_type, location_id,
+                         movement_type, qty, reason, reference_id, cdate, ctime, cdatetime, created_by)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                        (
+                            Helper.generate_unique_identifier(prefix="mov"), tenant_id, org_id, bus_id,
+                            data.source_product_id, batch['id'], 'SYSTEM', None,
+                            'OUT', take, f"SPLIT_OUT - {take} unit(s) taken to split into {data.divisor}", None,
+                            cdate, ctime, cdatetime, created_by,
+                        ),
+                    )
+
+                    consumed.append({
+                        "batch_id": batch['id'],
+                        "batch_number": batch.get('batch_number'),
+                        "qty_taken": take,
+                        "cost_price": float(batch['cost_price']) if batch.get('cost_price') is not None else None,
+                        "base_selling_price": float(batch['base_selling_price']) if batch.get('base_selling_price') is not None else None,
+                    })
+                    remaining_to_take -= take
+
+                # 6. Create the derived batch on the destination product
+                derived_batch_number = ProductsService._generate_batch_number(cursor, tenant_id, org_id, bus_id)
+                derived_batch_id = Helper.generate_unique_identifier(prefix="bat")
+                expiry_date_value = data.expire_date if data.expire_date else None
+
+                cursor.execute(
+                    f"""INSERT INTO {db_settings.MSG_PURCHASE_BATCHES_TABLE}
+                    (id, tenant_id, org_id, bus_id, product_id, supplier_id, batch_number,
+                     currency_id, cost_price, base_selling_price, product_size, unit_of_measure_id,
+                     product_expiry_date, batch_type, qty_ordered, qty_received, qty_remaining, qty_remaining_for_purchase_order,
+                     status, delete_status, is_active, cdate, ctime, cdatetime, created_by, updated_by)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (
+                        derived_batch_id, tenant_id, org_id, bus_id, derived_product_id,
+                        supplier_id, derived_batch_number,
+                        source_currency_id, unit_cost_price, unit_selling_price,
+                        data.size, uom_id,
+                        expiry_date_value,
+                        'ADJUSTMENT',
+                        None,
+                        derived_qty, derived_qty,
+                        0,
+                        'RECEIVED',
+                        'NOT_DELETED', True,
+                        cdate, ctime, cdatetime, created_by, created_by,
+                    ),
+                )
+
+                # IN movement onto the derived batch
+                cursor.execute(
+                    f"""INSERT INTO {db_settings.MSG_PRODUCT_MOVEMENTS_TABLE}
+                    (id, tenant_id, org_id, bus_id, product_id, batch_id, location_type, location_id,
+                     movement_type, qty, reason, reference_id, cdate, ctime, cdatetime, created_by)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (
+                        Helper.generate_unique_identifier(prefix="mov"), tenant_id, org_id, bus_id,
+                        derived_product_id, derived_batch_id, 'SYSTEM', None,
+                        'IN', derived_qty, f"SPLIT_IN - {derived_qty} unit(s) from splitting product {data.source_product_id}", None,
+                        cdate, ctime, cdatetime, created_by,
+                    ),
+                )
+
+                # 7. Record the split
+                split_id = Helper.generate_unique_identifier(prefix="spl")
+                cursor.execute(
+                    f"""INSERT INTO {db_settings.MSG_PRODUCT_SPLITS_TABLE}
+                    (id, tenant_id, org_id, bus_id, source_product_id, source_qty_taken, divisor,
+                     derived_product_id, derived_batch_id, derived_qty, unit_cost_price, unit_selling_price,
+                     price_mode, currency_id, source_batches, status, delete_status,
+                     cdate, ctime, cdatetime, created_by)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (
+                        split_id, tenant_id, org_id, bus_id, data.source_product_id,
+                        data.source_qty_taken, data.divisor,
+                        derived_product_id, derived_batch_id, derived_qty,
+                        unit_cost_price, unit_selling_price,
+                        data.price_mode, source_currency_id, _json.dumps(consumed),
+                        'ACTIVE', 'NOT_DELETED',
+                        cdate, ctime, cdatetime, created_by,
+                    ),
+                )
+
+                # Activity log
+                try:
+                    ActivityLogService.log_activity(
+                        tenant_id=tenant_id,
+                        resource_type="rt-product-split",
+                        resource_id=split_id,
+                        action="create",
+                        old_data=None,
+                        new_data={
+                            "source_product_id": data.source_product_id,
+                            "source_qty_taken": data.source_qty_taken,
+                            "divisor": data.divisor,
+                            "derived_product_id": derived_product_id,
+                            "derived_batch_id": derived_batch_id,
+                            "derived_qty": derived_qty,
+                        },
+                        description=f"Split {data.source_qty_taken} unit(s) of product {data.source_product_id} into {derived_qty} unit(s)",
+                        performed_by=created_by,
+                        org_id=org_id,
+                        bus_id=bus_id,
+                        cursor=cursor,
+                    )
+                except Exception as log_err:
+                    logger.warning(f"Activity log failed for split: {log_err}", exc_info=True)
+
+                split_row = ProductsService._fetch_split_row(cursor, split_id, tenant_id, org_id, bus_id)
+                split_dto = ProductsService._row_to_split_dto(split_row)
+
+                logger.info(
+                    f"Product split successful: split_id={split_id}, derived_batch={derived_batch_number}, derived_qty={derived_qty}",
+                    extra={"extra_fields": {"split_id": split_id, "derived_batch_id": derived_batch_id}},
+                )
+
+                return Respons(
+                    success=True,
+                    detail="Product split successfully",
+                    data=[split_dto],
+                )
+
+        except ValueError as e:
+            logger.error(f"Validation error splitting product: {str(e)}")
+            return Respons(success=False, detail=str(e), error="VALIDATION_ERROR")
+        except Exception as e:
+            logger.error(f"Error splitting product: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=f"Failed to split product: {str(e)}", error="INTERNAL_ERROR")
+
+    @staticmethod
+    def reverse_split(
+        data: ReverseSplitServiceWriteDto,
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        updated_by: str
+    ) -> Respons[ReverseSplitServiceReadDto]:
+        """Reverse a split: void the derived batch and return the taken quantity to the
+        source batches. Only allowed when the derived batch is untouched (nothing sold)."""
+        import json as _json
+
+        logger.info(
+            "Processing split reversal",
+            extra={"extra_fields": {"split_id": data.split_id, "updated_by": updated_by}},
+        )
+
+        cdate = Helper.current_date_time()["cdate"]
+        ctime = Helper.current_date_time()["ctime"]
+        cdatetime = Helper.current_date_time()["cdatetime"]
+
+        try:
+            with DatabaseManager.transaction() as cursor:
+                # Load the split
+                cursor.execute(
+                    f"""SELECT * FROM {db_settings.MSG_PRODUCT_SPLITS_TABLE}
+                    WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s
+                    AND delete_status = 'NOT_DELETED'""",
+                    (data.split_id, tenant_id, org_id, bus_id),
+                )
+                split = cursor.fetchone()
+                if not split:
+                    return Respons(success=False, detail=f"Split '{data.split_id}' not found", error="NOT_FOUND")
+
+                if split.get('status') == 'REVERSED':
+                    return Respons(success=False, detail="Split has already been reversed", error="ALREADY_REVERSED")
+
+                derived_batch_id = split['derived_batch_id']
+                derived_qty = int(split['derived_qty'])
+                derived_product_id = split['derived_product_id']
+
+                # Verify the derived batch is untouched
+                cursor.execute(
+                    f"""SELECT qty_remaining, status, batch_number FROM {db_settings.MSG_PURCHASE_BATCHES_TABLE}
+                    WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                    (derived_batch_id, tenant_id, org_id, bus_id),
+                )
+                derived_batch = cursor.fetchone()
+                if not derived_batch:
+                    return Respons(success=False, detail="Derived batch not found; cannot reverse", error="NOT_FOUND")
+
+                if derived_batch.get('status') == 'VOID':
+                    return Respons(success=False, detail="Derived batch is already void", error="VALIDATION_ERROR")
+
+                # Block reversal if any of the derived units have already been allocated/sold
+                cursor.execute(
+                    f"""SELECT COALESCE(SUM(qty), 0) as allocated
+                    FROM {db_settings.MSG_BATCH_LOCATIONS_TABLE}
+                    WHERE purchase_batche_id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                    (derived_batch_id, tenant_id, org_id, bus_id),
+                )
+                allocated_row = cursor.fetchone()
+                allocated = int(allocated_row.get('allocated') or 0) if allocated_row else 0
+
+                if int(derived_batch.get('qty_remaining') or 0) != derived_qty or allocated > 0:
+                    return Respons(
+                        success=False,
+                        detail="Cannot reverse: some of the split units have already been distributed or sold",
+                        error="CANNOT_REVERSE",
+                    )
+
+                # Void the derived batch
+                cursor.execute(
+                    f"""UPDATE {db_settings.MSG_PURCHASE_BATCHES_TABLE}
+                    SET qty_remaining = 0, status = 'VOID', updated_by = %s
+                    WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                    (updated_by, derived_batch_id, tenant_id, org_id, bus_id),
+                )
+
+                # OUT movement removing the derived units
+                cursor.execute(
+                    f"""INSERT INTO {db_settings.MSG_PRODUCT_MOVEMENTS_TABLE}
+                    (id, tenant_id, org_id, bus_id, product_id, batch_id, location_type, location_id,
+                     movement_type, qty, reason, reference_id, cdate, ctime, cdatetime, created_by)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (
+                        Helper.generate_unique_identifier(prefix="mov"), tenant_id, org_id, bus_id,
+                        derived_product_id, derived_batch_id, 'SYSTEM', None,
+                        'OUT', derived_qty, f"SPLIT_REVERSE - split {data.split_id} reversed, derived batch voided", data.split_id,
+                        cdate, ctime, cdatetime, updated_by,
+                    ),
+                )
+
+                # Restore each source batch
+                source_batches = split.get('source_batches') or []
+                if isinstance(source_batches, str):
+                    source_batches = _json.loads(source_batches)
+
+                for sb in source_batches:
+                    sb_id = sb.get('batch_id')
+                    qty_taken = int(sb.get('qty_taken') or 0)
+                    if not sb_id or qty_taken <= 0:
+                        continue
+                    # Only restore if the source batch still exists and is not deleted
+                    cursor.execute(
+                        f"""UPDATE {db_settings.MSG_PURCHASE_BATCHES_TABLE}
+                        SET qty_remaining = qty_remaining + %s, updated_by = %s
+                        WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s
+                        AND delete_status = 'NOT_DELETED'""",
+                        (qty_taken, updated_by, sb_id, tenant_id, org_id, bus_id),
+                    )
+                    if cursor.rowcount > 0:
+                        cursor.execute(
+                            f"""INSERT INTO {db_settings.MSG_PRODUCT_MOVEMENTS_TABLE}
+                            (id, tenant_id, org_id, bus_id, product_id, batch_id, location_type, location_id,
+                             movement_type, qty, reason, reference_id, cdate, ctime, cdatetime, created_by)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                            (
+                                Helper.generate_unique_identifier(prefix="mov"), tenant_id, org_id, bus_id,
+                                split['source_product_id'], sb_id, 'SYSTEM', None,
+                                'IN', qty_taken, f"SPLIT_REVERSE - {qty_taken} unit(s) returned to source from split {data.split_id}", data.split_id,
+                                cdate, ctime, cdatetime, updated_by,
+                            ),
+                        )
+                    else:
+                        logger.warning(f"Source batch {sb_id} no longer available to restore during split reversal")
+
+                # Mark split as reversed
+                cursor.execute(
+                    f"""UPDATE {db_settings.MSG_PRODUCT_SPLITS_TABLE}
+                    SET status = 'REVERSED', reversed_by = %s, reversed_at = %s, updated_by = %s
+                    WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                    (updated_by, cdatetime, updated_by, data.split_id, tenant_id, org_id, bus_id),
+                )
+
+                try:
+                    ActivityLogService.log_activity(
+                        tenant_id=tenant_id,
+                        resource_type="rt-product-split",
+                        resource_id=data.split_id,
+                        action="reverse",
+                        old_data={"status": "ACTIVE"},
+                        new_data={"status": "REVERSED"},
+                        description=f"Reversed split {data.split_id}",
+                        performed_by=updated_by,
+                        org_id=org_id,
+                        bus_id=bus_id,
+                        cursor=cursor,
+                    )
+                except Exception as log_err:
+                    logger.warning(f"Activity log failed for split reversal: {log_err}", exc_info=True)
+
+                logger.info(f"Split reversed successfully: split_id={data.split_id}")
+
+                return Respons(
+                    success=True,
+                    detail="Split reversed successfully",
+                    data=[ReverseSplitServiceReadDto(split_id=data.split_id, message="Split reversed successfully")],
+                )
+
+        except Exception as e:
+            logger.error(f"Error reversing split: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=f"Failed to reverse split: {str(e)}", error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_split(
+        split_id: str,
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+    ) -> Respons[SplitProductServiceReadDto]:
+        """Get a single split record by ID."""
+        try:
+            with DatabaseManager.transaction() as cursor:
+                row = ProductsService._fetch_split_row(cursor, split_id, tenant_id, org_id, bus_id)
+                if not row:
+                    return Respons(success=False, detail=f"Split '{split_id}' not found", error="NOT_FOUND")
+                return Respons(success=True, detail="Split retrieved successfully", data=[ProductsService._row_to_split_dto(row)])
+        except Exception as e:
+            logger.error(f"Error retrieving split: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=f"Failed to retrieve split: {str(e)}", error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_splits(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        source_product_id: Optional[str] = None,
+        status: Optional[str] = None,
+        page: int = 1,
+        size: int = 20,
+    ) -> Respons[GetSplitsServiceReadDto]:
+        """List split records, optionally filtered by source product or status."""
+        try:
+            with DatabaseManager.transaction() as cursor:
+                conditions = ["ps.tenant_id = %s", "ps.org_id = %s", "ps.bus_id = %s", "ps.delete_status = 'NOT_DELETED'"]
+                params = [tenant_id, org_id, bus_id]
+                if source_product_id:
+                    conditions.append("ps.source_product_id = %s")
+                    params.append(source_product_id)
+                if status:
+                    conditions.append("ps.status = %s")
+                    params.append(status)
+                where_clause = " AND ".join(conditions)
+
+                cursor.execute(
+                    f"SELECT COUNT(*) as total FROM {db_settings.MSG_PRODUCT_SPLITS_TABLE} ps WHERE {where_clause}",
+                    tuple(params),
+                )
+                total_row = cursor.fetchone()
+                total = int(total_row.get('total') or 0) if total_row else 0
+
+                offset = (max(page, 1) - 1) * size
+                cursor.execute(
+                    f"""SELECT ps.*,
+                           sp.name as source_product_name,
+                           dp.name as derived_product_name,
+                           db.batch_number as derived_batch_number,
+                           creator.fullname as created_by_name
+                    FROM {db_settings.MSG_PRODUCT_SPLITS_TABLE} ps
+                    LEFT JOIN {db_settings.MSG_PRODUCTS_TABLE} sp ON ps.source_product_id = sp.id AND ps.tenant_id = sp.tenant_id
+                    LEFT JOIN {db_settings.MSG_PRODUCTS_TABLE} dp ON ps.derived_product_id = dp.id AND ps.tenant_id = dp.tenant_id
+                    LEFT JOIN {db_settings.MSG_PURCHASE_BATCHES_TABLE} db ON ps.derived_batch_id = db.id AND ps.tenant_id = db.tenant_id
+                    LEFT JOIN {db_settings.CORE_PLATFORM_USERS_TABLE} creator ON ps.created_by = creator.id AND ps.tenant_id = creator.tenant_id
+                    WHERE {where_clause}
+                    ORDER BY ps.cdatetime DESC
+                    LIMIT %s OFFSET %s""",
+                    tuple(params + [size, offset]),
+                )
+                rows = cursor.fetchall()
+                splits = [ProductsService._row_to_split_dto(r) for r in rows]
+
+                pagination_meta = PaginationMeta(
+                    page=page,
+                    size=size,
+                    total=total,
+                    total_pages=(total + size - 1) // size if total > 0 else 0,
+                    has_next=(page * size) < total,
+                )
+                return Respons(
+                    success=True,
+                    detail="Splits retrieved successfully",
+                    data=splits,
+                    pagination=pagination_meta,
+                )
+        except Exception as e:
+            logger.error(f"Error listing splits: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=f"Failed to list splits: {str(e)}", error="INTERNAL_ERROR")
 

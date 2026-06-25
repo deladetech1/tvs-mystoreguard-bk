@@ -90,7 +90,9 @@ class Settings:
     MSG_PRODUCTS_TABLE = os.getenv("MSG_PRODUCTS_TABLE", "mystoreguard.msg_products")
     MSG_PRODUCT_DOCUMENT_IDS_TABLE = os.getenv("MSG_PRODUCT_DOCUMENT_IDS_TABLE", "mystoreguard.msg_product_document_ids")
     MSG_PURCHASE_BATCHES_TABLE = os.getenv("MSG_PURCHASE_BATCHES_TABLE", "mystoreguard.msg_purchase_batches")
-    
+    # Product splits (break-bulk) table
+    MSG_PRODUCT_SPLITS_TABLE = os.getenv("MSG_PRODUCT_SPLITS_TABLE", "mystoreguard.msg_product_splits")
+
     # Product metadata assignments table
     MSG_ASSIGN_METADATA_TO_PRODUCTS_TABLE = os.getenv("MSG_ASSIGN_METADATA_TO_PRODUCTS_TABLE", "mystoreguard.msg_assign_metadata_to_products")
     
@@ -135,7 +137,11 @@ class Settings:
     
     # Stock taking audit table
     MSG_STOCK_TAKING_AUDIT_TABLE = os.getenv("MSG_STOCK_TAKING_AUDIT_TABLE", "mystoreguard.msg_stock_taking_audit")
-    
+
+    # Manual stock take tables (count + investigate/resolve)
+    MSG_STOCK_TAKES_TABLE = os.getenv("MSG_STOCK_TAKES_TABLE", "mystoreguard.msg_stock_takes")
+    MSG_STOCK_TAKE_ITEMS_TABLE = os.getenv("MSG_STOCK_TAKE_ITEMS_TABLE", "mystoreguard.msg_stock_take_items")
+
     # Product transfers table
     MSG_PRODUCT_TRANSFERS_TABLE = os.getenv("MSG_PRODUCT_TRANSFERS_TABLE", "mystoreguard.msg_product_transfers")
     MSG_PRODUCT_TRANSFER_ITEMS_TABLE = os.getenv("MSG_PRODUCT_TRANSFER_ITEMS_TABLE", "mystoreguard.msg_product_transfer_items")
