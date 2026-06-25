@@ -1,0 +1,1 @@
+# Stock Takes entity module

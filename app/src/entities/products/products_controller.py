@@ -10,6 +10,9 @@ from src.entities.products.products_write_dto import (
     DeleteBatchControllerWriteDto,
     DeleteMovementControllerWriteDto,
     PermanentDeleteProductControllerWriteDto,
+    CreateSplitControllerWriteDto,
+    ReverseSplitControllerWriteDto,
+    ReverseSplitItemControllerWriteDto,
 )
 from src.entities.products.products_read_dto import (
     CreateProductControllerReadDto,
@@ -22,6 +25,10 @@ from src.entities.products.products_read_dto import (
     DeleteMovementControllerReadDto,
     PermanentDeleteProductControllerReadDto,
     GetProductStatisticsControllerReadDto,
+    CreateSplitControllerReadDto,
+    GetSplitControllerReadDto,
+    GetSplitsControllerReadDto,
+    GetSplitStatisticsControllerReadDto,
 )
 from src.entities.shared.sh_response import Respons
 from src.configs.logging import get_logger
@@ -910,3 +917,182 @@ def get_product_statistics(
 
         return service_result
 
+
+# =====================================================
+# SPLIT (BREAK-BULK) ENDPOINTS
+# =====================================================
+
+# Create a split (one parent with one or more product items, all-or-none)
+@products_router.post("/split", response_model=Respons[CreateSplitControllerReadDto])
+def create_split(
+    data: CreateSplitControllerWriteDto,
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    _subscription_check: dict = Depends(verify_subscription_active),
+    org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
+):
+    """Create a split with one or more product items. All-or-none."""
+    with LogContext("products", "create_split", item_count=len(data.items or [])):
+        is_authorized = AuthService.has_any_permission(
+            user_roles=current_user.data,
+            required_permissions=["permission-msg-products-split"],
+        )
+        if not is_authorized:
+            raise HTTPException(status_code=403, detail="Unauthorized access")
+
+        service_result = ProductsService.create_split(
+            data=data,
+            tenant_id=current_user.data[0].tenant_id,
+            org_id=org_bus_loc["org_id"],
+            bus_id=org_bus_loc["bus_id"],
+            created_by=current_user.data[0].user_id,
+            loc_id=org_bus_loc.get("loc_id"),
+        )
+        if not service_result.success:
+            logger.warning(
+                f"Create split failed: {service_result.detail}",
+                extra={"extra_fields": {"endpoint": "/products/split", "error": service_result.error, "status": "failed"}},
+            )
+        return service_result
+
+
+# Reverse a whole split (all its active items)
+@products_router.put("/reverse-split", response_model=Respons[GetSplitControllerReadDto])
+def reverse_split(
+    data: ReverseSplitControllerWriteDto,
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    _subscription_check: dict = Depends(verify_subscription_active),
+    org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
+):
+    """Reverse a whole split (all of its still-active items)."""
+    with LogContext("products", "reverse_split", split_id=data.split_id):
+        is_authorized = AuthService.has_any_permission(
+            user_roles=current_user.data,
+            required_permissions=["permission-msg-products-split"],
+        )
+        if not is_authorized:
+            raise HTTPException(status_code=403, detail="Unauthorized access")
+
+        service_result = ProductsService.reverse_split(
+            data=data,
+            tenant_id=current_user.data[0].tenant_id,
+            org_id=org_bus_loc["org_id"],
+            bus_id=org_bus_loc["bus_id"],
+            updated_by=current_user.data[0].user_id,
+        )
+        if not service_result.success:
+            logger.warning(
+                f"Reverse split failed: {service_result.detail}",
+                extra={"extra_fields": {"endpoint": "/products/reverse-split", "error": service_result.error, "status": "failed"}},
+            )
+        return service_result
+
+
+# Reverse a single product item within a split (others stay)
+@products_router.put("/reverse-split-item", response_model=Respons[GetSplitControllerReadDto])
+def reverse_split_item(
+    data: ReverseSplitItemControllerWriteDto,
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    _subscription_check: dict = Depends(verify_subscription_active),
+    org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
+):
+    """Reverse one product item within a split; the rest stay. Returns the updated split."""
+    with LogContext("products", "reverse_split_item", item_id=data.item_id):
+        is_authorized = AuthService.has_any_permission(
+            user_roles=current_user.data,
+            required_permissions=["permission-msg-products-split"],
+        )
+        if not is_authorized:
+            raise HTTPException(status_code=403, detail="Unauthorized access")
+
+        service_result = ProductsService.reverse_split_item(
+            data=data,
+            tenant_id=current_user.data[0].tenant_id,
+            org_id=org_bus_loc["org_id"],
+            bus_id=org_bus_loc["bus_id"],
+            updated_by=current_user.data[0].user_id,
+        )
+        if not service_result.success:
+            logger.warning(
+                f"Reverse split item failed: {service_result.detail}",
+                extra={"extra_fields": {"endpoint": "/products/reverse-split-item", "error": service_result.error, "status": "failed"}},
+            )
+        return service_result
+
+
+# List splits (headers with their items)
+@products_router.get("/splits", response_model=Respons[GetSplitsControllerReadDto])
+def get_splits(
+    status: Optional[str] = Query(None, description="Filter by split status (ACTIVE, PARTIALLY_REVERSED, REVERSED)"),
+    source_scope: Optional[str] = Query(None, description="Filter by source scope (PRODUCT, STORE, or WAREHOUSE)"),
+    source_product_id: Optional[str] = Query(None, description="Filter to splits that include this source product"),
+    page: int = Query(1, ge=1, description="Page number"),
+    size: int = Query(20, ge=1, le=100, description="Page size (max 100)"),
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
+):
+    """List splits with their items, newest first."""
+    with LogContext("products", "get_splits", tenant_id=current_user.data[0].tenant_id):
+        is_authorized = AuthService.has_any_permission(
+            user_roles=current_user.data,
+            required_permissions=["permission-msg-products-split", "permission-msg-products-get"],
+        )
+        if not is_authorized:
+            raise HTTPException(status_code=403, detail="Unauthorized access")
+
+        return ProductsService.get_splits(
+            tenant_id=current_user.data[0].tenant_id,
+            org_id=org_bus_loc["org_id"],
+            bus_id=org_bus_loc["bus_id"],
+            status=status,
+            source_scope=source_scope,
+            source_product_id=source_product_id,
+            page=page,
+            size=size,
+        )
+
+
+# Get one split with its items
+@products_router.get("/split-detail", response_model=Respons[GetSplitControllerReadDto])
+def get_split(
+    split_id: str = Query(..., description="Split ID"),
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
+):
+    """Get a single split with its product items."""
+    with LogContext("products", "get_split", split_id=split_id):
+        is_authorized = AuthService.has_any_permission(
+            user_roles=current_user.data,
+            required_permissions=["permission-msg-products-split", "permission-msg-products-get"],
+        )
+        if not is_authorized:
+            raise HTTPException(status_code=403, detail="Unauthorized access")
+
+        return ProductsService.get_split(
+            split_id=split_id,
+            tenant_id=current_user.data[0].tenant_id,
+            org_id=org_bus_loc["org_id"],
+            bus_id=org_bus_loc["bus_id"],
+        )
+
+
+# Split statistics for the current location
+@products_router.get("/split-statistics", response_model=Respons[GetSplitStatisticsControllerReadDto])
+def get_split_statistics(
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
+):
+    """Split statistics for the caller's current location."""
+    with LogContext("products", "get_split_statistics", tenant_id=current_user.data[0].tenant_id):
+        is_authorized = AuthService.has_any_permission(
+            user_roles=current_user.data,
+            required_permissions=["permission-msg-products-split", "permission-msg-products-get"],
+        )
+        if not is_authorized:
+            raise HTTPException(status_code=403, detail="Unauthorized access")
+
+        return ProductsService.get_split_statistics(
+            tenant_id=current_user.data[0].tenant_id,
+            org_id=org_bus_loc["org_id"],
+            bus_id=org_bus_loc["bus_id"],
+            loc_id=org_bus_loc.get("loc_id"),
+        )

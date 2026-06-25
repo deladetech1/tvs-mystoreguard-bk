@@ -30,6 +30,7 @@ from src.entities.products.products_controller import products_router
 from src.entities.product_prices.product_prices_controller import product_prices_router
 from src.entities.store_products.store_products_controller import store_products_router
 from src.entities.warehouse_products.warehouse_products_controller import warehouse_products_router
+from src.entities.stock_takes.stock_takes_controller import stock_takes_router
 from src.entities.pricing_rules.pricing_rules_controller import pricing_rules_router
 from src.entities.suppliers.suppliers_controller import suppliers_router
 from src.entities.customers.customers_controller import customers_router
@@ -44,6 +45,8 @@ from src.entities.store_transfers.store_transfers_controller import store_transf
 from src.entities.warehouse_transfers.warehouse_transfers_controller import warehouse_transfers_router
 from src.entities.users.users_controller import users_router
 from src.entities.appointments.appointments_controller import appointments_router
+from src.entities.workflow_templates.workflow_templates_controller import workflow_templates_router
+from src.entities.tasks.tasks_controller import tasks_router
 from src.entities.purchase_orders.purchase_orders_controller import purchase_orders_router
 from src.entities.store_sales.store_sales_controller import store_sales_router
 from src.entities.invoices.invoices_controller import invoices_router
@@ -130,6 +133,28 @@ app.add_exception_handler(Exception, generic_exception_handler)
 app.add_middleware(LoggingMiddleware)
 app.add_middleware(SecurityLoggingMiddleware)
 
+
+# Catch unhandled exceptions HERE, inside CORSMiddleware, and convert them to a
+# JSONResponse. This middleware is registered before CORSMiddleware below, so it
+# ends up *inside* the CORS layer: the error response it returns flows back out
+# through CORSMiddleware and receives the Access-Control-Allow-Origin header.
+#
+# Without this, an unhandled exception propagates up to Starlette's
+# ServerErrorMiddleware (which sits OUTSIDE CORSMiddleware). The resulting 500
+# response has no CORS headers, so the browser reports it as a CORS failure
+# ("No 'Access-Control-Allow-Origin' header is present") and the real server
+# error is hidden from the frontend.
+@app.middleware("http")
+async def cors_safe_exception_middleware(request, call_next):
+    try:
+        return await call_next(request)
+    except Exception as exc:
+        # HTTPException / ResponseException are already handled by their own
+        # handlers in the inner ExceptionMiddleware, so only genuinely unhandled
+        # exceptions reach here. generic_exception_handler logs and returns a 500.
+        return await generic_exception_handler(request, exc)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=db_settings.cors_origins_list,
@@ -159,6 +184,7 @@ app.include_router(prefix="/api/v1", router=products_router)
 app.include_router(prefix="/api/v1", router=product_prices_router)
 app.include_router(prefix="/api/v1", router=store_products_router)
 app.include_router(prefix="/api/v1", router=warehouse_products_router)
+app.include_router(prefix="/api/v1", router=stock_takes_router)
 app.include_router(prefix="/api/v1", router=pricing_rules_router)
 app.include_router(prefix="/api/v1", router=taxes_router)
 app.include_router(prefix="/api/v1", router=tax_rules_router)
@@ -173,6 +199,8 @@ app.include_router(prefix="/api/v1", router=store_transfers_router)
 app.include_router(prefix="/api/v1", router=warehouse_transfers_router)
 app.include_router(prefix="/api/v1", router=users_router)
 app.include_router(prefix="/api/v1", router=appointments_router)
+app.include_router(prefix="/api/v1", router=workflow_templates_router)
+app.include_router(prefix="/api/v1", router=tasks_router)
 app.include_router(prefix="/api/v1", router=purchase_orders_router)
 app.include_router(prefix="/api/v1", router=store_sales_router)
 app.include_router(prefix="/api/v1", router=invoices_router)

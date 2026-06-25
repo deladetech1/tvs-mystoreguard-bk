@@ -11,6 +11,18 @@ DeleteStatusType = Literal['PENDING', 'DELETED', 'NOT_DELETED']
 BatchStatusType = Literal['RECEIVED', 'PARTIALLY_ALLOCATED', 'FULLY_ALLOCATED', 'VOID', 'CANCELLED']
 BatchType = Literal['PURCHASE', 'OPENING_STOCK', 'ADJUSTMENT']
 
+# Product split (break-bulk) literals
+SplitPriceModeType = Literal['AUTO', 'MANUAL']
+SplitDestinationType = Literal['EXISTING', 'NEW']
+SplitStatusType = Literal['ACTIVE', 'REVERSED']
+# Header status: PARTIALLY_REVERSED when only some of a split's items are reversed
+SplitHeaderStatusType = Literal['ACTIVE', 'PARTIALLY_REVERSED', 'REVERSED']
+# Where the source stock is drawn from:
+#   PRODUCT   = the unallocated purchase-batch pool (qty_remaining), pre-distribution
+#   STORE     = shelf stock at the current store location (batch_locations)
+#   WAREHOUSE = shelf stock at the current warehouse location (batch_locations)
+SplitSourceScopeType = Literal['PRODUCT', 'STORE', 'WAREHOUSE']
+
 
 # =====================================================
 # PRODUCT BASE DTOs
