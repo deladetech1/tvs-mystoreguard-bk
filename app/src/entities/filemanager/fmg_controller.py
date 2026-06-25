@@ -42,8 +42,13 @@ async def upload_multiple_files(
         "file_management",
         "upload_multiple_files",
     ):
-        # Parse comma-separated values and URL decode
-        blob_path_list = [unquote(path.strip()) for path in blob_paths.split(",") if path.strip()]
+        # Parse comma-separated values and URL decode.
+        # Single file: treat the whole value as ONE path (never comma-split) so a stray
+        # comma in the path can't turn "1 file" into "N blob paths".
+        if len(files) == 1:
+            blob_path_list = [unquote(blob_paths.strip())]
+        else:
+            blob_path_list = [unquote(path.strip()) for path in blob_paths.split(",") if path.strip()]
         description_list = [unquote(d.strip()) if d else None for d in descriptions.split(",")] if descriptions else [None] * len(files)
         
         # If only one blob_path is provided, use it for all files
