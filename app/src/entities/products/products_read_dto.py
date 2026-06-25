@@ -395,6 +395,8 @@ class ProductSplitReadBase(BaseModel):
     unit_selling_price: Optional[float] = Field(None, description="Selling price assigned per smaller unit")
     price_mode: str = Field(..., description="AUTO or MANUAL")
     currency_id: Optional[str] = Field(None, description="Currency inherited from the source batch")
+    description: Optional[str] = Field(None, description="Optional note/reason recorded for this split")
+    split_batch_id: Optional[str] = Field(None, description="Group ID shared by all splits created together in one /split-batch call (null for single splits)")
     status: str = Field(..., description="ACTIVE or REVERSED")
     source_batches: List[SourceBatchConsumedReadDto] = Field(default_factory=list, description="Source batches consumed and how much was taken from each")
     cdate: str

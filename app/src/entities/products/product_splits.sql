@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS mystoreguard.msg_product_splits (
     source_scope        text        NOT NULL DEFAULT 'PRODUCT',  -- PRODUCT | STORE | WAREHOUSE
     location_type       text,                                    -- STORE | WAREHOUSE (location splits)
     loc_id              text,                                    -- location the split happened at
+    split_batch_id      text,                                    -- groups items split together in one /split-batch call
 
     -- Derived (destination)
     derived_product_id  text        NOT NULL,
@@ -29,8 +30,9 @@ CREATE TABLE IF NOT EXISTS mystoreguard.msg_product_splits (
     currency_id         text,
 
     -- Which source batches were consumed and how much (for reversal):
-    -- [{"batch_id","batch_number","qty_taken","cost_price","base_selling_price"}, ...]
+    -- [{"batch_id","batch_number","batch_location_id","qty_taken","cost_price","base_selling_price"}, ...]
     source_batches      jsonb       NOT NULL DEFAULT '[]'::jsonb,
+    description         text,                                    -- optional note/reason for the split
 
     status              text        NOT NULL DEFAULT 'ACTIVE',         -- ACTIVE | REVERSED
     delete_status       text        NOT NULL DEFAULT 'NOT_DELETED',
@@ -55,6 +57,9 @@ CREATE INDEX IF NOT EXISTS idx_msg_product_splits_status
 
 CREATE INDEX IF NOT EXISTS idx_msg_product_splits_derived_batch
     ON mystoreguard.msg_product_splits (derived_batch_id);
+
+CREATE INDEX IF NOT EXISTS idx_msg_product_splits_batch_group
+    ON mystoreguard.msg_product_splits (tenant_id, org_id, bus_id, split_batch_id);
 
 
 -- =====================================================================

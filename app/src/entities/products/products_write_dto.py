@@ -216,6 +216,7 @@ class SplitProductWriteBase(BaseModel):
         'STORE',
         description="Where to draw stock from: STORE/WAREHOUSE = shelf stock at the current location; PRODUCT = the unallocated purchase-batch pool",
     )
+    description: Optional[str] = Field(None, description="Optional note/reason for this split (e.g. 'customer wanted half a pole')")
 
     # --- Pricing ---
     price_mode: SplitPriceModeType = Field('AUTO', description="AUTO = source price / divisor; MANUAL = use prices provided below")

@@ -2953,6 +2953,8 @@ class ProductsService:
             unit_selling_price=float(d['unit_selling_price']) if d.get('unit_selling_price') is not None else None,
             price_mode=d['price_mode'],
             currency_id=d.get('currency_id'),
+            description=d.get('description'),
+            split_batch_id=d.get('split_batch_id'),
             status=d['status'],
             source_batches=source_batches_dto,
             cdate=d['cdate'],
@@ -3048,6 +3050,7 @@ class ProductsService:
         created_by: str,
         loc_id: Optional[str] = None,
         shared_cursor=None,
+        split_batch_id: Optional[str] = None,
     ) -> Respons[SplitProductServiceReadDto]:
         """Split (break-bulk) a product: take qty off a source product (FIFO), multiply
         each unit by `divisor`, and land the smaller units as a new batch on either an
@@ -3425,18 +3428,19 @@ class ProductsService:
                 cursor.execute(
                     f"""INSERT INTO {db_settings.MSG_PRODUCT_SPLITS_TABLE}
                     (id, tenant_id, org_id, bus_id, source_product_id, source_qty_taken, divisor,
-                     source_scope, location_type, loc_id,
+                     source_scope, location_type, loc_id, split_batch_id,
                      derived_product_id, derived_batch_id, derived_qty, unit_cost_price, unit_selling_price,
-                     price_mode, currency_id, source_batches, status, delete_status,
+                     price_mode, currency_id, source_batches, description, status, delete_status,
                      cdate, ctime, cdatetime, created_by)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                     (
                         split_id, tenant_id, org_id, bus_id, data.source_product_id,
                         data.source_qty_taken, data.divisor,
-                        scope, location_type, (loc_id if location_type else None),
+                        scope, location_type, (loc_id if location_type else None), split_batch_id,
                         derived_product_id, derived_batch_id, derived_qty,
                         unit_cost_price, unit_selling_price,
                         data.price_mode, source_currency_id, _json.dumps(consumed),
+                        getattr(data, 'description', None),
                         'ACTIVE', 'NOT_DELETED',
                         cdate, ctime, cdatetime, created_by,
                     ),
@@ -3733,10 +3737,11 @@ class ProductsService:
         source_product_id: Optional[str] = None,
         status: Optional[str] = None,
         source_scope: Optional[str] = None,
+        split_batch_id: Optional[str] = None,
         page: int = 1,
         size: int = 20,
     ) -> Respons[GetSplitsServiceReadDto]:
-        """List split records, optionally filtered by source product, status, or scope."""
+        """List split records, optionally filtered by source product, status, scope, or batch group."""
         try:
             with DatabaseManager.transaction() as cursor:
                 conditions = ["ps.tenant_id = %s", "ps.org_id = %s", "ps.bus_id = %s", "ps.delete_status = 'NOT_DELETED'"]
@@ -3750,6 +3755,9 @@ class ProductsService:
                 if source_scope:
                     conditions.append("ps.source_scope = %s")
                     params.append(source_scope)
+                if split_batch_id:
+                    conditions.append("ps.split_batch_id = %s")
+                    params.append(split_batch_id)
                 where_clause = " AND ".join(conditions)
 
                 cursor.execute(
@@ -3904,6 +3912,10 @@ class ProductsService:
             extra={"extra_fields": {"count": len(items), "created_by": created_by}},
         )
 
+        # One shared group id so the items of this batch can be viewed together
+        # while each remains its own independently-reversible split record.
+        split_batch_id = Helper.generate_unique_identifier(prefix="splb")
+
         try:
             with DatabaseManager.transaction() as cursor:
                 created = []
@@ -3916,6 +3928,7 @@ class ProductsService:
                         created_by=created_by,
                         loc_id=loc_id,
                         shared_cursor=cursor,
+                        split_batch_id=split_batch_id,
                     )
                     if not result.success or not result.data:
                         # Abort the whole batch — rolls back every item already processed
