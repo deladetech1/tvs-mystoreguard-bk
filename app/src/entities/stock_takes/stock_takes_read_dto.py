@@ -13,9 +13,14 @@ class StockTakeItemReadDto(BaseModel):
     stock_take_id: str
     product_id: str
     product_name: Optional[str] = Field(None, description="Product name (joined)")
+    image_urls: List[str] = Field(default_factory=list, description="Presigned image URLs for the product")
     counted_qty: int
     system_qty: int = Field(..., description="On-hand qty the system believed at count time")
     variance_qty: int = Field(..., description="counted_qty - system_qty (negative = short, positive = over)")
+    unit_price: Optional[float] = Field(None, description="Unit price snapshotted at count time")
+    variance_value: Optional[float] = Field(
+        None, description="Value of the variance = variance_qty * unit_price (null if no price given)"
+    )
     match_status: str = Field(..., description="MATCH | OVER | SHORT")
     resolution_status: str = Field(..., description="PENDING | INVESTIGATING | RESOLVED")
     note: Optional[str] = None
@@ -69,14 +74,6 @@ class GetStockTakeServiceReadDto(StockTakeReadDto):
 
 
 class GetStockTakeControllerReadDto(StockTakeReadDto):
-    pass
-
-
-class GetStockTakesServiceReadDto(BaseModel):
-    stock_takes: List[StockTakeReadDto] = []
-
-
-class GetStockTakesControllerReadDto(GetStockTakesServiceReadDto):
     pass
 
 

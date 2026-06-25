@@ -9,7 +9,6 @@ from src.entities.stock_takes.stock_takes_write_dto import (
 from src.entities.stock_takes.stock_takes_read_dto import (
     CreateStockTakeControllerReadDto,
     GetStockTakeControllerReadDto,
-    GetStockTakesControllerReadDto,
     CompleteStockTakeControllerReadDto,
     ResolveStockTakeItemControllerReadDto,
 )
@@ -52,7 +51,7 @@ def create_stock_take(
 
 
 # 2. List stock takes for the current location
-@stock_takes_router.get("", response_model=Respons[GetStockTakesControllerReadDto])
+@stock_takes_router.get("", response_model=Respons[GetStockTakeControllerReadDto])
 def list_stock_takes(
     status: Optional[str] = Query(None, description="Filter by status (DRAFT|COMPLETED|CANCELLED)"),
     page: int = Query(1, ge=1, description="Page number"),
@@ -62,7 +61,7 @@ def list_stock_takes(
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
     """List stock takes recorded at the current location."""
-    _authorize(current_user, ["permission-msg-stock-takes-view"])
+    _authorize(current_user, ["permission-msg-stock-takes-get"])
     return StockTakesService.get_stock_takes(
         tenant_id=current_user.data[0].tenant_id,
         org_id=org_bus_loc["org_id"],
@@ -84,7 +83,7 @@ def get_stock_take(
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
     """Get a stock take with its counted lines and variance summary."""
-    _authorize(current_user, ["permission-msg-stock-takes-view"])
+    _authorize(current_user, ["permission-msg-stock-takes-get"])
     return StockTakesService.get_stock_take(
         tenant_id=current_user.data[0].tenant_id,
         org_id=org_bus_loc["org_id"],
@@ -114,7 +113,7 @@ def complete_stock_take(
 
 
 # 5. Resolve a counted line (optionally apply a stock correction)
-@stock_takes_router.patch(
+@stock_takes_router.put(
     "/{stock_take_id}/items/{item_id}/resolve",
     response_model=Respons[ResolveStockTakeItemControllerReadDto],
 )

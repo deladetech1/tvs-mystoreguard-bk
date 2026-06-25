@@ -21,6 +21,11 @@ class StockTakeItemCountBase(BaseModel):
     """A single counted line submitted when creating a stock take."""
     product_id: str = Field(..., description="Product ID being counted")
     counted_qty: int = Field(..., ge=0, description="Physically counted quantity")
+    unit_price: Optional[float] = Field(
+        None, ge=0,
+        description="Unit price for this line, supplied by the caller (price lives per "
+                    "delivery, not on the product). Snapshotted so the variance can be valued.",
+    )
     note: Optional[str] = Field(None, description="Optional note for this counted line")
 
 

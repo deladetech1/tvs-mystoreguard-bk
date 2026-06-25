@@ -9,12 +9,45 @@ from src.entities.stock_takes.stock_takes_read_dto import (
     StockTakeVarianceSummary,
 )
 from src.entities.shared.sh_response import Respons, PaginationMeta
+from src.entities.filemanager.fmg_service import FileUploadService
 from src.configs.settings import db_settings
 from src.configs.database import DatabaseManager
 from src.configs.logging import get_logger
 from trovesuite.utils import Helper
 
 logger = get_logger("stock_takes_service")
+
+_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".svg")
+
+
+def _product_image_urls(cursor, tenant_id: str, org_id: str, bus_id: str, product_id: str) -> list:
+    """Presigned URLs for a product's image documents (same source as the products API)."""
+    cursor.execute(
+        f"""SELECT dp.file_name, dp.document_path
+        FROM {db_settings.MSG_PRODUCT_DOCUMENT_IDS_TABLE} pdi
+        INNER JOIN {db_settings.MSG_DOCUMENT_PATHS_TABLE} dp
+            ON pdi.document_id = dp.id AND pdi.tenant_id = dp.tenant_id
+            AND pdi.org_id = dp.org_id AND pdi.bus_id = dp.bus_id
+        WHERE pdi.tenant_id = %s AND pdi.org_id = %s AND pdi.bus_id = %s
+        AND pdi.product_id = %s
+        AND pdi.delete_status = 'NOT_DELETED' AND pdi.is_active = true
+        AND dp.delete_status = 'NOT_DELETED' AND dp.is_active = true""",
+        (tenant_id, org_id, bus_id, product_id),
+    )
+    urls = []
+    for row in cursor.fetchall():
+        path = row.get("document_path")
+        name = (row.get("file_name") or "").lower()
+        if not path or not name.endswith(_IMAGE_EXTS):
+            continue
+        url = FileUploadService._get_file_presigned_url(
+            container_name=db_settings.MYSTOREGUARD_FILES_CONTAINER,
+            blob_path=path,
+            expiry_hours=24,
+        )
+        if url:
+            urls.append(url)
+    return urls
 
 
 def _qty_table(location_type: str) -> str:
@@ -133,24 +166,30 @@ class StockTakesService:
                     variance = line.counted_qty - system_qty
                     match_status = _match_status(variance)
 
+                    variance_value = (variance * line.unit_price) if line.unit_price is not None else None
+
                     item_id = Helper.generate_unique_identifier(prefix="sti")
                     cursor.execute(
                         f"""INSERT INTO {db_settings.MSG_STOCK_TAKE_ITEMS_TABLE}
                         (id, tenant_id, org_id, bus_id, stock_take_id, product_id,
-                         counted_qty, system_qty, variance_qty, match_status, resolution_status,
+                         counted_qty, system_qty, variance_qty, unit_price, match_status, resolution_status,
                          note, adjustment_qty, cdate, ctime, cdatetime)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                         (
                             item_id, tenant_id, org_id, bus_id, stock_take_id, line.product_id,
-                            line.counted_qty, system_qty, variance, match_status, "PENDING",
+                            line.counted_qty, system_qty, variance, line.unit_price, match_status, "PENDING",
                             line.note, 0, cdate, ctime, cdatetime,
                         ),
                     )
 
                     items_out.append(StockTakeItemReadDto(
                         id=item_id, stock_take_id=stock_take_id, product_id=line.product_id,
-                        product_name=product["name"], counted_qty=line.counted_qty,
-                        system_qty=system_qty, variance_qty=variance, match_status=match_status,
+                        product_name=product["name"],
+                        image_urls=_product_image_urls(cursor, tenant_id, org_id, bus_id, line.product_id),
+                        counted_qty=line.counted_qty,
+                        system_qty=system_qty, variance_qty=variance,
+                        unit_price=line.unit_price, variance_value=variance_value,
+                        match_status=match_status,
                         resolution_status="PENDING", note=line.note, adjustment_qty=0,
                         cdatetime=cdatetime,
                     ))
@@ -175,7 +214,7 @@ class StockTakesService:
                     success=True,
                     detail=f"Stock take {stock_take_number} created with {summary.total_lines} line(s), "
                            f"{summary.unresolved_variances} variance(s) to review",
-                    data=result,
+                    data=[result],
                 )
         except Exception as e:
             logger.error(f"Failed to create stock take: {e}", exc_info=True)
@@ -220,13 +259,13 @@ class StockTakesService:
                 rows = cursor.fetchall()
                 stock_takes = [StockTakeReadDto(**dict(r)) for r in rows]
 
-                meta = PaginationMeta(
+                pagination = PaginationMeta(
                     page=page, size=size, total=total,
                     total_pages=(total + size - 1) // size if total > 0 else 0,
                     has_next=(page * size) < total,
                 )
                 return Respons(success=True, detail="Stock takes retrieved",
-                               data={"stock_takes": stock_takes}, meta=meta)
+                               data=stock_takes, pagination=pagination)
         except Exception as e:
             logger.error(f"Failed to list stock takes: {e}", exc_info=True)
             return Respons(success=False, detail="Failed to list stock takes", error=str(e))
@@ -261,7 +300,7 @@ class StockTakesService:
                     item_filter = " AND sti.match_status <> 'MATCH'"
                 cursor.execute(
                     f"""SELECT sti.id, sti.stock_take_id, sti.product_id, p.name AS product_name,
-                    sti.counted_qty, sti.system_qty, sti.variance_qty, sti.match_status,
+                    sti.counted_qty, sti.system_qty, sti.variance_qty, sti.unit_price, sti.match_status,
                     sti.resolution_status, sti.note, sti.resolution_note, sti.adjustment_qty,
                     sti.adjustment_movement_id, sti.resolved_by, sti.resolved_datetime, sti.cdatetime
                     FROM {db_settings.MSG_STOCK_TAKE_ITEMS_TABLE} sti
@@ -273,7 +312,18 @@ class StockTakesService:
                     ORDER BY sti.match_status, p.name""",
                     (tenant_id, org_id, bus_id, stock_take_id),
                 )
-                items = [StockTakeItemReadDto(**dict(r)) for r in cursor.fetchall()]
+                items = []
+                for r in cursor.fetchall():
+                    row = dict(r)
+                    price = row.get("unit_price")
+                    row["unit_price"] = float(price) if price is not None else None
+                    row["variance_value"] = (
+                        row["variance_qty"] * row["unit_price"] if price is not None else None
+                    )
+                    row["image_urls"] = _product_image_urls(
+                        cursor, tenant_id, org_id, bus_id, row["product_id"]
+                    )
+                    items.append(StockTakeItemReadDto(**row))
 
                 summary = StockTakeVarianceSummary(total_lines=len(items))
                 for it in items:
@@ -287,7 +337,7 @@ class StockTakesService:
                         summary.unresolved_variances += 1
 
                 result = StockTakeReadDto(**dict(header), summary=summary, items=items)
-                return Respons(success=True, detail="Stock take retrieved", data=result)
+                return Respons(success=True, detail="Stock take retrieved", data=[result])
         except Exception as e:
             logger.error(f"Failed to get stock take: {e}", exc_info=True)
             return Respons(success=False, detail="Failed to get stock take", error=str(e))
@@ -508,15 +558,15 @@ class StockTakesService:
                     ),
                 )
 
-            # Return the refreshed line
+            # Return the refreshed line. get_stock_take wraps its result in a list (data[0]).
             detail = StockTakesService.get_stock_take(tenant_id, org_id, bus_id, stock_take_id)
             updated = None
-            if detail.success and detail.data and detail.data.items:
-                updated = next((i for i in detail.data.items if i.id == item_id), None)
+            if detail.success and detail.data and detail.data[0].items:
+                updated = next((i for i in detail.data[0].items if i.id == item_id), None)
             msg = "Item resolved" if data.resolution_status == "RESOLVED" else "Item updated"
             if adjustment != 0:
                 msg += f" with stock adjustment of {adjustment:+d}"
-            return Respons(success=True, detail=msg, data=updated)
+            return Respons(success=True, detail=msg, data=[updated] if updated else None)
         except Exception as e:
             logger.error(f"Failed to resolve stock take item: {e}", exc_info=True)
             return Respons(success=False, detail="Failed to resolve stock take item", error=str(e))
