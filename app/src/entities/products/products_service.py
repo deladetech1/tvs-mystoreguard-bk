@@ -3209,8 +3209,28 @@ class ProductsService:
         total_available = sum(r['available'] for r in source_rows)
         if total_available < item.source_qty_taken:
             where = f"at this {scope.lower()}" if location_type else "in stock"
+            hint = ""
+            # For a location split, if the shelf is short, check the unallocated pool and
+            # hint the caller so a "0 available" isn't a dead end.
+            if location_type:
+                cursor.execute(
+                    f"""SELECT COALESCE(SUM(qty_remaining), 0) as pool
+                    FROM {db_settings.MSG_PURCHASE_BATCHES_TABLE}
+                    WHERE product_id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s
+                    AND delete_status = 'NOT_DELETED'
+                    AND status NOT IN ('VOID', 'CANCELLED')
+                    AND qty_remaining > 0""",
+                    (item.source_product_id, tenant_id, org_id, bus_id),
+                )
+                pool_row = cursor.fetchone()
+                pool_qty = int(pool_row.get('pool') or 0) if pool_row else 0
+                if pool_qty > 0:
+                    hint = (
+                        f". {pool_qty} unit(s) sit in the unallocated pool — "
+                        f"distribute them to this {scope.lower()} first, or split with source_scope='PRODUCT'"
+                    )
             raise SplitError(
-                f"Insufficient stock to split '{item.source_product_id}'. Available {where}: {total_available}, requested: {item.source_qty_taken}",
+                f"Insufficient stock to split '{item.source_product_id}'. Available {where}: {total_available}, requested: {item.source_qty_taken}{hint}",
                 "INSUFFICIENT_STOCK",
             )
 
