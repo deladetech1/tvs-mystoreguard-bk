@@ -3732,10 +3732,11 @@ class ProductsService:
         bus_id: str,
         source_product_id: Optional[str] = None,
         status: Optional[str] = None,
+        source_scope: Optional[str] = None,
         page: int = 1,
         size: int = 20,
     ) -> Respons[GetSplitsServiceReadDto]:
-        """List split records, optionally filtered by source product or status."""
+        """List split records, optionally filtered by source product, status, or scope."""
         try:
             with DatabaseManager.transaction() as cursor:
                 conditions = ["ps.tenant_id = %s", "ps.org_id = %s", "ps.bus_id = %s", "ps.delete_status = 'NOT_DELETED'"]
@@ -3746,6 +3747,9 @@ class ProductsService:
                 if status:
                     conditions.append("ps.status = %s")
                     params.append(status)
+                if source_scope:
+                    conditions.append("ps.source_scope = %s")
+                    params.append(source_scope)
                 where_clause = " AND ".join(conditions)
 
                 cursor.execute(

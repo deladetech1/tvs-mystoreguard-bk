@@ -1038,6 +1038,7 @@ def reverse_split(
 def get_splits(
     source_product_id: Optional[str] = Query(None, description="Filter by source product ID"),
     status: Optional[str] = Query(None, description="Filter by status (ACTIVE or REVERSED)"),
+    source_scope: Optional[str] = Query(None, description="Filter by source scope (PRODUCT, STORE, or WAREHOUSE)"),
     page: int = Query(1, ge=1, description="Page number"),
     size: int = Query(20, ge=1, le=100, description="Page size (max 100)"),
     current_user: dict = Depends(CustomAuthService.get_current_user),
@@ -1063,6 +1064,7 @@ def get_splits(
             bus_id=org_bus_loc["bus_id"],
             source_product_id=source_product_id,
             status=status,
+            source_scope=source_scope,
             page=page,
             size=size,
         )
