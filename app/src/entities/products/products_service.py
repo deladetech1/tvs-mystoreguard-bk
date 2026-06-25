@@ -3028,6 +3028,8 @@ class ProductsService:
             unit_selling_price=float(d['unit_selling_price']) if d.get('unit_selling_price') is not None else None,
             price_mode=d['price_mode'],
             currency_id=d.get('currency_id'),
+            currency_name=d.get('currency_name'),
+            currency_symbol=d.get('currency_symbol'),
             status=d['status'],
             source_batches=[SourceBatchConsumedReadDto(**b) for b in sb],
             cdate=d['cdate'],
@@ -3048,13 +3050,16 @@ class ProductsService:
                    dp.name as derived_product_name,
                    db.batch_number as derived_batch_number,
                    creator.fullname as created_by_name,
-                   reverser.fullname as reversed_by_name
+                   reverser.fullname as reversed_by_name,
+                   cur.name as currency_name,
+                   cur.symbol as currency_symbol
             FROM {db_settings.MSG_PRODUCT_SPLIT_ITEMS_TABLE} si
             LEFT JOIN {db_settings.MSG_PRODUCTS_TABLE} sp ON si.source_product_id = sp.id AND si.tenant_id = sp.tenant_id
             LEFT JOIN {db_settings.MSG_PRODUCTS_TABLE} dp ON si.derived_product_id = dp.id AND si.tenant_id = dp.tenant_id
             LEFT JOIN {db_settings.MSG_PURCHASE_BATCHES_TABLE} db ON si.derived_batch_id = db.id AND si.tenant_id = db.tenant_id
             LEFT JOIN {db_settings.CORE_PLATFORM_USERS_TABLE} creator ON si.created_by = creator.id AND si.tenant_id = creator.tenant_id
             LEFT JOIN {db_settings.CORE_PLATFORM_USERS_TABLE} reverser ON si.reversed_by = reverser.id AND si.tenant_id = reverser.tenant_id
+            LEFT JOIN {db_settings.CORE_PLATFORM_CURRENCY} cur ON si.currency_id = cur.id AND si.tenant_id = cur.tenant_id
             WHERE si.split_id = %s AND si.tenant_id = %s AND si.org_id = %s AND si.bus_id = %s
             AND si.delete_status = 'NOT_DELETED'
             ORDER BY si.cdatetime ASC""",

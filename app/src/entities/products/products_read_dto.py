@@ -395,6 +395,8 @@ class SplitItemReadDto(BaseModel):
     unit_selling_price: Optional[float] = Field(None, description="Selling price assigned per smaller unit")
     price_mode: str = Field(..., description="AUTO or MANUAL")
     currency_id: Optional[str] = Field(None, description="Currency inherited from the source batch")
+    currency_name: Optional[str] = Field(None, description="Currency name")
+    currency_symbol: Optional[str] = Field(None, description="Currency symbol")
 
     status: str = Field(..., description="ACTIVE or REVERSED")
     source_batches: List[SourceBatchConsumedReadDto] = Field(default_factory=list, description="Source batches consumed and how much was taken from each")
