@@ -7,6 +7,7 @@ from src.entities.products.products_base import (
     BatchStatusType,
     SplitPriceModeType,
     SplitDestinationType,
+    SplitSourceScopeType,
 )
 
 
@@ -211,6 +212,10 @@ class SplitProductWriteBase(BaseModel):
     source_product_id: str = Field(..., description="Product to take stock from (e.g. the full pole)")
     source_qty_taken: int = Field(..., gt=0, description="How many source units to break up (e.g. 5)")
     divisor: int = Field(..., ge=1, description="How many smaller units each source unit becomes (e.g. 2 -> halves)")
+    source_scope: SplitSourceScopeType = Field(
+        'STORE',
+        description="Where to draw stock from: STORE/WAREHOUSE = shelf stock at the current location; PRODUCT = the unallocated purchase-batch pool",
+    )
 
     # --- Pricing ---
     price_mode: SplitPriceModeType = Field('AUTO', description="AUTO = source price / divisor; MANUAL = use prices provided below")

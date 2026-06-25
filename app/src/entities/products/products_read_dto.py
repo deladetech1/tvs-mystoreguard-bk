@@ -367,6 +367,7 @@ class SourceBatchConsumedReadDto(BaseModel):
     """A single source batch that was consumed by a split"""
     batch_id: str = Field(..., description="Source batch ID")
     batch_number: Optional[str] = Field(None, description="Source batch number")
+    batch_location_id: Optional[str] = Field(None, description="Source batch-location row consumed (STORE/WAREHOUSE scope only)")
     qty_taken: int = Field(..., description="Quantity taken from this source batch")
     cost_price: Optional[float] = Field(None, description="Cost price of the source batch")
     base_selling_price: Optional[float] = Field(None, description="Selling price of the source batch")
@@ -382,6 +383,9 @@ class ProductSplitReadBase(BaseModel):
     source_product_name: Optional[str] = Field(None, description="Source product name")
     source_qty_taken: int = Field(..., description="Number of source units broken up")
     divisor: int = Field(..., description="Units each source unit became")
+    source_scope: str = Field('PRODUCT', description="Where stock was drawn from: PRODUCT, STORE, or WAREHOUSE")
+    location_type: Optional[str] = Field(None, description="STORE or WAREHOUSE (location-scoped splits only)")
+    loc_id: Optional[str] = Field(None, description="Location ID the split happened at (location-scoped splits only)")
     derived_product_id: str = Field(..., description="Product the new units were added to")
     derived_product_name: Optional[str] = Field(None, description="Derived product name")
     derived_batch_id: str = Field(..., description="Batch created to hold the new units")

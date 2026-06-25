@@ -10,12 +10,28 @@ The smaller units can be added to an **existing product** (as a new batch) or la
 
 ## How it works
 
-- Stock is taken from the source product **FIFO** (oldest batches first), reducing each
-  batch's `qty_remaining` and logging an `OUT` movement (`SPLIT_OUT`).
 - `derived_qty = source_qty_taken × divisor`.
-- A new **batch** is created on the destination product holding `derived_qty` units, with
-  an `IN` movement (`SPLIT_IN`).
+- Stock is taken from the source product **FIFO** (oldest first), logging `OUT`
+  (`SPLIT_OUT`) movements.
+- A new **batch** of `derived_qty` units is created on the destination product, logging an
+  `IN` (`SPLIT_IN`) movement.
 - A row in `msg_product_splits` records the lineage so the split can be **reversed**.
+
+### Where the stock comes from — `source_scope`
+
+The customer is usually standing in a **store**, so by default the split works on that
+location's shelf stock. `source_scope` selects the pool:
+
+| `source_scope` | Takes from | Lands the new units |
+|----------------|-----------|---------------------|
+| `STORE` *(default)* | shelf stock at the current store (`batch_locations` + `store_products.current_qty`) | back at the same store |
+| `WAREHOUSE` | shelf stock at the current warehouse (`batch_locations` + `warehouse_products.current_qty`) | back at the same warehouse |
+| `PRODUCT` | the unallocated purchase-batch pool (`qty_remaining`), before distribution | the pool |
+
+For `STORE`/`WAREHOUSE` the location is the caller's current location (from the auth
+context), exactly like the store/warehouse product endpoints. So splitting the GHc 200 pole
+at a store reduces that store's pole count and adds the new half-poles to the same store —
+ready to sell immediately.
 
 ### Pricing
 
@@ -44,6 +60,7 @@ All under `/api/v1/products`. Require `permission-msg-products-split`.
   "source_product_id": "prd_pole",
   "source_qty_taken": 5,          // take 5 poles
   "divisor": 2,                   // each becomes 2 -> 10 units total
+  "source_scope": "STORE",        // STORE (default) | WAREHOUSE | PRODUCT
   "price_mode": "AUTO",           // or "MANUAL"
   "unit_selling_price": null,     // required when price_mode = MANUAL
   "unit_cost_price": null,        // optional override
@@ -84,10 +101,9 @@ Query: `source_product_id?`, `status?` (`ACTIVE`/`REVERSED`), `page`, `size`.
 ### `GET /products/split-detail`
 Query: `split_id`.
 
-## v1 scope / assumptions
+## Notes
 
-- Source stock is drawn from the product-level `qty_remaining` pool (what the product card
-  shows as remaining), **not** from a specific store/warehouse `batch_locations` shelf.
-  "Split from a specific location's shelf stock" is a future extension (would add a
-  `location_id` to the request).
-- Reversal requires the derived batch to be fully intact.
+- For `STORE`/`WAREHOUSE` splits, the location is the caller's current location. To split
+  warehouse stock, call from a warehouse context with `source_scope: "WAREHOUSE"`.
+- Reversal requires the derived units to be fully intact (none sold or moved). For location
+  splits the derived batch must still hold the full `derived_qty` on the shelf.

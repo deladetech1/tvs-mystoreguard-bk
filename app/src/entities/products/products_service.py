@@ -2939,6 +2939,9 @@ class ProductsService:
             source_product_name=d.get('source_product_name'),
             source_qty_taken=d['source_qty_taken'],
             divisor=d['divisor'],
+            source_scope=d.get('source_scope') or 'PRODUCT',
+            location_type=d.get('location_type'),
+            loc_id=d.get('loc_id'),
             derived_product_id=d['derived_product_id'],
             derived_product_name=d.get('derived_product_name'),
             derived_batch_id=d['derived_batch_id'],
@@ -2979,17 +2982,67 @@ class ProductsService:
         return cursor.fetchone()
 
     @staticmethod
+    def _location_product_table(location_type: str) -> str:
+        """Return the per-location stock table for a STORE or WAREHOUSE."""
+        return (
+            db_settings.MSG_WAREHOUSE_PRODUCTS_TABLE
+            if location_type == 'WAREHOUSE'
+            else db_settings.MSG_STORE_PRODUCTS_TABLE
+        )
+
+    @staticmethod
+    def _adjust_location_product_qty(
+        cursor, table, tenant_id, org_id, bus_id, loc_id, product_id,
+        delta, actor, cdate, ctime, cdatetime,
+    ):
+        """Increment/decrement current_qty for (product, location), inserting the row if
+        missing. `delta` may be negative."""
+        cursor.execute(
+            f"""SELECT id, current_qty FROM {table}
+            WHERE tenant_id = %s AND org_id = %s AND bus_id = %s
+            AND loc_id = %s AND product_id = %s""",
+            (tenant_id, org_id, bus_id, loc_id, product_id),
+        )
+        existing = cursor.fetchone()
+        if existing:
+            cursor.execute(
+                f"""UPDATE {table}
+                SET current_qty = current_qty + %s, updated_by = %s
+                WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                (delta, actor, existing['id'], tenant_id, org_id, bus_id),
+            )
+        else:
+            # No existing row: only meaningful for a positive delta (new stock at location)
+            cursor.execute(
+                f"""INSERT INTO {table}
+                (tenant_id, org_id, bus_id, loc_id, product_id, current_qty,
+                 reorder_level, reorder_quantity, is_active, delete_status,
+                 cdate, ctime, cdatetime, created_by)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (
+                    tenant_id, org_id, bus_id, loc_id, product_id, max(delta, 0),
+                    0, 0, True, 'NOT_DELETED',
+                    cdate, ctime, cdatetime, actor,
+                ),
+            )
+
+    @staticmethod
     def split_product(
         data: SplitProductServiceWriteDto,
         tenant_id: str,
         org_id: str,
         bus_id: str,
-        created_by: str
+        created_by: str,
+        loc_id: Optional[str] = None,
     ) -> Respons[SplitProductServiceReadDto]:
-        """Split (break-bulk) a product: take qty off a source product (FIFO across its
-        batches), multiply each unit by `divisor`, and land the smaller units as a new
-        batch on either an existing product or a brand new product. Records a reversible
-        split row for lineage."""
+        """Split (break-bulk) a product: take qty off a source product (FIFO), multiply
+        each unit by `divisor`, and land the smaller units as a new batch on either an
+        existing product or a brand new product. Records a reversible split row.
+
+        `source_scope` decides where stock is drawn from and where the new units land:
+          - PRODUCT: the unallocated purchase-batch pool (qty_remaining)
+          - STORE/WAREHOUSE: shelf stock at `loc_id` (batch_locations + current_qty)
+        """
         import json as _json
 
         logger.info(
@@ -3018,6 +3071,15 @@ class ProductsService:
         if data.destination == 'NEW' and not data.new_product_name:
             return Respons(success=False, detail="new_product_name is required when destination is NEW", error="VALIDATION_ERROR")
 
+        scope = data.source_scope or 'STORE'
+        location_type = scope if scope in ('STORE', 'WAREHOUSE') else None
+        if location_type and not loc_id:
+            return Respons(
+                success=False,
+                detail=f"A {scope.lower()} location is required for a {scope} split",
+                error="VALIDATION_ERROR",
+            )
+
         cdate = Helper.current_date_time()["cdate"]
         ctime = Helper.current_date_time()["ctime"]
         cdatetime = Helper.current_date_time()["cdatetime"]
@@ -3035,30 +3097,78 @@ class ProductsService:
                 if not source_product:
                     return Respons(success=False, detail=f"Source product '{data.source_product_id}' not found", error="NOT_FOUND")
 
-                # 2. Get source batches with available stock, FIFO (oldest first)
-                cursor.execute(
-                    f"""SELECT id, batch_number, qty_remaining, cost_price, base_selling_price,
-                           currency_id, unit_of_measure_id, supplier_id
-                    FROM {db_settings.MSG_PURCHASE_BATCHES_TABLE}
-                    WHERE product_id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s
-                    AND delete_status = 'NOT_DELETED'
-                    AND status NOT IN ('VOID', 'CANCELLED')
-                    AND qty_remaining > 0
-                    ORDER BY cdatetime ASC""",
-                    (data.source_product_id, tenant_id, org_id, bus_id),
-                )
-                source_batches = cursor.fetchall()
+                # 2. Get source stock, FIFO (oldest first). Shape into a uniform list of
+                #    rows: {batch_id, batch_number, batch_location_id, available, prices...}
+                if scope == 'PRODUCT':
+                    cursor.execute(
+                        f"""SELECT id, batch_number, qty_remaining, cost_price, base_selling_price,
+                               currency_id, unit_of_measure_id, supplier_id
+                        FROM {db_settings.MSG_PURCHASE_BATCHES_TABLE}
+                        WHERE product_id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s
+                        AND delete_status = 'NOT_DELETED'
+                        AND status NOT IN ('VOID', 'CANCELLED')
+                        AND qty_remaining > 0
+                        ORDER BY cdatetime ASC""",
+                        (data.source_product_id, tenant_id, org_id, bus_id),
+                    )
+                    source_rows = [
+                        {
+                            "batch_id": b['id'],
+                            "batch_number": b.get('batch_number'),
+                            "batch_location_id": None,
+                            "available": int(b.get('qty_remaining') or 0),
+                            "cost_price": b.get('cost_price'),
+                            "base_selling_price": b.get('base_selling_price'),
+                            "currency_id": b.get('currency_id'),
+                            "unit_of_measure_id": b.get('unit_of_measure_id'),
+                            "supplier_id": b.get('supplier_id'),
+                        }
+                        for b in cursor.fetchall()
+                    ]
+                else:
+                    cursor.execute(
+                        f"""SELECT bl.id as batch_location_id, bl.qty as available,
+                               pb.id as batch_id, pb.batch_number, pb.cost_price, pb.base_selling_price,
+                               pb.currency_id, pb.unit_of_measure_id, pb.supplier_id
+                        FROM {db_settings.MSG_BATCH_LOCATIONS_TABLE} bl
+                        INNER JOIN {db_settings.MSG_PURCHASE_BATCHES_TABLE} pb
+                            ON bl.purchase_batche_id = pb.id AND bl.tenant_id = pb.tenant_id
+                            AND bl.org_id = pb.org_id AND bl.bus_id = pb.bus_id
+                        WHERE bl.tenant_id = %s AND bl.org_id = %s AND bl.bus_id = %s
+                        AND bl.loc_id = %s AND pb.product_id = %s AND bl.location_type = %s
+                        AND pb.delete_status = 'NOT_DELETED'
+                        AND pb.status NOT IN ('VOID', 'CANCELLED')
+                        AND bl.qty > 0
+                        ORDER BY bl.cdatetime ASC, pb.cdatetime ASC
+                        FOR UPDATE OF bl""",
+                        (tenant_id, org_id, bus_id, loc_id, data.source_product_id, location_type),
+                    )
+                    source_rows = [
+                        {
+                            "batch_id": b['batch_id'],
+                            "batch_number": b.get('batch_number'),
+                            "batch_location_id": b['batch_location_id'],
+                            "available": int(b.get('available') or 0),
+                            "cost_price": b.get('cost_price'),
+                            "base_selling_price": b.get('base_selling_price'),
+                            "currency_id": b.get('currency_id'),
+                            "unit_of_measure_id": b.get('unit_of_measure_id'),
+                            "supplier_id": b.get('supplier_id'),
+                        }
+                        for b in cursor.fetchall()
+                    ]
 
-                total_available = sum(int(b.get('qty_remaining') or 0) for b in source_batches)
+                total_available = sum(r['available'] for r in source_rows)
                 if total_available < data.source_qty_taken:
+                    where = f"at this {scope.lower()}" if location_type else "in stock"
                     return Respons(
                         success=False,
-                        detail=f"Insufficient stock to split. Available: {total_available}, requested: {data.source_qty_taken}",
+                        detail=f"Insufficient stock to split. Available {where}: {total_available}, requested: {data.source_qty_taken}",
                         error="INSUFFICIENT_STOCK",
                     )
 
-                # Reference batch for pricing/currency = most recently received available batch
-                reference_batch = source_batches[-1]
+                # Reference row for pricing/currency = most recently received available stock
+                reference_batch = source_rows[-1]
                 source_cost = reference_batch.get('cost_price')
                 source_selling = reference_batch.get('base_selling_price')
                 source_currency_id = reference_batch.get('currency_id')
@@ -3157,24 +3267,36 @@ class ProductsService:
                         )
 
                 # 5. FIFO-consume the source quantity
+                mov_location_type = location_type if location_type else 'SYSTEM'
+                mov_location_id = loc_id if location_type else None
                 remaining_to_take = data.source_qty_taken
                 consumed = []
-                for batch in source_batches:
+                for row in source_rows:
                     if remaining_to_take <= 0:
                         break
-                    available = int(batch.get('qty_remaining') or 0)
+                    available = row['available']
                     if available <= 0:
                         continue
                     take = min(available, remaining_to_take)
 
-                    cursor.execute(
-                        f"""UPDATE {db_settings.MSG_PURCHASE_BATCHES_TABLE}
-                        SET qty_remaining = qty_remaining - %s, updated_by = %s
-                        WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
-                        (take, created_by, batch['id'], tenant_id, org_id, bus_id),
-                    )
+                    if scope == 'PRODUCT':
+                        # Draw from the unallocated purchase-batch pool
+                        cursor.execute(
+                            f"""UPDATE {db_settings.MSG_PURCHASE_BATCHES_TABLE}
+                            SET qty_remaining = qty_remaining - %s, updated_by = %s
+                            WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                            (take, created_by, row['batch_id'], tenant_id, org_id, bus_id),
+                        )
+                    else:
+                        # Draw from shelf stock at the location
+                        cursor.execute(
+                            f"""UPDATE {db_settings.MSG_BATCH_LOCATIONS_TABLE}
+                            SET qty = qty - %s
+                            WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                            (take, row['batch_location_id'], tenant_id, org_id, bus_id),
+                        )
 
-                    # OUT movement from source batch
+                    # OUT movement from source
                     cursor.execute(
                         f"""INSERT INTO {db_settings.MSG_PRODUCT_MOVEMENTS_TABLE}
                         (id, tenant_id, org_id, bus_id, product_id, batch_id, location_type, location_id,
@@ -3182,25 +3304,38 @@ class ProductsService:
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                         (
                             Helper.generate_unique_identifier(prefix="mov"), tenant_id, org_id, bus_id,
-                            data.source_product_id, batch['id'], 'SYSTEM', None,
+                            data.source_product_id, row['batch_id'], mov_location_type, mov_location_id,
                             'OUT', take, f"SPLIT_OUT - {take} unit(s) taken to split into {data.divisor}", None,
                             cdate, ctime, cdatetime, created_by,
                         ),
                     )
 
                     consumed.append({
-                        "batch_id": batch['id'],
-                        "batch_number": batch.get('batch_number'),
+                        "batch_id": row['batch_id'],
+                        "batch_number": row.get('batch_number'),
+                        "batch_location_id": row.get('batch_location_id'),
                         "qty_taken": take,
-                        "cost_price": float(batch['cost_price']) if batch.get('cost_price') is not None else None,
-                        "base_selling_price": float(batch['base_selling_price']) if batch.get('base_selling_price') is not None else None,
+                        "cost_price": float(row['cost_price']) if row.get('cost_price') is not None else None,
+                        "base_selling_price": float(row['base_selling_price']) if row.get('base_selling_price') is not None else None,
                     })
                     remaining_to_take -= take
 
-                # 6. Create the derived batch on the destination product
+                # For location scope, reduce the source product's per-location total
+                if location_type:
+                    ProductsService._adjust_location_product_qty(
+                        cursor, ProductsService._location_product_table(location_type),
+                        tenant_id, org_id, bus_id, loc_id, data.source_product_id,
+                        -data.source_qty_taken, created_by, cdate, ctime, cdatetime,
+                    )
+
+                # 6. Create the derived batch on the destination product.
+                #    PRODUCT scope: the new units live in the unallocated pool (qty_remaining).
+                #    STORE/WAREHOUSE scope: they are allocated straight to the location, so the
+                #    pool remaining is 0 and the stock lives in batch_locations + current_qty.
                 derived_batch_number = ProductsService._generate_batch_number(cursor, tenant_id, org_id, bus_id)
                 derived_batch_id = Helper.generate_unique_identifier(prefix="bat")
                 expiry_date_value = data.expire_date if data.expire_date else None
+                derived_pool_remaining = derived_qty if scope == 'PRODUCT' else 0
 
                 cursor.execute(
                     f"""INSERT INTO {db_settings.MSG_PURCHASE_BATCHES_TABLE}
@@ -3217,7 +3352,7 @@ class ProductsService:
                         expiry_date_value,
                         'ADJUSTMENT',
                         None,
-                        derived_qty, derived_qty,
+                        derived_qty, derived_pool_remaining,
                         0,
                         'RECEIVED',
                         'NOT_DELETED', True,
@@ -3225,32 +3360,66 @@ class ProductsService:
                     ),
                 )
 
-                # IN movement onto the derived batch
-                cursor.execute(
-                    f"""INSERT INTO {db_settings.MSG_PRODUCT_MOVEMENTS_TABLE}
-                    (id, tenant_id, org_id, bus_id, product_id, batch_id, location_type, location_id,
-                     movement_type, qty, reason, reference_id, cdate, ctime, cdatetime, created_by)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                    (
-                        Helper.generate_unique_identifier(prefix="mov"), tenant_id, org_id, bus_id,
-                        derived_product_id, derived_batch_id, 'SYSTEM', None,
-                        'IN', derived_qty, f"SPLIT_IN - {derived_qty} unit(s) from splitting product {data.source_product_id}", None,
-                        cdate, ctime, cdatetime, created_by,
-                    ),
-                )
+                if scope == 'PRODUCT':
+                    # IN movement onto the derived batch (sits in the pool)
+                    cursor.execute(
+                        f"""INSERT INTO {db_settings.MSG_PRODUCT_MOVEMENTS_TABLE}
+                        (id, tenant_id, org_id, bus_id, product_id, batch_id, location_type, location_id,
+                         movement_type, qty, reason, reference_id, cdate, ctime, cdatetime, created_by)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                        (
+                            Helper.generate_unique_identifier(prefix="mov"), tenant_id, org_id, bus_id,
+                            derived_product_id, derived_batch_id, 'SYSTEM', None,
+                            'IN', derived_qty, f"SPLIT_IN - {derived_qty} unit(s) from splitting product {data.source_product_id}", None,
+                            cdate, ctime, cdatetime, created_by,
+                        ),
+                    )
+                else:
+                    # Allocate the whole derived batch to the location
+                    cursor.execute(
+                        f"""INSERT INTO {db_settings.MSG_BATCH_LOCATIONS_TABLE}
+                        (id, tenant_id, org_id, bus_id, loc_id, purchase_batche_id, location_type, qty,
+                         cdate, ctime, cdatetime)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                        (
+                            Helper.generate_unique_identifier(prefix="bloc"), tenant_id, org_id, bus_id,
+                            loc_id, derived_batch_id, location_type, derived_qty,
+                            cdate, ctime, cdatetime,
+                        ),
+                    )
+                    ProductsService._adjust_location_product_qty(
+                        cursor, ProductsService._location_product_table(location_type),
+                        tenant_id, org_id, bus_id, loc_id, derived_product_id,
+                        derived_qty, created_by, cdate, ctime, cdatetime,
+                    )
+                    # IN movement onto the location
+                    cursor.execute(
+                        f"""INSERT INTO {db_settings.MSG_PRODUCT_MOVEMENTS_TABLE}
+                        (id, tenant_id, org_id, bus_id, product_id, batch_id, location_type, location_id,
+                         movement_type, qty, reason, reference_id, cdate, ctime, cdatetime, created_by)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                        (
+                            Helper.generate_unique_identifier(prefix="mov"), tenant_id, org_id, bus_id,
+                            derived_product_id, derived_batch_id, location_type, loc_id,
+                            'IN', derived_qty, f"SPLIT_IN - {derived_qty} unit(s) from splitting product {data.source_product_id}", None,
+                            cdate, ctime, cdatetime, created_by,
+                        ),
+                    )
 
                 # 7. Record the split
                 split_id = Helper.generate_unique_identifier(prefix="spl")
                 cursor.execute(
                     f"""INSERT INTO {db_settings.MSG_PRODUCT_SPLITS_TABLE}
                     (id, tenant_id, org_id, bus_id, source_product_id, source_qty_taken, divisor,
+                     source_scope, location_type, loc_id,
                      derived_product_id, derived_batch_id, derived_qty, unit_cost_price, unit_selling_price,
                      price_mode, currency_id, source_batches, status, delete_status,
                      cdate, ctime, cdatetime, created_by)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                     (
                         split_id, tenant_id, org_id, bus_id, data.source_product_id,
                         data.source_qty_taken, data.divisor,
+                        scope, location_type, (loc_id if location_type else None),
                         derived_product_id, derived_batch_id, derived_qty,
                         unit_cost_price, unit_selling_price,
                         data.price_mode, source_currency_id, _json.dumps(consumed),
@@ -3345,8 +3514,13 @@ class ProductsService:
                 derived_batch_id = split['derived_batch_id']
                 derived_qty = int(split['derived_qty'])
                 derived_product_id = split['derived_product_id']
+                scope = split.get('source_scope') or 'PRODUCT'
+                location_type = split.get('location_type')
+                split_loc_id = split.get('loc_id')
+                mov_location_type = location_type if location_type else 'SYSTEM'
+                mov_location_id = split_loc_id if location_type else None
 
-                # Verify the derived batch is untouched
+                # Verify the derived batch exists / not already void
                 cursor.execute(
                     f"""SELECT qty_remaining, status, batch_number FROM {db_settings.MSG_PURCHASE_BATCHES_TABLE}
                     WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
@@ -3355,26 +3529,35 @@ class ProductsService:
                 derived_batch = cursor.fetchone()
                 if not derived_batch:
                     return Respons(success=False, detail="Derived batch not found; cannot reverse", error="NOT_FOUND")
-
                 if derived_batch.get('status') == 'VOID':
                     return Respons(success=False, detail="Derived batch is already void", error="VALIDATION_ERROR")
 
-                # Block reversal if any of the derived units have already been allocated/sold
+                # Untouched check (nothing distributed or sold)
                 cursor.execute(
-                    f"""SELECT COALESCE(SUM(qty), 0) as allocated
+                    f"""SELECT COALESCE(SUM(qty), 0) as on_shelf
                     FROM {db_settings.MSG_BATCH_LOCATIONS_TABLE}
                     WHERE purchase_batche_id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
                     (derived_batch_id, tenant_id, org_id, bus_id),
                 )
-                allocated_row = cursor.fetchone()
-                allocated = int(allocated_row.get('allocated') or 0) if allocated_row else 0
+                shelf_row = cursor.fetchone()
+                on_shelf = int(shelf_row.get('on_shelf') or 0) if shelf_row else 0
 
-                if int(derived_batch.get('qty_remaining') or 0) != derived_qty or allocated > 0:
-                    return Respons(
-                        success=False,
-                        detail="Cannot reverse: some of the split units have already been distributed or sold",
-                        error="CANNOT_REVERSE",
-                    )
+                if location_type:
+                    # Location split: the full derived_qty must still be on the shelf
+                    if on_shelf != derived_qty:
+                        return Respons(
+                            success=False,
+                            detail="Cannot reverse: some of the split units have already been sold or moved",
+                            error="CANNOT_REVERSE",
+                        )
+                else:
+                    # Pool split: full qty must remain in the pool and none allocated
+                    if int(derived_batch.get('qty_remaining') or 0) != derived_qty or on_shelf > 0:
+                        return Respons(
+                            success=False,
+                            detail="Cannot reverse: some of the split units have already been distributed or sold",
+                            error="CANNOT_REVERSE",
+                        )
 
                 # Void the derived batch
                 cursor.execute(
@@ -3384,6 +3567,19 @@ class ProductsService:
                     (updated_by, derived_batch_id, tenant_id, org_id, bus_id),
                 )
 
+                # For location splits, remove the derived stock from the location
+                if location_type:
+                    cursor.execute(
+                        f"""DELETE FROM {db_settings.MSG_BATCH_LOCATIONS_TABLE}
+                        WHERE purchase_batche_id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                        (derived_batch_id, tenant_id, org_id, bus_id),
+                    )
+                    ProductsService._adjust_location_product_qty(
+                        cursor, ProductsService._location_product_table(location_type),
+                        tenant_id, org_id, bus_id, split_loc_id, derived_product_id,
+                        -derived_qty, updated_by, cdate, ctime, cdatetime,
+                    )
+
                 # OUT movement removing the derived units
                 cursor.execute(
                     f"""INSERT INTO {db_settings.MSG_PRODUCT_MOVEMENTS_TABLE}
@@ -3392,31 +3588,50 @@ class ProductsService:
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                     (
                         Helper.generate_unique_identifier(prefix="mov"), tenant_id, org_id, bus_id,
-                        derived_product_id, derived_batch_id, 'SYSTEM', None,
+                        derived_product_id, derived_batch_id, mov_location_type, mov_location_id,
                         'OUT', derived_qty, f"SPLIT_REVERSE - split {data.split_id} reversed, derived batch voided", data.split_id,
                         cdate, ctime, cdatetime, updated_by,
                     ),
                 )
 
-                # Restore each source batch
+                # Restore each consumed source row
                 source_batches = split.get('source_batches') or []
                 if isinstance(source_batches, str):
                     source_batches = _json.loads(source_batches)
 
                 for sb in source_batches:
                     sb_id = sb.get('batch_id')
+                    sb_loc_id = sb.get('batch_location_id')
                     qty_taken = int(sb.get('qty_taken') or 0)
-                    if not sb_id or qty_taken <= 0:
+                    if qty_taken <= 0:
                         continue
-                    # Only restore if the source batch still exists and is not deleted
-                    cursor.execute(
-                        f"""UPDATE {db_settings.MSG_PURCHASE_BATCHES_TABLE}
-                        SET qty_remaining = qty_remaining + %s, updated_by = %s
-                        WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s
-                        AND delete_status = 'NOT_DELETED'""",
-                        (qty_taken, updated_by, sb_id, tenant_id, org_id, bus_id),
-                    )
-                    if cursor.rowcount > 0:
+
+                    if location_type:
+                        # Return the units to the source batch-location row
+                        if not sb_loc_id:
+                            logger.warning("Missing batch_location_id during location split reversal; skipping a source row")
+                            continue
+                        cursor.execute(
+                            f"""UPDATE {db_settings.MSG_BATCH_LOCATIONS_TABLE}
+                            SET qty = qty + %s
+                            WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                            (qty_taken, sb_loc_id, tenant_id, org_id, bus_id),
+                        )
+                        restored = cursor.rowcount > 0
+                    else:
+                        # Return the units to the source batch's pool
+                        if not sb_id:
+                            continue
+                        cursor.execute(
+                            f"""UPDATE {db_settings.MSG_PURCHASE_BATCHES_TABLE}
+                            SET qty_remaining = qty_remaining + %s, updated_by = %s
+                            WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s
+                            AND delete_status = 'NOT_DELETED'""",
+                            (qty_taken, updated_by, sb_id, tenant_id, org_id, bus_id),
+                        )
+                        restored = cursor.rowcount > 0
+
+                    if restored:
                         cursor.execute(
                             f"""INSERT INTO {db_settings.MSG_PRODUCT_MOVEMENTS_TABLE}
                             (id, tenant_id, org_id, bus_id, product_id, batch_id, location_type, location_id,
@@ -3424,13 +3639,21 @@ class ProductsService:
                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                             (
                                 Helper.generate_unique_identifier(prefix="mov"), tenant_id, org_id, bus_id,
-                                split['source_product_id'], sb_id, 'SYSTEM', None,
+                                split['source_product_id'], sb_id, mov_location_type, mov_location_id,
                                 'IN', qty_taken, f"SPLIT_REVERSE - {qty_taken} unit(s) returned to source from split {data.split_id}", data.split_id,
                                 cdate, ctime, cdatetime, updated_by,
                             ),
                         )
                     else:
-                        logger.warning(f"Source batch {sb_id} no longer available to restore during split reversal")
+                        logger.warning(f"Source row (batch {sb_id}) no longer available to restore during split reversal")
+
+                # For location splits, add the returned units back to the source product's per-location total
+                if location_type:
+                    ProductsService._adjust_location_product_qty(
+                        cursor, ProductsService._location_product_table(location_type),
+                        tenant_id, org_id, bus_id, split_loc_id, split['source_product_id'],
+                        int(split['source_qty_taken']), updated_by, cdate, ctime, cdatetime,
+                    )
 
                 # Mark split as reversed
                 cursor.execute(

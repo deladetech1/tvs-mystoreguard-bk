@@ -149,7 +149,20 @@ class Settings:
     
     # Appointments table
     MSG_APPOINTMENTS_TABLE = os.getenv("MSG_APPOINTMENTS_TABLE", "mystoreguard.msg_appointments")
-    
+
+    # Tasks & workflows tables
+    MSG_WORKFLOW_TEMPLATES_TABLE = os.getenv("MSG_WORKFLOW_TEMPLATES_TABLE", "mystoreguard.msg_workflow_templates")
+    MSG_WORKFLOW_TEMPLATE_STEPS_TABLE = os.getenv("MSG_WORKFLOW_TEMPLATE_STEPS_TABLE", "mystoreguard.msg_workflow_template_steps")
+    MSG_WORKFLOW_TEMPLATE_STEP_DEPS_TABLE = os.getenv("MSG_WORKFLOW_TEMPLATE_STEP_DEPS_TABLE", "mystoreguard.msg_workflow_template_step_deps")
+    MSG_WORKFLOW_TEMPLATE_STEP_TARGETS_TABLE = os.getenv("MSG_WORKFLOW_TEMPLATE_STEP_TARGETS_TABLE", "mystoreguard.msg_workflow_template_step_targets")
+    MSG_TASKS_TABLE = os.getenv("MSG_TASKS_TABLE", "mystoreguard.msg_tasks")
+    MSG_TASK_STEPS_TABLE = os.getenv("MSG_TASK_STEPS_TABLE", "mystoreguard.msg_task_steps")
+    MSG_TASK_STEP_DEPS_TABLE = os.getenv("MSG_TASK_STEP_DEPS_TABLE", "mystoreguard.msg_task_step_deps")
+    MSG_TASK_STEP_TARGETS_TABLE = os.getenv("MSG_TASK_STEP_TARGETS_TABLE", "mystoreguard.msg_task_step_targets")
+    MSG_TASK_NOTIFICATION_SETTINGS_TABLE = os.getenv("MSG_TASK_NOTIFICATION_SETTINGS_TABLE", "mystoreguard.msg_task_notification_settings")
+    MSG_TASK_NOTIFICATIONS_TABLE = os.getenv("MSG_TASK_NOTIFICATIONS_TABLE", "mystoreguard.msg_task_notifications")
+    CORE_PLATFORM_GROUPS_TABLE = os.getenv("CORE_PLATFORM_GROUPS_TABLE", "core_platform.cp_groups")
+
     # Sales tables
     MSG_SALES_TABLE = os.getenv("MSG_SALES_TABLE", "mystoreguard.msg_sales")
     MSG_SALES_ITEMS_TABLE = os.getenv("MSG_SALES_ITEMS_TABLE", "mystoreguard.msg_sales_items")

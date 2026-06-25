@@ -15,6 +15,11 @@ BatchType = Literal['PURCHASE', 'OPENING_STOCK', 'ADJUSTMENT']
 SplitPriceModeType = Literal['AUTO', 'MANUAL']
 SplitDestinationType = Literal['EXISTING', 'NEW']
 SplitStatusType = Literal['ACTIVE', 'REVERSED']
+# Where the source stock is drawn from:
+#   PRODUCT   = the unallocated purchase-batch pool (qty_remaining), pre-distribution
+#   STORE     = shelf stock at the current store location (batch_locations)
+#   WAREHOUSE = shelf stock at the current warehouse location (batch_locations)
+SplitSourceScopeType = Literal['PRODUCT', 'STORE', 'WAREHOUSE']
 
 
 # =====================================================

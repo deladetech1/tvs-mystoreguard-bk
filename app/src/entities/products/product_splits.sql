@@ -13,6 +13,9 @@ CREATE TABLE IF NOT EXISTS mystoreguard.msg_product_splits (
     source_product_id   text        NOT NULL,
     source_qty_taken    integer     NOT NULL,
     divisor             integer     NOT NULL,
+    source_scope        text        NOT NULL DEFAULT 'PRODUCT',  -- PRODUCT | STORE | WAREHOUSE
+    location_type       text,                                    -- STORE | WAREHOUSE (location splits)
+    loc_id              text,                                    -- location the split happened at
 
     -- Derived (destination)
     derived_product_id  text        NOT NULL,

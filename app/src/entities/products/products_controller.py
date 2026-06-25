@@ -965,6 +965,7 @@ def split_product(
             org_id=org_bus_loc["org_id"],
             bus_id=org_bus_loc["bus_id"],
             created_by=current_user.data[0].user_id,
+            loc_id=org_bus_loc.get("loc_id"),
         )
 
         if service_result.success:
