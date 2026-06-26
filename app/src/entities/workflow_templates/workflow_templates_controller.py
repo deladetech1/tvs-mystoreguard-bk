@@ -13,6 +13,7 @@ from src.entities.workflow_templates.workflow_templates_read_dto import (
     DeleteWorkflowTemplateControllerReadDto,
     GetWorkflowTemplateControllerReadDto,
     GetWorkflowTemplatesControllerReadDto,
+    WorkflowTemplateStatisticsControllerReadDto,
 )
 from src.entities.shared.sh_response import Respons
 from src.configs.logging import get_logger
@@ -82,6 +83,21 @@ def get_workflow_template(
         _require(current_user, [GET_PERMISSION, MANAGE_PERMISSION])
         return WorkflowTemplatesService.get_template(
             template_id=template_id,
+            tenant_id=current_user.data[0].tenant_id,
+            org_id=org_bus["org_id"],
+            bus_id=org_bus["bus_id"],
+        )
+
+
+@workflow_templates_router.get("/statistics", response_model=Respons[WorkflowTemplateStatisticsControllerReadDto])
+def get_workflow_template_statistics(
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    org_bus: dict = Depends(get_org_bus_with_permission),
+):
+    """Aggregate workflow-template statistics for the business."""
+    with LogContext("workflow_templates", "get_workflow_template_statistics", tenant_id=current_user.data[0].tenant_id):
+        _require(current_user, [GET_PERMISSION, MANAGE_PERMISSION])
+        return WorkflowTemplatesService.get_statistics(
             tenant_id=current_user.data[0].tenant_id,
             org_id=org_bus["org_id"],
             bus_id=org_bus["bus_id"],

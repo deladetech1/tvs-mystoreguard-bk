@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Optional, List, Dict
 from datetime import datetime
 from pydantic import BaseModel, Field
 from src.entities.tasks.tasks_base import TaskBase
@@ -115,4 +115,35 @@ class TaskNotificationSettingsControllerReadDto(TaskNotificationSettingsReadBase
 
 
 class TaskNotificationSettingsServiceReadDto(TaskNotificationSettingsReadBase):
+    pass
+
+
+# =====================================================
+# STATISTICS
+# =====================================================
+
+class TaskStatisticsReadBase(BaseModel):
+    """Aggregate task/job statistics for the business."""
+    # Jobs
+    total_tasks: int = 0
+    active: int = 0
+    completed: int = 0
+    cancelled: int = 0
+    overdue: int = Field(0, description="ACTIVE jobs past their due_date")
+    by_type: Dict[str, int] = Field(default_factory=dict, description="Job count per task_type")
+    # Steps
+    total_steps: int = 0
+    steps_todo: int = 0
+    steps_in_progress: int = 0
+    steps_done: int = 0
+    steps_completed: int = 0
+    steps_cancelled: int = 0
+    pending_approvals: int = Field(0, description="DONE steps in active jobs awaiting approval")
+
+
+class TaskStatisticsControllerReadDto(TaskStatisticsReadBase):
+    pass
+
+
+class TaskStatisticsServiceReadDto(TaskStatisticsReadBase):
     pass

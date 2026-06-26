@@ -5,6 +5,8 @@ from src.entities.workflow_templates.workflow_templates_read_dto import (
     GetWorkflowTemplateServiceReadDto,
     GetWorkflowTemplatesServiceReadDto,
     DeleteWorkflowTemplateServiceReadDto,
+    WorkflowTemplateStatisticsServiceReadDto,
+    TopUsedTemplateDto,
 )
 from src.entities.workflow_templates.workflow_templates_write_dto import (
     CreateWorkflowTemplateServiceWriteDto,
@@ -345,3 +347,70 @@ class WorkflowTemplatesService:
         except Exception as e:
             logger.error(f"Error deleting workflow template: {str(e)}", exc_info=True)
             return Respons(success=False, detail=f"Failed to delete workflow template: {str(e)}", error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_statistics(
+        tenant_id: str, org_id: str, bus_id: str,
+    ) -> Respons[WorkflowTemplateStatisticsServiceReadDto]:
+        """Aggregate workflow-template statistics for the business."""
+        try:
+            with DatabaseManager.transaction() as cursor:
+                scope = "tenant_id = %s AND org_id = %s AND bus_id = %s AND delete_status = 'NOT_DELETED'"
+                params = (tenant_id, org_id, bus_id)
+
+                cursor.execute(
+                    f"""SELECT
+                        COUNT(*) AS total,
+                        COUNT(*) FILTER (WHERE is_active) AS active,
+                        COUNT(*) FILTER (WHERE NOT is_active) AS inactive
+                    FROM {db_settings.MSG_WORKFLOW_TEMPLATES_TABLE} WHERE {scope}""",
+                    params,
+                )
+                row = cursor.fetchone() or {}
+                total = row.get("total", 0) or 0
+
+                cursor.execute(
+                    f"""SELECT template_type, COUNT(*) AS c
+                    FROM {db_settings.MSG_WORKFLOW_TEMPLATES_TABLE} WHERE {scope}
+                    GROUP BY template_type""",
+                    params,
+                )
+                by_type = {r["template_type"]: r["c"] for r in cursor.fetchall()}
+
+                cursor.execute(
+                    f"""SELECT COUNT(*) AS total_steps
+                    FROM {db_settings.MSG_WORKFLOW_TEMPLATE_STEPS_TABLE} s
+                    JOIN {db_settings.MSG_WORKFLOW_TEMPLATES_TABLE} t
+                        ON t.id = s.template_id AND t.tenant_id = s.tenant_id
+                    WHERE t.{scope}""",
+                    params,
+                )
+                total_steps = (cursor.fetchone() or {}).get("total_steps", 0) or 0
+
+                cursor.execute(
+                    f"""SELECT t.id AS template_id, t.name, COUNT(tk.id) AS jobs_created
+                    FROM {db_settings.MSG_WORKFLOW_TEMPLATES_TABLE} t
+                    LEFT JOIN {db_settings.MSG_TASKS_TABLE} tk
+                        ON tk.template_id = t.id AND tk.tenant_id = t.tenant_id AND tk.delete_status = 'NOT_DELETED'
+                    WHERE t.{scope}
+                    GROUP BY t.id, t.name
+                    ORDER BY jobs_created DESC, t.name ASC
+                    LIMIT 5""",
+                    params,
+                )
+                top = [TopUsedTemplateDto(template_id=r["template_id"], name=r["name"],
+                                          jobs_created=r["jobs_created"] or 0) for r in cursor.fetchall()]
+
+                dto = WorkflowTemplateStatisticsServiceReadDto(
+                    total_templates=total,
+                    active=row.get("active", 0) or 0,
+                    inactive=row.get("inactive", 0) or 0,
+                    by_type=by_type,
+                    total_steps=total_steps,
+                    avg_steps_per_template=round(total_steps / total, 2) if total else 0,
+                    top_used_templates=top,
+                )
+                return Respons(success=True, detail="Workflow template statistics retrieved", data=[dto])
+        except Exception as e:
+            logger.error(f"Error getting workflow template statistics: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=f"Failed to get statistics: {str(e)}", error="INTERNAL_ERROR")

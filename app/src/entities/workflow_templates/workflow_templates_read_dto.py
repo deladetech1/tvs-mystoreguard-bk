@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Optional, List, Dict
 from datetime import datetime
 from pydantic import BaseModel, Field
 from src.entities.workflow_templates.workflow_templates_base import WorkflowTemplateBase
@@ -88,4 +88,34 @@ class DeleteWorkflowTemplateControllerReadDto(DeleteWorkflowTemplateReadBase):
 
 
 class DeleteWorkflowTemplateServiceReadDto(DeleteWorkflowTemplateReadBase):
+    pass
+
+
+# =====================================================
+# STATISTICS
+# =====================================================
+
+class TopUsedTemplateDto(BaseModel):
+    template_id: str
+    name: str
+    jobs_created: int = 0
+
+
+class WorkflowTemplateStatisticsReadBase(BaseModel):
+    """Aggregate workflow-template statistics for the business."""
+    total_templates: int = 0
+    active: int = 0
+    inactive: int = 0
+    by_type: Dict[str, int] = Field(default_factory=dict, description="Template count per template_type")
+    total_steps: int = 0
+    avg_steps_per_template: float = Field(0, description="Average number of steps across templates")
+    top_used_templates: List[TopUsedTemplateDto] = Field(
+        default_factory=list, description="Templates ranked by jobs created from them")
+
+
+class WorkflowTemplateStatisticsControllerReadDto(WorkflowTemplateStatisticsReadBase):
+    pass
+
+
+class WorkflowTemplateStatisticsServiceReadDto(WorkflowTemplateStatisticsReadBase):
     pass

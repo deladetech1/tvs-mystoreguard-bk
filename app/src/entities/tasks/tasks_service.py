@@ -6,6 +6,7 @@ from src.entities.tasks.tasks_read_dto import (
     GetTasksServiceReadDto,
     StepActionServiceReadDto,
     TaskNotificationSettingsServiceReadDto,
+    TaskStatisticsServiceReadDto,
 )
 from src.entities.tasks.tasks_write_dto import (
     CreateTaskServiceWriteDto,
@@ -683,3 +684,71 @@ class TasksService:
         except Exception as e:
             logger.error(f"Error saving notification settings: {str(e)}", exc_info=True)
             return Respons(success=False, detail=f"Failed to save settings: {str(e)}", error="INTERNAL_ERROR")
+
+    # =================================================================
+    # PUBLIC: statistics
+    # =================================================================
+
+    @staticmethod
+    def get_statistics(tenant_id, org_id, bus_id) -> Respons[TaskStatisticsServiceReadDto]:
+        """Aggregate task/job statistics for the business."""
+        try:
+            with DatabaseManager.transaction() as cursor:
+                scope = "tenant_id = %s AND org_id = %s AND bus_id = %s AND delete_status = 'NOT_DELETED'"
+                params = (tenant_id, org_id, bus_id)
+
+                cursor.execute(
+                    f"""SELECT
+                        COUNT(*) AS total,
+                        COUNT(*) FILTER (WHERE status = 'ACTIVE') AS active,
+                        COUNT(*) FILTER (WHERE status = 'COMPLETED') AS completed,
+                        COUNT(*) FILTER (WHERE status = 'CANCELLED') AS cancelled,
+                        COUNT(*) FILTER (WHERE status = 'ACTIVE' AND due_date IS NOT NULL AND due_date < NOW()) AS overdue
+                    FROM {T.MSG_TASKS_TABLE} WHERE {scope}""",
+                    params,
+                )
+                t = cursor.fetchone() or {}
+
+                cursor.execute(
+                    f"""SELECT task_type, COUNT(*) AS c
+                    FROM {T.MSG_TASKS_TABLE} WHERE {scope} GROUP BY task_type""",
+                    params,
+                )
+                by_type = {r["task_type"]: r["c"] for r in cursor.fetchall()}
+
+                # Step counts across non-deleted jobs.
+                cursor.execute(
+                    f"""SELECT
+                        COUNT(*) AS total_steps,
+                        COUNT(*) FILTER (WHERE s.status = 'TODO') AS todo,
+                        COUNT(*) FILTER (WHERE s.status = 'IN_PROGRESS') AS in_progress,
+                        COUNT(*) FILTER (WHERE s.status = 'DONE') AS done,
+                        COUNT(*) FILTER (WHERE s.status = 'COMPLETED') AS completed,
+                        COUNT(*) FILTER (WHERE s.status = 'CANCELLED') AS cancelled,
+                        COUNT(*) FILTER (WHERE s.status = 'DONE' AND tk.status = 'ACTIVE') AS pending_approvals
+                    FROM {T.MSG_TASK_STEPS_TABLE} s
+                    JOIN {T.MSG_TASKS_TABLE} tk ON tk.id = s.task_id AND tk.tenant_id = s.tenant_id
+                    WHERE tk.{scope}""",
+                    params,
+                )
+                s = cursor.fetchone() or {}
+
+                dto = TaskStatisticsServiceReadDto(
+                    total_tasks=t.get("total", 0) or 0,
+                    active=t.get("active", 0) or 0,
+                    completed=t.get("completed", 0) or 0,
+                    cancelled=t.get("cancelled", 0) or 0,
+                    overdue=t.get("overdue", 0) or 0,
+                    by_type=by_type,
+                    total_steps=s.get("total_steps", 0) or 0,
+                    steps_todo=s.get("todo", 0) or 0,
+                    steps_in_progress=s.get("in_progress", 0) or 0,
+                    steps_done=s.get("done", 0) or 0,
+                    steps_completed=s.get("completed", 0) or 0,
+                    steps_cancelled=s.get("cancelled", 0) or 0,
+                    pending_approvals=s.get("pending_approvals", 0) or 0,
+                )
+                return Respons(success=True, detail="Task statistics retrieved", data=[dto])
+        except Exception as e:
+            logger.error(f"Error getting task statistics: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=f"Failed to get statistics: {str(e)}", error="INTERNAL_ERROR")

@@ -21,6 +21,7 @@ from src.entities.tasks.tasks_read_dto import (
     StepActionControllerReadDto,
     CancelTaskControllerReadDto,
     TaskNotificationSettingsControllerReadDto,
+    TaskStatisticsControllerReadDto,
 )
 from src.entities.shared.sh_response import Respons
 from src.configs.logging import get_logger
@@ -82,6 +83,18 @@ def update_task(
         c = _ctx(current_user, org_bus)
         return TasksService.update_task(data=data, task_id=task_id, tenant_id=c["tenant_id"],
                                         org_id=c["org_id"], bus_id=c["bus_id"], updated_by=c["user_id"])
+
+
+@tasks_router.get("/statistics", response_model=Respons[TaskStatisticsControllerReadDto])
+def get_task_statistics(
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    org_bus: dict = Depends(get_org_bus_with_permission),
+):
+    """Aggregate job + step statistics for the business."""
+    with LogContext("tasks", "get_task_statistics", tenant_id=current_user.data[0].tenant_id):
+        _require(current_user, [GET])
+        c = _ctx(current_user, org_bus)
+        return TasksService.get_statistics(c["tenant_id"], c["org_id"], c["bus_id"])
 
 
 @tasks_router.get("/get", response_model=Respons[GetTaskControllerReadDto])
