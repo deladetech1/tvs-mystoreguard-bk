@@ -47,6 +47,7 @@ from src.entities.users.users_controller import users_router
 from src.entities.appointments.appointments_controller import appointments_router
 from src.entities.workflow_templates.workflow_templates_controller import workflow_templates_router
 from src.entities.tasks.tasks_controller import tasks_router
+from src.entities.groups.groups_controller import groups_router
 from src.entities.purchase_orders.purchase_orders_controller import purchase_orders_router
 from src.entities.store_sales.store_sales_controller import store_sales_router
 from src.entities.invoices.invoices_controller import invoices_router
@@ -201,6 +202,7 @@ app.include_router(prefix="/api/v1", router=users_router)
 app.include_router(prefix="/api/v1", router=appointments_router)
 app.include_router(prefix="/api/v1", router=workflow_templates_router)
 app.include_router(prefix="/api/v1", router=tasks_router)
+app.include_router(prefix="/api/v1", router=groups_router)
 app.include_router(prefix="/api/v1", router=purchase_orders_router)
 app.include_router(prefix="/api/v1", router=store_sales_router)
 app.include_router(prefix="/api/v1", router=invoices_router)
