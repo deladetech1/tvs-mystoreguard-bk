@@ -695,6 +695,8 @@ class TasksService:
         try:
             with DatabaseManager.transaction() as cursor:
                 scope = "tenant_id = %s AND org_id = %s AND bus_id = %s AND delete_status = 'NOT_DELETED'"
+                # Alias-qualified variant for the JOINed step-count query (avoids ambiguous columns).
+                tkscope = "tk.tenant_id = %s AND tk.org_id = %s AND tk.bus_id = %s AND tk.delete_status = 'NOT_DELETED'"
                 params = (tenant_id, org_id, bus_id)
 
                 cursor.execute(
@@ -728,7 +730,7 @@ class TasksService:
                         COUNT(*) FILTER (WHERE s.status = 'DONE' AND tk.status = 'ACTIVE') AS pending_approvals
                     FROM {T.MSG_TASK_STEPS_TABLE} s
                     JOIN {T.MSG_TASKS_TABLE} tk ON tk.id = s.task_id AND tk.tenant_id = s.tenant_id
-                    WHERE tk.{scope}""",
+                    WHERE {tkscope}""",
                     params,
                 )
                 s = cursor.fetchone() or {}

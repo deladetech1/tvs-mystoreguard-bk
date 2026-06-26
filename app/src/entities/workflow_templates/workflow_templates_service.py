@@ -356,6 +356,8 @@ class WorkflowTemplatesService:
         try:
             with DatabaseManager.transaction() as cursor:
                 scope = "tenant_id = %s AND org_id = %s AND bus_id = %s AND delete_status = 'NOT_DELETED'"
+                # Alias-qualified variant for queries that JOIN another table (avoids ambiguous columns).
+                tscope = "t.tenant_id = %s AND t.org_id = %s AND t.bus_id = %s AND t.delete_status = 'NOT_DELETED'"
                 params = (tenant_id, org_id, bus_id)
 
                 cursor.execute(
@@ -382,7 +384,7 @@ class WorkflowTemplatesService:
                     FROM {db_settings.MSG_WORKFLOW_TEMPLATE_STEPS_TABLE} s
                     JOIN {db_settings.MSG_WORKFLOW_TEMPLATES_TABLE} t
                         ON t.id = s.template_id AND t.tenant_id = s.tenant_id
-                    WHERE t.{scope}""",
+                    WHERE {tscope}""",
                     params,
                 )
                 total_steps = (cursor.fetchone() or {}).get("total_steps", 0) or 0
@@ -392,7 +394,7 @@ class WorkflowTemplatesService:
                     FROM {db_settings.MSG_WORKFLOW_TEMPLATES_TABLE} t
                     LEFT JOIN {db_settings.MSG_TASKS_TABLE} tk
                         ON tk.template_id = t.id AND tk.tenant_id = t.tenant_id AND tk.delete_status = 'NOT_DELETED'
-                    WHERE t.{scope}
+                    WHERE {tscope}
                     GROUP BY t.id, t.name
                     ORDER BY jobs_created DESC, t.name ASC
                     LIMIT 5""",
