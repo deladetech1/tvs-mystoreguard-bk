@@ -220,11 +220,29 @@ class WorkflowTemplatesService:
                     refs = [s.ref for s in data.steps]
                     if len(refs) != len(set(refs)):
                         raise ValueError("Duplicate step refs in payload")
+                    # Delete child rows first. The deps table has a second FK
+                    # (depends_on_step_id -> steps) with ON DELETE RESTRICT, so
+                    # deleting steps directly fails while any dep still references
+                    # them. Clear deps and targets, then the steps.
+                    step_ids_subq = (
+                        f"SELECT id FROM {db_settings.MSG_WORKFLOW_TEMPLATE_STEPS_TABLE} "
+                        f"WHERE template_id = %s AND tenant_id = %s"
+                    )
+                    cursor.execute(
+                        f"""DELETE FROM {db_settings.MSG_WORKFLOW_TEMPLATE_STEP_DEPS_TABLE}
+                        WHERE tenant_id = %s AND step_id IN ({step_ids_subq})""",
+                        (tenant_id, template_id, tenant_id),
+                    )
+                    cursor.execute(
+                        f"""DELETE FROM {db_settings.MSG_WORKFLOW_TEMPLATE_STEP_TARGETS_TABLE}
+                        WHERE tenant_id = %s AND step_id IN ({step_ids_subq})""",
+                        (tenant_id, template_id, tenant_id),
+                    )
                     cursor.execute(
                         f"""DELETE FROM {db_settings.MSG_WORKFLOW_TEMPLATE_STEPS_TABLE}
                         WHERE template_id = %s AND tenant_id = %s""",
                         (template_id, tenant_id),
-                    )  # deps & targets cascade via FK
+                    )
                     WorkflowTemplatesService._insert_steps(
                         cursor, tenant_id, org_id, bus_id, template_id, data.steps, updated_by)
 
