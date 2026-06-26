@@ -30,6 +30,25 @@ def user_in_group(cursor, tenant_id: str, group_id: str, user_id: str) -> bool:
     return cursor.fetchone() is not None
 
 
+def resolve_group_members(cursor, tenant_id: str, group_id: str) -> List[dict]:
+    """Return active members of a group with contact details (fullname/email/contact)."""
+    cursor.execute(
+        f"""SELECT ug.user_id, u.fullname, u.email, u.contact
+        FROM {db_settings.CORE_PLATFORM_USER_GROUPS_TABLE} ug
+        INNER JOIN {db_settings.CORE_PLATFORM_USERS_TABLE} u
+            ON ug.user_id = u.id AND ug.tenant_id = u.tenant_id
+        WHERE ug.group_id = %s AND ug.tenant_id = %s
+            AND ug.is_active = true AND ug.delete_status = 'NOT_DELETED'
+            AND u.is_active = true AND u.delete_status = 'NOT_DELETED'""",
+        (group_id, tenant_id),
+    )
+    return [
+        {"user_id": r["user_id"], "fullname": r.get("fullname"),
+         "email": r.get("email"), "contact": r.get("contact")}
+        for r in cursor.fetchall()
+    ]
+
+
 def resolve_target_name(cursor, tenant_id: str, target_type: str, target_id: str) -> Optional[str]:
     """Human-readable name for a USER (fullname) or GROUP (group_name)."""
     if target_type == "USER":

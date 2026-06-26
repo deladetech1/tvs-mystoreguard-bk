@@ -8,12 +8,22 @@ from src.entities.workflow_templates.workflow_templates_base import WorkflowTemp
 # NESTED READ MODELS
 # =====================================================
 
+class GroupMemberDetail(BaseModel):
+    """A member of a group target (only populated when target_type == GROUP)."""
+    user_id: str
+    fullname: Optional[str] = None
+    email: Optional[str] = None
+    contact: Optional[str] = None
+
+
 class StepTargetRead(BaseModel):
     id: str
     target_kind: str
     target_type: str
     target_id: str
     target_name: Optional[str] = Field(None, description="Resolved user or group name")
+    members: List[GroupMemberDetail] = Field(
+        default_factory=list, description="Group members (fullname/email/contact); empty for USER targets")
 
 
 class WorkflowTemplateStepRead(BaseModel):

@@ -15,7 +15,9 @@ from src.entities.tasks.tasks_write_dto import (
 )
 from src.entities.shared.sh_response import Respons, PaginationMeta
 from src.entities.shared.sh_service import ActivityLogService
-from src.entities.shared.wf_helpers import resolve_target_name, expand_targets_to_user_ids, user_in_group
+from src.entities.shared.wf_helpers import (
+    resolve_target_name, expand_targets_to_user_ids, user_in_group, resolve_group_members,
+)
 from src.configs.settings import db_settings
 from src.configs.database import DatabaseManager
 from src.configs.logging import get_logger
@@ -262,10 +264,13 @@ class TasksService:
             )
             for r in cursor.fetchall():
                 tr = dict(r)
+                members = (resolve_group_members(cursor, tenant_id, tr["target_id"])
+                           if tr["target_type"] == "GROUP" else [])
                 targets.setdefault(r["step_id"], []).append({
                     "id": tr["id"], "target_kind": tr["target_kind"], "target_type": tr["target_type"],
                     "target_id": tr["target_id"],
                     "target_name": resolve_target_name(cursor, tenant_id, tr["target_type"], tr["target_id"]),
+                    "members": members,
                 })
         for s in steps:
             s["depends_on"] = deps.get(s["id"], [])

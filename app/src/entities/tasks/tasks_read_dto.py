@@ -8,12 +8,22 @@ from src.entities.tasks.tasks_base import TaskBase
 # NESTED READ MODELS
 # =====================================================
 
+class GroupMemberDetail(BaseModel):
+    """A member of a group target (only populated when target_type == GROUP)."""
+    user_id: str
+    fullname: Optional[str] = None
+    email: Optional[str] = None
+    contact: Optional[str] = None
+
+
 class TaskStepTargetRead(BaseModel):
     id: str
     target_kind: str
     target_type: str
     target_id: str
     target_name: Optional[str] = None
+    members: List[GroupMemberDetail] = Field(
+        default_factory=list, description="Group members (fullname/email/contact); empty for USER targets")
 
 
 class TaskStepRead(BaseModel):
