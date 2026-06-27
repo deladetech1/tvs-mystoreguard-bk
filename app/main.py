@@ -61,6 +61,8 @@ from src.entities.return_policies.return_policies_controller import return_polic
 from src.entities.store_returns.store_returns_controller import store_returns_router
 from src.entities.messaging.messaging_controller import messaging_router
 from src.entities.meetings.meetings_controller import meetings_router
+from src.entities.estimate_templates.estimate_templates_controller import estimate_templates_router
+from src.entities.estimates.estimates_controller import estimates_router
 
 # Initialize logging
 logger = setup_logging()
@@ -216,4 +218,6 @@ app.include_router(prefix="/api/v1", router=return_policies_router)
 app.include_router(prefix="/api/v1", router=store_returns_router)
 app.include_router(prefix="/api/v1", router=messaging_router)
 app.include_router(prefix="/api/v1", router=meetings_router)
+app.include_router(prefix="/api/v1", router=estimate_templates_router)
+app.include_router(prefix="/api/v1", router=estimates_router)
 logger.info("Application startup completed")
