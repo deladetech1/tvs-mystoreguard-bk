@@ -1075,13 +1075,15 @@ def get_split(
         )
 
 
-# Split statistics for the current location
+# Split statistics for a single section (STORE / WAREHOUSE / PRODUCT)
 @products_router.get("/split-statistics", response_model=Respons[GetSplitStatisticsControllerReadDto])
 def get_split_statistics(
+    source_scope: str = Query("STORE", description="Section to report on: STORE, WAREHOUSE or PRODUCT. Stats are scoped to this section only and never mixed."),
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
 ):
-    """Split statistics for the caller's current location."""
+    """Split statistics for one section. STORE/WAREHOUSE use the caller's current location;
+    PRODUCT is pool-level (business-wide)."""
     with LogContext("products", "get_split_statistics", tenant_id=current_user.data[0].tenant_id):
         is_authorized = AuthService.has_any_permission(
             user_roles=current_user.data,
@@ -1095,4 +1097,5 @@ def get_split_statistics(
             org_id=org_bus_loc["org_id"],
             bus_id=org_bus_loc["bus_id"],
             loc_id=org_bus_loc.get("loc_id"),
+            source_scope=source_scope,
         )

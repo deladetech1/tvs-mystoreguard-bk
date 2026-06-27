@@ -11,7 +11,9 @@ from src.entities.tasks.tasks_write_dto import (
     ApproveStepControllerWriteDto,
     RejectStepControllerWriteDto,
     CancelTaskControllerWriteDto,
+    DeleteTaskControllerWriteDto,
     TaskNotificationSettingsWriteDto,
+    RemoveStepControllerWriteDto,
 )
 from src.entities.tasks.tasks_read_dto import (
     CreateTaskControllerReadDto,
@@ -20,7 +22,9 @@ from src.entities.tasks.tasks_read_dto import (
     GetTasksControllerReadDto,
     StepActionControllerReadDto,
     CancelTaskControllerReadDto,
+    DeleteTaskControllerReadDto,
     TaskNotificationSettingsControllerReadDto,
+    TaskStatisticsControllerReadDto,
 )
 from src.entities.shared.sh_response import Respons
 from src.configs.logging import get_logger
@@ -84,6 +88,18 @@ def update_task(
                                         org_id=c["org_id"], bus_id=c["bus_id"], updated_by=c["user_id"])
 
 
+@tasks_router.get("/statistics", response_model=Respons[TaskStatisticsControllerReadDto])
+def get_task_statistics(
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    org_bus: dict = Depends(get_org_bus_with_permission),
+):
+    """Aggregate job + step statistics for the business."""
+    with LogContext("tasks", "get_task_statistics", tenant_id=current_user.data[0].tenant_id):
+        _require(current_user, [GET])
+        c = _ctx(current_user, org_bus)
+        return TasksService.get_statistics(c["tenant_id"], c["org_id"], c["bus_id"])
+
+
 @tasks_router.get("/get", response_model=Respons[GetTaskControllerReadDto])
 def get_task(
     task_id: str = Query(...),
@@ -130,6 +146,38 @@ def cancel_task(
         _require(current_user, [UPDATE, DELETE])
         c = _ctx(current_user, org_bus)
         return TasksService.cancel_task(data.task_id, c["tenant_id"], c["org_id"], c["bus_id"], c["user_id"])
+
+
+@tasks_router.delete("/delete", response_model=Respons[DeleteTaskControllerReadDto])
+def delete_task(
+    data: DeleteTaskControllerWriteDto,
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    _sub: dict = Depends(verify_subscription_active),
+    org_bus: dict = Depends(get_org_bus_with_permission),
+):
+    """Permanently delete a job and ALL its steps, dependencies, targets and notifications."""
+    with LogContext("tasks", "delete_task", task_id=data.task_id):
+        _require(current_user, [DELETE])
+        c = _ctx(current_user, org_bus)
+        return TasksService.delete_task(
+            data.task_id, c["tenant_id"], c["org_id"], c["bus_id"], c["user_id"])
+
+
+# ---------------- step removal (single-step convenience) ----------------
+
+@tasks_router.delete("/steps/remove", response_model=Respons[StepActionControllerReadDto])
+def remove_step(
+    data: RemoveStepControllerWriteDto,
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    _sub: dict = Depends(verify_subscription_active),
+    org_bus: dict = Depends(get_org_bus_with_permission),
+):
+    """Remove a single unfinished step from an active job."""
+    with LogContext("tasks", "remove_step", step_id=data.step_id):
+        _require(current_user, [UPDATE])
+        c = _ctx(current_user, org_bus)
+        return TasksService.remove_step(
+            data.task_id, data.step_id, c["tenant_id"], c["org_id"], c["bus_id"], c["user_id"])
 
 
 # ---------------- step actions ----------------
