@@ -12,6 +12,7 @@ from src.entities.tasks.tasks_write_dto import (
     RejectStepControllerWriteDto,
     CancelTaskControllerWriteDto,
     TaskNotificationSettingsWriteDto,
+    RemoveStepControllerWriteDto,
 )
 from src.entities.tasks.tasks_read_dto import (
     CreateTaskControllerReadDto,
@@ -143,6 +144,23 @@ def cancel_task(
         _require(current_user, [UPDATE, DELETE])
         c = _ctx(current_user, org_bus)
         return TasksService.cancel_task(data.task_id, c["tenant_id"], c["org_id"], c["bus_id"], c["user_id"])
+
+
+# ---------------- step removal (single-step convenience) ----------------
+
+@tasks_router.delete("/steps/remove", response_model=Respons[StepActionControllerReadDto])
+def remove_step(
+    data: RemoveStepControllerWriteDto,
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    _sub: dict = Depends(verify_subscription_active),
+    org_bus: dict = Depends(get_org_bus_with_permission),
+):
+    """Remove a single unfinished step from an active job."""
+    with LogContext("tasks", "remove_step", step_id=data.step_id):
+        _require(current_user, [UPDATE])
+        c = _ctx(current_user, org_bus)
+        return TasksService.remove_step(
+            data.task_id, data.step_id, c["tenant_id"], c["org_id"], c["bus_id"], c["user_id"])
 
 
 # ---------------- step actions ----------------

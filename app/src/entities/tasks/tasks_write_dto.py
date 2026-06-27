@@ -98,6 +98,11 @@ class RejectStepControllerWriteDto(StepActionWriteBase):
     reason: Optional[str] = Field(None, description="Why the step was sent back")
 
 
+class RemoveStepControllerWriteDto(StepActionWriteBase):
+    """Remove a single step from an active job (convenience over resending the whole steps array)."""
+    pass
+
+
 # =====================================================
 # CANCEL TASK WRITE DTOs
 # =====================================================

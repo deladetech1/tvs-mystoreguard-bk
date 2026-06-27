@@ -834,6 +834,61 @@ class TasksService:
         # Removing the last open step can complete the job.
         TasksService._maybe_complete_task(cursor, tenant_id, org_id, bus_id, task_id)
 
+    @staticmethod
+    def remove_step(task_id, step_id, tenant_id, org_id, bus_id, user_id) -> Respons[StepActionServiceReadDto]:
+        """Remove a single unfinished step from an active job."""
+        try:
+            with DatabaseManager.transaction() as cursor:
+                step = TasksService._get_step(cursor, tenant_id, org_id, bus_id, task_id, step_id)
+                if not step:
+                    return Respons(success=False, detail="Step not found", error="NOT_FOUND")
+                cursor.execute(
+                    f"""SELECT status FROM {T.MSG_TASKS_TABLE}
+                    WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s AND delete_status = 'NOT_DELETED'""",
+                    (task_id, tenant_id, org_id, bus_id),
+                )
+                job = cursor.fetchone()
+                if not job:
+                    return Respons(success=False, detail="Task not found", error="NOT_FOUND")
+                if job["status"] != "ACTIVE":
+                    return Respons(success=False, detail="Job is not active; steps can no longer be edited", error="INVALID_STATE")
+                if step["status"] not in ("TODO", "IN_PROGRESS", "CANCELLED"):
+                    return Respons(success=False, detail=f"Cannot remove a {step['status']} step", error="INVALID_STATE")
+
+                # Capture dependents before deleting the dep rows.
+                cursor.execute(
+                    f"""SELECT step_id FROM {T.MSG_TASK_STEP_DEPS_TABLE}
+                    WHERE tenant_id = %s AND depends_on_step_id = %s""",
+                    (tenant_id, step_id),
+                )
+                dependents = [r["step_id"] for r in cursor.fetchall()]
+                # Delete deps in BOTH directions (the depends_on FK is RESTRICT), then the step
+                # (targets & outbox rows cascade).
+                cursor.execute(
+                    f"""DELETE FROM {T.MSG_TASK_STEP_DEPS_TABLE}
+                    WHERE tenant_id = %s AND (step_id = %s OR depends_on_step_id = %s)""",
+                    (tenant_id, step_id, step_id),
+                )
+                cursor.execute(
+                    f"DELETE FROM {T.MSG_TASK_STEPS_TABLE} WHERE id = %s AND tenant_id = %s",
+                    (step_id, tenant_id),
+                )
+                # Dependents may now be unblocked -> notify their assignees.
+                for dep_step_id in dependents:
+                    ds = TasksService._get_step(cursor, tenant_id, org_id, bus_id, task_id, dep_step_id)
+                    if (ds and ds["status"] == "TODO"
+                            and TasksService._step_prereqs_complete(cursor, tenant_id, dep_step_id)
+                            and not TasksService._has_ready_notification(cursor, tenant_id, dep_step_id)):
+                        TasksService._notify_step_assignees(
+                            cursor, tenant_id, org_id, bus_id, task_id, dep_step_id, user_id, kind="READY")
+                # Removing the last open step could complete the job.
+                TasksService._maybe_complete_task(cursor, tenant_id, org_id, bus_id, task_id)
+                task = TasksService._load_task(cursor, tenant_id, org_id, bus_id, task_id)
+                return Respons(success=True, detail="Step removed", data=[StepActionServiceReadDto(**task)])
+        except Exception as e:
+            logger.error(f"Error removing step: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=f"Failed to remove step: {str(e)}", error="INTERNAL_ERROR")
+
     # =================================================================
     # PUBLIC: per-user notification settings
     # =================================================================
