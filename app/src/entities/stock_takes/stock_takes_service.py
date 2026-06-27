@@ -2,6 +2,7 @@ from typing import Optional, List
 from src.entities.stock_takes.stock_takes_write_dto import (
     CreateStockTakeServiceWriteDto,
     ResolveStockTakeItemServiceWriteDto,
+    EditStockTakeServiceWriteDto,
 )
 from src.entities.stock_takes.stock_takes_read_dto import (
     StockTakeReadDto,
@@ -66,6 +67,53 @@ def _match_status(variance: int) -> str:
     if variance == 0:
         return "MATCH"
     return "OVER" if variance > 0 else "SHORT"
+
+
+def _fetch_product(cursor, tenant_id: str, org_id: str, bus_id: str, product_id: str):
+    """Return a live product row (id, name) for this business, or None."""
+    cursor.execute(
+        f"""SELECT id, name FROM {db_settings.MSG_PRODUCTS_TABLE}
+        WHERE tenant_id = %s AND org_id = %s AND bus_id = %s
+        AND id = %s AND delete_status = 'NOT_DELETED'""",
+        (tenant_id, org_id, bus_id, product_id),
+    )
+    return cursor.fetchone()
+
+
+def _snapshot_system_qty(cursor, tenant_id, org_id, bus_id, loc_id, qty_table, product_id) -> int:
+    """On-hand quantity the system currently believes for a product at a location."""
+    cursor.execute(
+        f"""SELECT current_qty FROM {qty_table}
+        WHERE tenant_id = %s AND org_id = %s AND bus_id = %s
+        AND loc_id = %s AND product_id = %s AND delete_status = 'NOT_DELETED'""",
+        (tenant_id, org_id, bus_id, loc_id, product_id),
+    )
+    row = cursor.fetchone()
+    return row["current_qty"] if row else 0
+
+
+def _load_editable_header(cursor, tenant_id, org_id, bus_id, stock_take_id):
+    """Load a stock take's edit context (status/loc) or return (None, error Respons).
+
+    Edits are only permitted while the take is still DRAFT — a COMPLETED or
+    CANCELLED take is a locked snapshot.
+    """
+    cursor.execute(
+        f"""SELECT id, status, loc_id, location_type, description FROM {db_settings.MSG_STOCK_TAKES_TABLE}
+        WHERE tenant_id = %s AND org_id = %s AND bus_id = %s AND id = %s
+        AND delete_status = 'NOT_DELETED'""",
+        (tenant_id, org_id, bus_id, stock_take_id),
+    )
+    header = cursor.fetchone()
+    if not header:
+        return None, Respons(success=False, detail="Stock take not found", error="STOCK_TAKE_NOT_FOUND")
+    if header["status"] != "DRAFT":
+        return None, Respons(
+            success=False,
+            detail=f"Only DRAFT stock takes can be edited (current: {header['status']})",
+            error="INVALID_STATUS",
+        )
+    return header, None
 
 
 def _generate_stock_take_number(tenant_id: str, org_id: str, bus_id: str, loc_id: str, cursor) -> str:
@@ -268,6 +316,167 @@ class StockTakesService:
         except Exception as e:
             logger.error(f"Failed to create stock take: {e}", exc_info=True)
             return Respons(success=False, detail="Failed to create stock take", error=str(e))
+
+    # =====================================================
+    # EDIT (single full-replace; DRAFT only)
+    # =====================================================
+    @staticmethod
+    def edit_stock_take(
+        data: EditStockTakeServiceWriteDto,
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+        stock_take_id: str,
+        user_id: str,
+    ) -> Respons:
+        """Apply a full edit: update the header and reconcile the line set in one go.
+
+        Lines carrying an `id` are updated, lines without one are inserted, and stored
+        lines absent from the payload are removed. DRAFT only; a line that already had a
+        stock adjustment applied may not be removed or recounted.
+        """
+        # One line per product in the final set.
+        product_ids = [i.product_id for i in data.items]
+        if len(product_ids) != len(set(product_ids)):
+            return Respons(
+                success=False,
+                detail="Duplicate products in count. Each product may appear once per stock take.",
+                error="DUPLICATE_PRODUCT",
+            )
+
+        fields = data.model_dump(exclude_unset=True)
+        dt = Helper.current_date_time()
+        cdate, ctime, cdatetime = dt["cdate"], dt["ctime"], dt["cdatetime"]
+        try:
+            with DatabaseManager.transaction() as cursor:
+                header, err = _load_editable_header(cursor, tenant_id, org_id, bus_id, stock_take_id)
+                if err:
+                    return err
+
+                # Resolve the post-edit location type (governs which on-hand table is read).
+                relocating = "location_type" in fields and fields["location_type"] != header["location_type"]
+                new_location_type = fields.get("location_type", header["location_type"])
+                qty_table = _qty_table(new_location_type)
+
+                # Existing lines, keyed by id, for the diff.
+                cursor.execute(
+                    f"""SELECT id, product_id, counted_qty, system_qty, adjustment_qty
+                    FROM {db_settings.MSG_STOCK_TAKE_ITEMS_TABLE}
+                    WHERE tenant_id = %s AND org_id = %s AND bus_id = %s AND stock_take_id = %s""",
+                    (tenant_id, org_id, bus_id, stock_take_id),
+                )
+                existing = {r["id"]: r for r in cursor.fetchall()}
+
+                # Every line carrying an id must refer to a real line on this take.
+                payload_ids = {i.id for i in data.items if i.id}
+                unknown = payload_ids - existing.keys()
+                if unknown:
+                    return Respons(
+                        success=False,
+                        detail=f"Line id(s) not on this stock take: {', '.join(sorted(unknown))}",
+                        error="ITEM_NOT_FOUND",
+                    )
+
+                # ----- REMOVE: stored lines dropped from the payload -----
+                to_remove = [iid for iid in existing if iid not in payload_ids]
+                for iid in to_remove:
+                    if (existing[iid]["adjustment_qty"] or 0) != 0:
+                        return Respons(
+                            success=False,
+                            detail="A line that already had a stock adjustment applied can't be removed.",
+                            error="ALREADY_ADJUSTED",
+                        )
+                if to_remove:
+                    # No soft-delete column on stock take items — this is a hard delete.
+                    cursor.execute(
+                        f"""DELETE FROM {db_settings.MSG_STOCK_TAKE_ITEMS_TABLE}
+                        WHERE tenant_id = %s AND org_id = %s AND bus_id = %s
+                        AND stock_take_id = %s AND id = ANY(%s)""",
+                        (tenant_id, org_id, bus_id, stock_take_id, to_remove),
+                    )
+
+                # ----- UPDATE existing lines / INSERT new ones -----
+                for line in data.items:
+                    if line.id:
+                        prev = existing[line.id]
+                        # Reuse the original snapshot unless we're moving location type, in
+                        # which case re-snapshot against the new on-hand table.
+                        if relocating:
+                            system_qty = _snapshot_system_qty(
+                                cursor, tenant_id, org_id, bus_id, header["loc_id"], qty_table, prev["product_id"]
+                            )
+                        else:
+                            system_qty = prev["system_qty"]
+                        variance = line.counted_qty - system_qty
+
+                        # A confirmed correction is already booked against the old count —
+                        # don't let an edit move its count (and thus its variance).
+                        if (prev["adjustment_qty"] or 0) != 0 and line.counted_qty != prev["counted_qty"]:
+                            return Respons(
+                                success=False,
+                                detail="A line that already had a stock adjustment applied can't be recounted.",
+                                error="ALREADY_ADJUSTED",
+                            )
+
+                        cursor.execute(
+                            f"""UPDATE {db_settings.MSG_STOCK_TAKE_ITEMS_TABLE}
+                            SET counted_qty = %s, system_qty = %s, variance_qty = %s, match_status = %s,
+                                unit_price = %s, currency_id = %s, currency_name = %s,
+                                currency_symbol = %s, note = %s
+                            WHERE tenant_id = %s AND org_id = %s AND bus_id = %s
+                            AND stock_take_id = %s AND id = %s""",
+                            (
+                                line.counted_qty, system_qty, variance, _match_status(variance),
+                                line.unit_price, line.currency_id, line.currency_name,
+                                line.currency_symbol, line.note,
+                                tenant_id, org_id, bus_id, stock_take_id, line.id,
+                            ),
+                        )
+                    else:
+                        if not _fetch_product(cursor, tenant_id, org_id, bus_id, line.product_id):
+                            return Respons(
+                                success=False,
+                                detail=f"Product {line.product_id} not found",
+                                error="PRODUCT_NOT_FOUND",
+                            )
+                        system_qty = _snapshot_system_qty(
+                            cursor, tenant_id, org_id, bus_id, header["loc_id"], qty_table, line.product_id
+                        )
+                        variance = line.counted_qty - system_qty
+                        item_id = Helper.generate_unique_identifier(prefix="sti")
+                        cursor.execute(
+                            f"""INSERT INTO {db_settings.MSG_STOCK_TAKE_ITEMS_TABLE}
+                            (id, tenant_id, org_id, bus_id, stock_take_id, product_id,
+                             counted_qty, system_qty, variance_qty, unit_price,
+                             currency_id, currency_name, currency_symbol, match_status, resolution_status,
+                             note, adjustment_qty, cdate, ctime, cdatetime)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                            (
+                                item_id, tenant_id, org_id, bus_id, stock_take_id, line.product_id,
+                                line.counted_qty, system_qty, variance, line.unit_price,
+                                line.currency_id, line.currency_name, line.currency_symbol,
+                                _match_status(variance), "PENDING",
+                                line.note, 0, cdate, ctime, cdatetime,
+                            ),
+                        )
+
+                # ----- HEADER -----
+                # description: replace when supplied, otherwise keep what's stored.
+                new_description = fields["description"] if "description" in fields else header["description"]
+                cursor.execute(
+                    f"""UPDATE {db_settings.MSG_STOCK_TAKES_TABLE}
+                    SET location_type = %s, description = %s, updated_by = %s
+                    WHERE tenant_id = %s AND org_id = %s AND bus_id = %s AND id = %s""",
+                    (
+                        new_location_type, new_description, user_id,
+                        tenant_id, org_id, bus_id, stock_take_id,
+                    ),
+                )
+
+            return StockTakesService.get_stock_take(tenant_id, org_id, bus_id, stock_take_id)
+        except Exception as e:
+            logger.error(f"Failed to edit stock take: {e}", exc_info=True)
+            return Respons(success=False, detail="Failed to edit stock take", error=str(e))
 
     # =====================================================
     # LIST
