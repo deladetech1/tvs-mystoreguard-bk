@@ -13,6 +13,7 @@ from src.entities.estimate_templates.estimate_templates_read_dto import (
     GetEstimateTemplateControllerReadDto,
     GetEstimateTemplateListControllerReadDto,
     DeleteEstimateTemplateControllerReadDto,
+    GetEstimateTemplateStatisticsControllerReadDto,
 )
 from src.entities.shared.sh_response import Respons
 from src.configs.logging import get_logger
@@ -129,7 +130,28 @@ def list_estimate_templates(
         )
 
 
-# 5. Delete
+# 5. Statistics
+@estimate_templates_router.get("/statistics", response_model=Respons[GetEstimateTemplateStatisticsControllerReadDto])
+def get_estimate_template_statistics(
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
+):
+    """Counts of estimate templates (total / active / inactive / distinct domains)."""
+    with LogContext("estimate_templates", "get_estimate_template_statistics", tenant_id=current_user.data[0].tenant_id):
+        if not AuthService.has_any_permission(
+            user_roles=current_user.data,
+            required_permissions=["permission-msg-estimate-templates-get"],
+        ):
+            raise HTTPException(status_code=403, detail="Unauthorized access")
+
+        return EstimateTemplatesService.get_statistics(
+            tenant_id=current_user.data[0].tenant_id,
+            org_id=org_bus_loc["org_id"],
+            bus_id=org_bus_loc["bus_id"],
+        )
+
+
+# 6. Delete
 @estimate_templates_router.delete("/delete", response_model=Respons[DeleteEstimateTemplateControllerReadDto])
 def delete_estimate_template(
     data: DeleteEstimateTemplateControllerWriteDto,

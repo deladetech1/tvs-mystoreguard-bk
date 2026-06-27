@@ -15,6 +15,7 @@ from src.entities.estimates.estimates_read_dto import (
     GetEstimateListControllerReadDto,
     UpdateEstimateStatusControllerReadDto,
     DeleteEstimateControllerReadDto,
+    GetEstimateStatisticsControllerReadDto,
 )
 from src.entities.shared.sh_response import Respons
 from src.configs.logging import get_logger
@@ -161,7 +162,28 @@ def list_estimates(
         )
 
 
-# 6. Delete
+# 6. Statistics
+@estimates_router.get("/statistics", response_model=Respons[GetEstimateStatisticsControllerReadDto])
+def get_estimate_statistics(
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
+):
+    """Status counts and value totals (total/accepted/pipeline) for estimates."""
+    with LogContext("estimates", "get_estimate_statistics", tenant_id=current_user.data[0].tenant_id):
+        if not AuthService.has_any_permission(
+            user_roles=current_user.data,
+            required_permissions=["permission-msg-estimates-get"],
+        ):
+            raise HTTPException(status_code=403, detail="Unauthorized access")
+
+        return EstimatesService.get_statistics(
+            tenant_id=current_user.data[0].tenant_id,
+            org_id=org_bus_loc["org_id"],
+            bus_id=org_bus_loc["bus_id"],
+        )
+
+
+# 7. Delete
 @estimates_router.delete("/delete", response_model=Respons[DeleteEstimateControllerReadDto])
 def delete_estimate(
     data: DeleteEstimateControllerWriteDto,

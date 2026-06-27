@@ -76,3 +76,23 @@ class DeleteEstimateTemplateControllerReadDto(DeleteEstimateTemplateReadBase):
 
 class DeleteEstimateTemplateServiceReadDto(DeleteEstimateTemplateReadBase):
     pass
+
+
+# =====================================================
+# ESTIMATE TEMPLATE STATISTICS READ DTOs
+# =====================================================
+
+class EstimateTemplateStatisticsReadBase(BaseModel):
+    """Counts for estimate templates in the current org/business."""
+    total_templates: int = Field(default=0, description="All non-deleted templates")
+    active_templates: int = Field(default=0, description="Templates that can be used to create estimates")
+    inactive_templates: int = Field(default=0, description="Templates that are deactivated")
+    total_domains: int = Field(default=0, description="Distinct non-empty domain labels in use")
+
+
+class GetEstimateTemplateStatisticsControllerReadDto(EstimateTemplateStatisticsReadBase):
+    pass
+
+
+class GetEstimateTemplateStatisticsServiceReadDto(EstimateTemplateStatisticsReadBase):
+    pass

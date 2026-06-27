@@ -6,6 +6,7 @@ from src.entities.estimate_templates.estimate_templates_read_dto import (
     GetEstimateTemplateServiceReadDto,
     GetEstimateTemplateListServiceReadDto,
     DeleteEstimateTemplateServiceReadDto,
+    GetEstimateTemplateStatisticsServiceReadDto,
 )
 from src.entities.estimate_templates.estimate_templates_write_dto import (
     CreateEstimateTemplateServiceWriteDto,
@@ -366,3 +367,35 @@ class EstimateTemplatesService:
         except Exception as e:
             logger.error(f"Error deleting estimate template: {e}", exc_info=True)
             return Respons(success=False, detail=f"Failed to delete estimate template: {e}", error="INTERNAL_ERROR")
+
+    @staticmethod
+    def get_statistics(
+        tenant_id: str,
+        org_id: str,
+        bus_id: str,
+    ) -> Respons[GetEstimateTemplateStatisticsServiceReadDto]:
+        """Counts of estimate templates (total / active / inactive / distinct domains)."""
+        try:
+            with DatabaseManager.transaction() as cursor:
+                cursor.execute(
+                    f"""SELECT
+                        COUNT(*) as total_templates,
+                        COUNT(CASE WHEN is_active = TRUE THEN 1 END) as active_templates,
+                        COUNT(CASE WHEN is_active = FALSE THEN 1 END) as inactive_templates,
+                        COUNT(DISTINCT NULLIF(domain, '')) as total_domains
+                    FROM {db_settings.MSG_ESTIMATE_TEMPLATES_TABLE}
+                    WHERE tenant_id = %s AND org_id = %s AND bus_id = %s
+                    AND delete_status = 'NOT_DELETED'""",
+                    (tenant_id, org_id, bus_id),
+                )
+                row = cursor.fetchone() or {}
+                stats = GetEstimateTemplateStatisticsServiceReadDto(
+                    total_templates=int(row.get("total_templates") or 0),
+                    active_templates=int(row.get("active_templates") or 0),
+                    inactive_templates=int(row.get("inactive_templates") or 0),
+                    total_domains=int(row.get("total_domains") or 0),
+                )
+                return Respons(success=True, detail="Estimate template statistics retrieved successfully", data=[stats])
+        except Exception as e:
+            logger.error(f"Error getting estimate template statistics: {e}", exc_info=True)
+            return Respons(success=False, detail=f"Failed to get estimate template statistics: {e}", error="INTERNAL_ERROR")
