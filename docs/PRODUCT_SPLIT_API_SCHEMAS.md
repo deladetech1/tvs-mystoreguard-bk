@@ -162,11 +162,16 @@ Response: `Respons<Split>` with `data: Split[]` (each with its items) AND `pagin
 ## 5. `GET /products/split-detail` — one split
 Query: `{ split_id: string }` → `Respons<Split>`.
 
-## 6. `GET /products/split-statistics` — stats for current location
-No query (location from auth). Response: `Respons<SplitStatistics>`:
+## 6. `GET /products/split-statistics` — stats for one section
+Query: `source_scope?` — `STORE` (default), `WAREHOUSE`, or `PRODUCT`. Stats are scoped to
+that section only and are **never mixed** across sections. For `STORE`/`WAREHOUSE` the
+location comes from the auth context; `PRODUCT` is pool-level (business-wide, `loc_id` null).
+Call once per section to populate the Store / Warehouse / Product panels. Response:
+`Respons<SplitStatistics>`:
 ```ts
 type SplitStatistics = {
-  loc_id: string | null;
+  source_scope: "STORE" | "WAREHOUSE" | "PRODUCT";
+  loc_id: string | null;  // null for PRODUCT
   total_splits: number; active_splits: number; reversed_splits: number;
   partially_reversed_splits: number; reversal_rate: number;  // 0–100
   splits_today: number; splits_last_7_days: number; splits_last_30_days: number;

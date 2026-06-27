@@ -3930,12 +3930,36 @@ class ProductsService:
         tenant_id: str,
         org_id: str,
         bus_id: str,
-        loc_id: str,
+        loc_id: Optional[str] = None,
+        source_scope: Optional[str] = None,
     ) -> Respons[GetSplitStatisticsServiceReadDto]:
-        """Split statistics for the current location (STORE/WAREHOUSE splits done at loc_id).
+        """Split statistics for ONE section (scope) — never mixed across sections.
+
+        - STORE / WAREHOUSE: splits done at the caller's current location (loc_id).
+          Kept apart even if a store and a warehouse happen to share an id, because we
+          also match on source_scope/location_type, not loc_id alone.
+        - PRODUCT: pool-level splits, business-wide (these are not location-bound).
+
         Counts cover splits; quantity & money cover ACTIVE items only."""
-        if not loc_id:
-            return Respons(success=False, detail="A location is required for split statistics", error="VALIDATION_ERROR")
+        scope = (source_scope or 'STORE').upper()
+        if scope not in ('STORE', 'WAREHOUSE', 'PRODUCT'):
+            return Respons(success=False, detail=f"Invalid source_scope '{source_scope}' (use STORE, WAREHOUSE or PRODUCT)", error="VALIDATION_ERROR")
+
+        is_location_scope = scope in ('STORE', 'WAREHOUSE')
+        if is_location_scope and not loc_id:
+            return Respons(success=False, detail=f"A location is required for {scope} split statistics", error="VALIDATION_ERROR")
+
+        # One section filter, applied identically to every aggregate so the numbers can never
+        # mix across STORE / WAREHOUSE / PRODUCT. `_h` is the alias form for the joined queries.
+        if is_location_scope:
+            scope_sql = "source_scope = %s AND location_type = %s AND loc_id = %s"
+            scope_sql_h = "h.source_scope = %s AND h.location_type = %s AND h.loc_id = %s"
+            scope_params = [scope, scope, loc_id]
+        else:
+            scope_sql = "source_scope = %s"
+            scope_sql_h = "h.source_scope = %s"
+            scope_params = [scope]
+
         today = Helper.current_date_time()["cdate"]
         try:
             with DatabaseManager.transaction() as cursor:
@@ -3950,8 +3974,8 @@ class ProductsService:
                         COUNT(*) FILTER (WHERE cdatetime >= NOW() - INTERVAL '30 days') AS splits_last_30_days
                     FROM {db_settings.MSG_PRODUCT_SPLITS_TABLE}
                     WHERE tenant_id = %s AND org_id = %s AND bus_id = %s
-                    AND delete_status = 'NOT_DELETED' AND loc_id = %s""",
-                    (today, tenant_id, org_id, bus_id, loc_id),
+                    AND delete_status = 'NOT_DELETED' AND {scope_sql}""",
+                    (today, tenant_id, org_id, bus_id, *scope_params),
                 )
                 hagg = cursor.fetchone() or {}
 
@@ -3968,8 +3992,8 @@ class ProductsService:
                         ON si.split_id = h.id AND si.tenant_id = h.tenant_id
                     WHERE si.tenant_id = %s AND si.org_id = %s AND si.bus_id = %s
                     AND si.status = 'ACTIVE' AND si.delete_status = 'NOT_DELETED'
-                    AND h.loc_id = %s AND h.delete_status = 'NOT_DELETED'""",
-                    (tenant_id, org_id, bus_id, loc_id),
+                    AND h.delete_status = 'NOT_DELETED' AND {scope_sql_h}""",
+                    (tenant_id, org_id, bus_id, *scope_params),
                 )
                 iagg = cursor.fetchone() or {}
 
@@ -3982,8 +4006,8 @@ class ProductsService:
                         AS sb(qty_taken numeric, base_selling_price numeric, cost_price numeric)
                     WHERE si.tenant_id = %s AND si.org_id = %s AND si.bus_id = %s
                     AND si.status = 'ACTIVE' AND si.delete_status = 'NOT_DELETED'
-                    AND h.loc_id = %s AND h.delete_status = 'NOT_DELETED'""",
-                    (tenant_id, org_id, bus_id, loc_id),
+                    AND h.delete_status = 'NOT_DELETED' AND {scope_sql_h}""",
+                    (tenant_id, org_id, bus_id, *scope_params),
                 )
                 oagg = cursor.fetchone() or {}
 
@@ -3994,7 +4018,8 @@ class ProductsService:
                 original_selling_value = ProductsService._money(oagg.get('original_selling_value') or 0)
 
                 stats = GetSplitStatisticsServiceReadDto(
-                    loc_id=loc_id,
+                    source_scope=scope,
+                    loc_id=loc_id if is_location_scope else None,
                     total_splits=total,
                     active_splits=int(hagg.get('active_splits') or 0),
                     reversed_splits=reversed_count,

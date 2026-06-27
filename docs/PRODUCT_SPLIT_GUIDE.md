@@ -100,7 +100,9 @@ their items.
 Query: `split_id`. Returns the split with its items.
 
 ### `GET /products/split-statistics`
-Stats for the caller's current location.
+Query: `source_scope?` (`STORE` default | `WAREHOUSE` | `PRODUCT`). Stats for one section
+only, never mixed: STORE/WAREHOUSE use the caller's current location; PRODUCT is pool-level
+(business-wide).
 
 ## Notes
 

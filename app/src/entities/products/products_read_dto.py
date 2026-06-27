@@ -474,15 +474,18 @@ class GetSplitsServiceReadDto(SplitReadBase):
 # =====================================================
 
 class SplitStatisticsReadBase(BaseModel):
-    """Statistics for splits at the current location.
+    """Statistics for splits within ONE section (scope), never mixed across sections.
 
-    Counts cover splits/items; quantity & money cover ACTIVE items only (reversed items
-    were undone). PRODUCT-scope (pool) splits are not location-bound and are excluded.
+    `source_scope` selects the section: STORE / WAREHOUSE stats are scoped to the caller's
+    current location (`loc_id`); PRODUCT stats are pool-level and business-wide (`loc_id` is
+    null). Counts cover splits/items; quantity & money cover ACTIVE items only (reversed items
+    were undone).
     """
-    loc_id: Optional[str] = Field(None, description="Location these stats are scoped to")
+    source_scope: str = Field("STORE", description="Section these stats are scoped to: STORE | WAREHOUSE | PRODUCT")
+    loc_id: Optional[str] = Field(None, description="Location these stats are scoped to (null for PRODUCT)")
 
     # counts & health
-    total_splits: int = Field(default=0, description="All splits at this location")
+    total_splits: int = Field(default=0, description="All splits in this section")
     active_splits: int = Field(default=0, description="Splits still fully active")
     reversed_splits: int = Field(default=0, description="Splits fully reversed")
     partially_reversed_splits: int = Field(default=0, description="Splits with some items reversed")
