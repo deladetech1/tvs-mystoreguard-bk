@@ -357,16 +357,33 @@ class TasksService:
                 ]:
                     if val is not None:
                         fields.append(f"{col} = %s"); params.append(val)
-                if not fields:
-                    raise ValueError("No fields to update")
-                fields.append("updated_by = %s"); params.append(updated_by)
-                params.extend([task_id, tenant_id, org_id, bus_id])
-                cursor.execute(
-                    f"""UPDATE {T.MSG_TASKS_TABLE} SET {', '.join(fields)}
-                    WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
-                    tuple(params),
-                )
+
+                if not fields and data.steps is None:
+                    raise ValueError("Nothing to update")
+
+                if fields:
+                    fields.append("updated_by = %s"); params.append(updated_by)
+                    params.extend([task_id, tenant_id, org_id, bus_id])
+                    cursor.execute(
+                        f"""UPDATE {T.MSG_TASKS_TABLE} SET {', '.join(fields)}
+                        WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                        tuple(params),
+                    )
+
+                # When `steps` is provided, reconcile the job's steps (add / edit / remove +
+                # dependencies + assignees) in one shot. Raises ValueError on invalid input.
+                if data.steps is not None:
+                    TasksService._reconcile_steps(
+                        cursor, tenant_id, org_id, bus_id, task_id, data.steps, updated_by)
+
                 task = TasksService._load_task(cursor, tenant_id, org_id, bus_id, task_id)
+                try:
+                    ActivityLogService.log_activity(
+                        tenant_id=tenant_id, resource_type="rt-tasks", resource_id=task_id, action="update",
+                        old_data=existing, new_data=task, description=f"Task {task_id} updated",
+                        performed_by=updated_by, org_id=org_id, bus_id=bus_id, loc_id=None, cursor=cursor)
+                except Exception as log_err:
+                    logger.warning(f"Activity log failed: {log_err}", exc_info=True)
                 return Respons(success=True, detail="Task updated successfully",
                                data=[UpdateTaskServiceReadDto(**task)])
         except ValueError as e:
@@ -626,25 +643,8 @@ class TasksService:
             return Respons(success=False, detail=f"Failed to reject step: {str(e)}", error="INTERNAL_ERROR")
 
     # =================================================================
-    # PUBLIC: step editing (per-job tweaks)
+    # INTERNAL: step reconciliation (used by update_task's `steps`)
     # =================================================================
-
-    @staticmethod
-    def _editable_guard(cursor, tenant_id, org_id, bus_id, task_id, step=None):
-        """Returns an error Respons if the job isn't ACTIVE or the step is finished, else None."""
-        cursor.execute(
-            f"""SELECT status FROM {T.MSG_TASKS_TABLE}
-            WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s AND delete_status = 'NOT_DELETED'""",
-            (task_id, tenant_id, org_id, bus_id),
-        )
-        row = cursor.fetchone()
-        if not row:
-            return Respons(success=False, detail="Task not found", error="NOT_FOUND")
-        if row["status"] != "ACTIVE":
-            return Respons(success=False, detail="Job is not active; steps can no longer be edited", error="INVALID_STATE")
-        if step is not None and step["status"] not in ("TODO", "IN_PROGRESS"):
-            return Respons(success=False, detail=f"A {step['status']} step can no longer be edited", error="INVALID_STATE")
-        return None
 
     @staticmethod
     def _assignee_user_ids(cursor, tenant_id, step_id) -> set:
@@ -663,8 +663,8 @@ class TasksService:
             )
 
     @staticmethod
-    def _would_cycle(cursor, tenant_id, task_id, step_id, new_dep_ids) -> bool:
-        """True if making step_id depend on new_dep_ids introduces a cycle."""
+    def _graph_has_cycle(cursor, tenant_id, task_id) -> bool:
+        """True if the job's current dependency graph has a cycle."""
         cursor.execute(
             f"""SELECT d.step_id, d.depends_on_step_id
             FROM {T.MSG_TASK_STEP_DEPS_TABLE} d
@@ -674,10 +674,7 @@ class TasksService:
         )
         graph = {}
         for r in cursor.fetchall():
-            if r["step_id"] == step_id:
-                continue  # this step's deps are being replaced
             graph.setdefault(r["step_id"], set()).add(r["depends_on_step_id"])
-        graph[step_id] = set(new_dep_ids)
 
         WHITE, GRAY, BLACK = 0, 1, 2
         color = {}
@@ -696,180 +693,146 @@ class TasksService:
         return any(color.get(n, WHITE) == WHITE and dfs(n) for n in list(graph.keys()))
 
     @staticmethod
-    def update_step(task_id, step_id, tenant_id, org_id, bus_id, user_id,
-                    name=None, description=None, location_id=None, targets=None) -> Respons[StepActionServiceReadDto]:
-        """Edit a step's details and/or replace its assignees/approvers."""
-        try:
-            with DatabaseManager.transaction() as cursor:
-                step = TasksService._get_step(cursor, tenant_id, org_id, bus_id, task_id, step_id)
-                if not step:
-                    return Respons(success=False, detail="Step not found", error="NOT_FOUND")
-                guard = TasksService._editable_guard(cursor, tenant_id, org_id, bus_id, task_id, step)
-                if guard:
-                    return guard
+    def _reconcile_steps(cursor, tenant_id, org_id, bus_id, task_id, incoming, user_id):
+        """Reconcile a job's steps against `incoming` (a list of JobStepInput).
 
-                fields, params = [], []
-                for col, val in [("name", name), ("description", description), ("location_id", location_id)]:
-                    if val is not None:
-                        fields.append(f"{col} = %s"); params.append(val)
-                if fields:
-                    fields.append("updated_by = %s"); params.append(user_id)
-                    params.extend([step_id, tenant_id])
+        - Steps with an `id` matching an existing step are kept; if that step is
+          TODO/IN_PROGRESS its details/targets/deps are updated, finished steps are
+          left untouched.
+        - Steps without an `id` are added (use `ref` to wire depends_on).
+        - Existing steps absent from `incoming` are removed (only if unfinished).
+        Only allowed while the job is ACTIVE. Raises ValueError on invalid input.
+        """
+        cursor.execute(
+            f"""SELECT status FROM {T.MSG_TASKS_TABLE}
+            WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s AND delete_status = 'NOT_DELETED'""",
+            (task_id, tenant_id, org_id, bus_id),
+        )
+        job = cursor.fetchone()
+        if not job:
+            raise ValueError("Task not found")
+        if job["status"] != "ACTIVE":
+            raise ValueError("Job is not active; steps can no longer be edited")
+
+        cursor.execute(
+            f"SELECT id, status FROM {T.MSG_TASK_STEPS_TABLE} WHERE task_id = %s AND tenant_id = %s",
+            (task_id, tenant_id),
+        )
+        existing = {r["id"]: r["status"] for r in cursor.fetchall()}
+
+        refs = [s.ref for s in incoming if s.ref]
+        if len(refs) != len(set(refs)):
+            raise ValueError("Duplicate step refs in payload")
+        ids = [s.id for s in incoming if s.id]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Duplicate step ids in payload")
+        for sid in ids:
+            if sid not in existing:
+                raise ValueError(f"Unknown step id {sid}")
+
+        removed = set(existing) - set(ids)
+        for rid in removed:
+            if existing[rid] not in ("TODO", "IN_PROGRESS", "CANCELLED"):
+                raise ValueError(f"Cannot remove a {existing[rid]} step")
+
+        # Old assignees per editable step (to notify only newly-added people).
+        old_assignees = {
+            sid: TasksService._assignee_user_ids(cursor, tenant_id, sid)
+            for sid, st in existing.items()
+            if st in ("TODO", "IN_PROGRESS") and sid not in removed
+        }
+
+        # Pass 1: create new / update existing-editable; build ref/id -> final id map.
+        ref_to_id, resolved = {}, []
+        for s in incoming:
+            if s.id:
+                sid = s.id
+                editable = existing[s.id] in ("TODO", "IN_PROGRESS")
+                if editable:
                     cursor.execute(
-                        f"UPDATE {T.MSG_TASK_STEPS_TABLE} SET {', '.join(fields)} WHERE id = %s AND tenant_id = %s",
-                        tuple(params),
+                        f"""UPDATE {T.MSG_TASK_STEPS_TABLE}
+                        SET name = %s, description = %s, display_order = %s, location_id = %s, updated_by = %s
+                        WHERE id = %s AND tenant_id = %s""",
+                        (s.name, s.description, s.display_order, s.location_id, user_id, sid, tenant_id),
                     )
-
-                if targets is not None:
-                    old_assignees = TasksService._assignee_user_ids(cursor, tenant_id, step_id)
                     cursor.execute(
                         f"DELETE FROM {T.MSG_TASK_STEP_TARGETS_TABLE} WHERE tenant_id = %s AND step_id = %s",
-                        (tenant_id, step_id),
+                        (tenant_id, sid),
                     )
-                    TasksService._insert_targets(cursor, tenant_id, org_id, bus_id, step_id, targets, user_id)
-                    # Notify newly added assignees if the step is currently available.
-                    if TasksService._step_prereqs_complete(cursor, tenant_id, step_id):
-                        new_assignees = TasksService._assignee_user_ids(cursor, tenant_id, step_id)
-                        added = new_assignees - old_assignees
-                        TasksService._enqueue(cursor, tenant_id, org_id, bus_id, task_id, step_id,
-                                              added, "ASSIGNED", user_id)
-
-                task = TasksService._load_task(cursor, tenant_id, org_id, bus_id, task_id)
-                return Respons(success=True, detail="Step updated", data=[StepActionServiceReadDto(**task)])
-        except Exception as e:
-            logger.error(f"Error updating step: {str(e)}", exc_info=True)
-            return Respons(success=False, detail=f"Failed to update step: {str(e)}", error="INTERNAL_ERROR")
-
-    @staticmethod
-    def add_step(task_id, tenant_id, org_id, bus_id, user_id,
-                 name, description=None, location_id=None, display_order=0,
-                 depends_on=None, targets=None) -> Respons[StepActionServiceReadDto]:
-        """Add a new step to an active job."""
-        depends_on = depends_on or []
-        targets = targets or []
-        try:
-            with DatabaseManager.transaction() as cursor:
-                guard = TasksService._editable_guard(cursor, tenant_id, org_id, bus_id, task_id)
-                if guard:
-                    return guard
-                # Validate referenced prerequisite steps belong to this task.
-                for dep_id in depends_on:
-                    if not TasksService._get_step(cursor, tenant_id, org_id, bus_id, task_id, dep_id):
-                        return Respons(success=False, detail=f"Unknown dependency step {dep_id}", error="VALIDATION_ERROR")
-
-                step_id = Helper.generate_unique_identifier(prefix="tsk_step")
+                    TasksService._insert_targets(cursor, tenant_id, org_id, bus_id, sid, s.targets, user_id)
+                resolved.append((sid, s, editable, False))
+            else:
+                sid = Helper.generate_unique_identifier(prefix="tsk_step")
                 cursor.execute(
                     f"""INSERT INTO {T.MSG_TASK_STEPS_TABLE}
                     (id, tenant_id, org_id, bus_id, task_id, name, description, display_order, location_id, status, created_by)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'TODO', %s)""",
-                    (step_id, tenant_id, org_id, bus_id, task_id, name, description, display_order, location_id, user_id),
+                    (sid, tenant_id, org_id, bus_id, task_id, s.name, s.description, s.display_order, s.location_id, user_id),
                 )
-                TasksService._insert_targets(cursor, tenant_id, org_id, bus_id, step_id, targets, user_id)
-                for dep_id in depends_on:
-                    cursor.execute(
-                        f"""INSERT INTO {T.MSG_TASK_STEP_DEPS_TABLE}
-                        (id, tenant_id, org_id, bus_id, step_id, depends_on_step_id, created_by)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-                        (Helper.generate_unique_identifier(prefix="tsd"), tenant_id, org_id, bus_id, step_id, dep_id, user_id),
-                    )
-                # If immediately available, notify assignees.
-                if TasksService._step_prereqs_complete(cursor, tenant_id, step_id):
-                    TasksService._notify_step_assignees(cursor, tenant_id, org_id, bus_id, task_id, step_id, user_id, kind="ASSIGNED")
-                # Adding an unfinished step may re-open a job that had auto-completed; not applicable while ACTIVE.
-                task = TasksService._load_task(cursor, tenant_id, org_id, bus_id, task_id)
-                return Respons(success=True, detail="Step added", data=[StepActionServiceReadDto(**task)])
-        except Exception as e:
-            logger.error(f"Error adding step: {str(e)}", exc_info=True)
-            return Respons(success=False, detail=f"Failed to add step: {str(e)}", error="INTERNAL_ERROR")
+                TasksService._insert_targets(cursor, tenant_id, org_id, bus_id, sid, s.targets, user_id)
+                resolved.append((sid, s, True, True))
+            if s.ref:
+                ref_to_id[s.ref] = sid
+            ref_to_id[sid] = sid
+        # Kept existing steps are referenceable in depends_on (by id), even finished ones.
+        for eid in existing:
+            if eid not in removed:
+                ref_to_id.setdefault(eid, eid)
 
-    @staticmethod
-    def remove_step(task_id, step_id, tenant_id, org_id, bus_id, user_id) -> Respons[StepActionServiceReadDto]:
-        """Remove an unfinished step from an active job."""
-        try:
-            with DatabaseManager.transaction() as cursor:
-                step = TasksService._get_step(cursor, tenant_id, org_id, bus_id, task_id, step_id)
-                if not step:
-                    return Respons(success=False, detail="Step not found", error="NOT_FOUND")
-                guard = TasksService._editable_guard(cursor, tenant_id, org_id, bus_id, task_id, step)
-                if guard:
-                    return guard
-                # Capture dependents before we delete the dep rows.
-                cursor.execute(
-                    f"""SELECT step_id FROM {T.MSG_TASK_STEP_DEPS_TABLE}
-                    WHERE tenant_id = %s AND depends_on_step_id = %s""",
-                    (tenant_id, step_id),
-                )
-                dependents = [r["step_id"] for r in cursor.fetchall()]
-                # Delete deps in BOTH directions (the depends_on FK is RESTRICT), then the step
-                # (targets & outbox rows cascade).
-                cursor.execute(
-                    f"""DELETE FROM {T.MSG_TASK_STEP_DEPS_TABLE}
-                    WHERE tenant_id = %s AND (step_id = %s OR depends_on_step_id = %s)""",
-                    (tenant_id, step_id, step_id),
-                )
-                cursor.execute(
-                    f"DELETE FROM {T.MSG_TASK_STEPS_TABLE} WHERE id = %s AND tenant_id = %s",
-                    (step_id, tenant_id),
-                )
-                # Dependents may now be unblocked -> notify their assignees.
-                for dep_step_id in dependents:
-                    ds = TasksService._get_step(cursor, tenant_id, org_id, bus_id, task_id, dep_step_id)
-                    if (ds and ds["status"] == "TODO"
-                            and TasksService._step_prereqs_complete(cursor, tenant_id, dep_step_id)
-                            and not TasksService._has_ready_notification(cursor, tenant_id, dep_step_id)):
-                        TasksService._notify_step_assignees(
-                            cursor, tenant_id, org_id, bus_id, task_id, dep_step_id, user_id, kind="READY")
-                # Removing the last open step could complete the job.
-                TasksService._maybe_complete_task(cursor, tenant_id, org_id, bus_id, task_id)
-                task = TasksService._load_task(cursor, tenant_id, org_id, bus_id, task_id)
-                return Respons(success=True, detail="Step removed", data=[StepActionServiceReadDto(**task)])
-        except Exception as e:
-            logger.error(f"Error removing step: {str(e)}", exc_info=True)
-            return Respons(success=False, detail=f"Failed to remove step: {str(e)}", error="INTERNAL_ERROR")
+        # Remove dropped steps (deps both directions first; targets/outbox cascade).
+        for rid in removed:
+            cursor.execute(
+                f"""DELETE FROM {T.MSG_TASK_STEP_DEPS_TABLE}
+                WHERE tenant_id = %s AND (step_id = %s OR depends_on_step_id = %s)""",
+                (tenant_id, rid, rid),
+            )
+            cursor.execute(
+                f"DELETE FROM {T.MSG_TASK_STEPS_TABLE} WHERE id = %s AND tenant_id = %s",
+                (rid, tenant_id),
+            )
 
-    @staticmethod
-    def set_step_dependencies(task_id, step_id, tenant_id, org_id, bus_id, user_id, depends_on) -> Respons[StepActionServiceReadDto]:
-        """Replace a step's prerequisite list (gating/order)."""
-        depends_on = depends_on or []
-        try:
-            with DatabaseManager.transaction() as cursor:
-                step = TasksService._get_step(cursor, tenant_id, org_id, bus_id, task_id, step_id)
-                if not step:
-                    return Respons(success=False, detail="Step not found", error="NOT_FOUND")
-                guard = TasksService._editable_guard(cursor, tenant_id, org_id, bus_id, task_id, step)
-                if guard:
-                    return guard
-                dedup = list(dict.fromkeys(depends_on))
-                for dep_id in dedup:
-                    if dep_id == step_id:
-                        return Respons(success=False, detail="A step cannot depend on itself", error="VALIDATION_ERROR")
-                    if not TasksService._get_step(cursor, tenant_id, org_id, bus_id, task_id, dep_id):
-                        return Respons(success=False, detail=f"Unknown dependency step {dep_id}", error="VALIDATION_ERROR")
-                if TasksService._would_cycle(cursor, tenant_id, task_id, step_id, dedup):
-                    return Respons(success=False, detail="These dependencies would create a cycle", error="VALIDATION_ERROR")
-
+        # Pass 2: rewire deps for editable steps (finished steps keep their deps).
+        for sid, s, editable, _is_new in resolved:
+            if not editable:
+                continue
+            dep_ids = []
+            for token in s.depends_on:
+                tid = ref_to_id.get(token)
+                if not tid:
+                    raise ValueError(f"Step depends on unknown/removed step '{token}'")
+                if tid == sid:
+                    raise ValueError("A step cannot depend on itself")
+                dep_ids.append(tid)
+            cursor.execute(
+                f"DELETE FROM {T.MSG_TASK_STEP_DEPS_TABLE} WHERE tenant_id = %s AND step_id = %s",
+                (tenant_id, sid),
+            )
+            for tid in dict.fromkeys(dep_ids):
                 cursor.execute(
-                    f"DELETE FROM {T.MSG_TASK_STEP_DEPS_TABLE} WHERE tenant_id = %s AND step_id = %s",
-                    (tenant_id, step_id),
+                    f"""INSERT INTO {T.MSG_TASK_STEP_DEPS_TABLE}
+                    (id, tenant_id, org_id, bus_id, step_id, depends_on_step_id, created_by)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                    (Helper.generate_unique_identifier(prefix="tsd"), tenant_id, org_id, bus_id, sid, tid, user_id),
                 )
-                for dep_id in dedup:
-                    cursor.execute(
-                        f"""INSERT INTO {T.MSG_TASK_STEP_DEPS_TABLE}
-                        (id, tenant_id, org_id, bus_id, step_id, depends_on_step_id, created_by)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-                        (Helper.generate_unique_identifier(prefix="tsd"), tenant_id, org_id, bus_id, step_id, dep_id, user_id),
-                    )
-                # If now available and not yet notified, alert assignees.
-                if (step["status"] == "TODO"
-                        and TasksService._step_prereqs_complete(cursor, tenant_id, step_id)
-                        and not TasksService._has_ready_notification(cursor, tenant_id, step_id)):
-                    TasksService._notify_step_assignees(cursor, tenant_id, org_id, bus_id, task_id, step_id, user_id, kind="READY")
 
-                task = TasksService._load_task(cursor, tenant_id, org_id, bus_id, task_id)
-                return Respons(success=True, detail="Step dependencies updated", data=[StepActionServiceReadDto(**task)])
-        except Exception as e:
-            logger.error(f"Error setting step dependencies: {str(e)}", exc_info=True)
-            return Respons(success=False, detail=f"Failed to set dependencies: {str(e)}", error="INTERNAL_ERROR")
+        if TasksService._graph_has_cycle(cursor, tenant_id, task_id):
+            raise ValueError("These dependencies would create a cycle")
+
+        # Notify newly-added assignees on steps that are now available.
+        for sid, s, editable, is_new in resolved:
+            if not editable:
+                continue
+            status = "TODO" if is_new else existing[sid]
+            if status != "TODO":
+                continue
+            if not TasksService._step_prereqs_complete(cursor, tenant_id, sid):
+                continue
+            added = TasksService._assignee_user_ids(cursor, tenant_id, sid) - old_assignees.get(sid, set())
+            if added:
+                TasksService._enqueue(cursor, tenant_id, org_id, bus_id, task_id, sid, added, "ASSIGNED", user_id)
+
+        # Removing the last open step can complete the job.
+        TasksService._maybe_complete_task(cursor, tenant_id, org_id, bus_id, task_id)
 
     # =================================================================
     # PUBLIC: per-user notification settings

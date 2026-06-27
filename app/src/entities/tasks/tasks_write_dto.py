@@ -34,6 +34,21 @@ class CreateTaskServiceWriteDto(CreateTaskWriteBase):
 # UPDATE TASK WRITE DTOs (metadata only; lifecycle via step actions)
 # =====================================================
 
+class JobStepInput(BaseModel):
+    """A step in an update payload. Include `id` to keep/edit an existing step;
+    omit `id` (and optionally set `ref`) to add a new step. Existing steps not
+    listed are removed (only if unfinished). `depends_on` entries are existing
+    step ids or refs of new steps in the same payload."""
+    id: Optional[str] = Field(None, description="Existing step id; omit to add a new step")
+    ref: Optional[str] = Field(None, description="Client key for a NEW step, used to wire depends_on")
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    display_order: int = Field(default=0, ge=0)
+    location_id: Optional[str] = None
+    depends_on: List[str] = Field(default_factory=list)
+    targets: List[StepTargetInput] = Field(default_factory=list)
+
+
 class UpdateTaskWriteBase(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=255)
     task_type: Optional[TaskType] = None
@@ -41,6 +56,9 @@ class UpdateTaskWriteBase(BaseModel):
     customer_id: Optional[str] = None
     origin_location_id: Optional[str] = None
     due_date: Optional[datetime] = None
+    # When provided, reconciles the job's steps (add / edit / remove + deps + assignees).
+    steps: Optional[List[JobStepInput]] = Field(
+        None, description="Full step list to reconcile against the job; include existing steps by id to keep them")
 
 
 class UpdateTaskControllerWriteDto(UpdateTaskWriteBase):
@@ -78,41 +96,6 @@ class ApproveStepControllerWriteDto(StepActionWriteBase):
 
 class RejectStepControllerWriteDto(StepActionWriteBase):
     reason: Optional[str] = Field(None, description="Why the step was sent back")
-
-
-# =====================================================
-# STEP EDITING WRITE DTOs (per-job tweaks; only while step is TODO/IN_PROGRESS)
-# =====================================================
-
-class UpdateStepControllerWriteDto(BaseModel):
-    task_id: str
-    step_id: str
-    name: Optional[str] = Field(None, min_length=1, max_length=255)
-    description: Optional[str] = None
-    location_id: Optional[str] = None
-    targets: Optional[List[StepTargetInput]] = Field(
-        None, description="When provided, fully replaces this step's assignees/approvers")
-
-
-class AddStepControllerWriteDto(BaseModel):
-    task_id: str
-    name: str = Field(..., min_length=1, max_length=255)
-    description: Optional[str] = None
-    location_id: Optional[str] = None
-    display_order: int = Field(0, ge=0)
-    depends_on: List[str] = Field(default_factory=list, description="ids of existing job steps that must complete first")
-    targets: List[StepTargetInput] = Field(default_factory=list)
-
-
-class RemoveStepControllerWriteDto(BaseModel):
-    task_id: str
-    step_id: str
-
-
-class SetStepDependenciesControllerWriteDto(BaseModel):
-    task_id: str
-    step_id: str
-    depends_on: List[str] = Field(default_factory=list, description="ids of job steps this step must wait for")
 
 
 # =====================================================
