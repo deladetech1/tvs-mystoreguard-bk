@@ -2,7 +2,7 @@ from typing import Optional, List
 from datetime import datetime
 from pydantic import BaseModel, Field, model_validator
 from src.entities.tasks.tasks_base import TaskBase, TaskType
-from src.entities.workflow_templates.workflow_templates_base import StepInput
+from src.entities.workflow_templates.workflow_templates_base import StepInput, StepTargetInput
 
 
 # =====================================================
@@ -78,6 +78,41 @@ class ApproveStepControllerWriteDto(StepActionWriteBase):
 
 class RejectStepControllerWriteDto(StepActionWriteBase):
     reason: Optional[str] = Field(None, description="Why the step was sent back")
+
+
+# =====================================================
+# STEP EDITING WRITE DTOs (per-job tweaks; only while step is TODO/IN_PROGRESS)
+# =====================================================
+
+class UpdateStepControllerWriteDto(BaseModel):
+    task_id: str
+    step_id: str
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    location_id: Optional[str] = None
+    targets: Optional[List[StepTargetInput]] = Field(
+        None, description="When provided, fully replaces this step's assignees/approvers")
+
+
+class AddStepControllerWriteDto(BaseModel):
+    task_id: str
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    location_id: Optional[str] = None
+    display_order: int = Field(0, ge=0)
+    depends_on: List[str] = Field(default_factory=list, description="ids of existing job steps that must complete first")
+    targets: List[StepTargetInput] = Field(default_factory=list)
+
+
+class RemoveStepControllerWriteDto(BaseModel):
+    task_id: str
+    step_id: str
+
+
+class SetStepDependenciesControllerWriteDto(BaseModel):
+    task_id: str
+    step_id: str
+    depends_on: List[str] = Field(default_factory=list, description="ids of job steps this step must wait for")
 
 
 # =====================================================

@@ -12,6 +12,10 @@ from src.entities.tasks.tasks_write_dto import (
     RejectStepControllerWriteDto,
     CancelTaskControllerWriteDto,
     TaskNotificationSettingsWriteDto,
+    UpdateStepControllerWriteDto,
+    AddStepControllerWriteDto,
+    RemoveStepControllerWriteDto,
+    SetStepDependenciesControllerWriteDto,
 )
 from src.entities.tasks.tasks_read_dto import (
     CreateTaskControllerReadDto,
@@ -143,6 +147,71 @@ def cancel_task(
         _require(current_user, [UPDATE, DELETE])
         c = _ctx(current_user, org_bus)
         return TasksService.cancel_task(data.task_id, c["tenant_id"], c["org_id"], c["bus_id"], c["user_id"])
+
+
+# ---------------- step editing (per-job tweaks) ----------------
+
+@tasks_router.put("/steps/update", response_model=Respons[StepActionControllerReadDto])
+def update_step(
+    data: UpdateStepControllerWriteDto,
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    _sub: dict = Depends(verify_subscription_active),
+    org_bus: dict = Depends(get_org_bus_with_permission),
+):
+    """Edit a step's details and/or replace its assignees/approvers (while TODO/IN_PROGRESS)."""
+    with LogContext("tasks", "update_step", step_id=data.step_id):
+        _require(current_user, [UPDATE])
+        c = _ctx(current_user, org_bus)
+        return TasksService.update_step(
+            data.task_id, data.step_id, c["tenant_id"], c["org_id"], c["bus_id"], c["user_id"],
+            name=data.name, description=data.description, location_id=data.location_id, targets=data.targets)
+
+
+@tasks_router.post("/steps/add", response_model=Respons[StepActionControllerReadDto])
+def add_step(
+    data: AddStepControllerWriteDto,
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    _sub: dict = Depends(verify_subscription_active),
+    org_bus: dict = Depends(get_org_bus_with_permission),
+):
+    """Add a new step to an active job."""
+    with LogContext("tasks", "add_step", task_id=data.task_id):
+        _require(current_user, [UPDATE])
+        c = _ctx(current_user, org_bus)
+        return TasksService.add_step(
+            data.task_id, c["tenant_id"], c["org_id"], c["bus_id"], c["user_id"],
+            name=data.name, description=data.description, location_id=data.location_id,
+            display_order=data.display_order, depends_on=data.depends_on, targets=data.targets)
+
+
+@tasks_router.delete("/steps/remove", response_model=Respons[StepActionControllerReadDto])
+def remove_step(
+    data: RemoveStepControllerWriteDto,
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    _sub: dict = Depends(verify_subscription_active),
+    org_bus: dict = Depends(get_org_bus_with_permission),
+):
+    """Remove an unfinished step from an active job."""
+    with LogContext("tasks", "remove_step", step_id=data.step_id):
+        _require(current_user, [UPDATE])
+        c = _ctx(current_user, org_bus)
+        return TasksService.remove_step(
+            data.task_id, data.step_id, c["tenant_id"], c["org_id"], c["bus_id"], c["user_id"])
+
+
+@tasks_router.put("/steps/dependencies", response_model=Respons[StepActionControllerReadDto])
+def set_step_dependencies(
+    data: SetStepDependenciesControllerWriteDto,
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    _sub: dict = Depends(verify_subscription_active),
+    org_bus: dict = Depends(get_org_bus_with_permission),
+):
+    """Replace a step's prerequisite list (order/gating) on an active job."""
+    with LogContext("tasks", "set_step_dependencies", step_id=data.step_id):
+        _require(current_user, [UPDATE])
+        c = _ctx(current_user, org_bus)
+        return TasksService.set_step_dependencies(
+            data.task_id, data.step_id, c["tenant_id"], c["org_id"], c["bus_id"], c["user_id"], data.depends_on)
 
 
 # ---------------- step actions ----------------
