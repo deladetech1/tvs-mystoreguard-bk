@@ -110,6 +110,19 @@ class CancelTaskControllerReadDto(TaskReadBase):
     pass
 
 
+class DeleteTaskReadBase(BaseModel):
+    task_id: str
+    message: str
+
+
+class DeleteTaskControllerReadDto(DeleteTaskReadBase):
+    pass
+
+
+class DeleteTaskServiceReadDto(DeleteTaskReadBase):
+    pass
+
+
 # =====================================================
 # NOTIFICATION SETTINGS READ DTOs
 # =====================================================

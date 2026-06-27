@@ -7,6 +7,7 @@ from src.entities.tasks.tasks_read_dto import (
     StepActionServiceReadDto,
     TaskNotificationSettingsServiceReadDto,
     TaskStatisticsServiceReadDto,
+    DeleteTaskServiceReadDto,
 )
 from src.entities.tasks.tasks_write_dto import (
     CreateTaskServiceWriteDto,
@@ -474,6 +475,73 @@ class TasksService:
         except Exception as e:
             logger.error(f"Error cancelling task: {str(e)}", exc_info=True)
             return Respons(success=False, detail=f"Failed to cancel task: {str(e)}", error="INTERNAL_ERROR")
+
+    @staticmethod
+    def delete_task(task_id, tenant_id, org_id, bus_id, deleted_by) -> Respons[DeleteTaskServiceReadDto]:
+        """Hard-delete a job and ALL its child rows (steps, dependencies, targets,
+        notifications) in one transaction. Child rows are removed first so the
+        deps' RESTRICT self-FK can't block the step deletes."""
+        try:
+            with DatabaseManager.transaction() as cursor:
+                cursor.execute(
+                    f"""SELECT * FROM {T.MSG_TASKS_TABLE}
+                    WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                    (task_id, tenant_id, org_id, bus_id),
+                )
+                existing = cursor.fetchone()
+                if not existing:
+                    raise ValueError("Task not found")
+
+                step_ids_subq = (
+                    f"SELECT id FROM {T.MSG_TASK_STEPS_TABLE} WHERE task_id = %s AND tenant_id = %s"
+                )
+                # 1. notifications (outbox) for the whole job
+                cursor.execute(
+                    f"DELETE FROM {T.MSG_TASK_NOTIFICATIONS_TABLE} WHERE tenant_id = %s AND task_id = %s",
+                    (tenant_id, task_id),
+                )
+                # 2. step dependencies (both directions are covered: every dep row
+                #    belongs to a step of this task)
+                cursor.execute(
+                    f"""DELETE FROM {T.MSG_TASK_STEP_DEPS_TABLE}
+                    WHERE tenant_id = %s AND step_id IN ({step_ids_subq})""",
+                    (tenant_id, task_id, tenant_id),
+                )
+                # 3. step targets
+                cursor.execute(
+                    f"""DELETE FROM {T.MSG_TASK_STEP_TARGETS_TABLE}
+                    WHERE tenant_id = %s AND step_id IN ({step_ids_subq})""",
+                    (tenant_id, task_id, tenant_id),
+                )
+                # 4. steps
+                cursor.execute(
+                    f"DELETE FROM {T.MSG_TASK_STEPS_TABLE} WHERE task_id = %s AND tenant_id = %s",
+                    (task_id, tenant_id),
+                )
+                # 5. the job itself
+                cursor.execute(
+                    f"""DELETE FROM {T.MSG_TASKS_TABLE}
+                    WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s""",
+                    (task_id, tenant_id, org_id, bus_id),
+                )
+                if cursor.rowcount == 0:
+                    raise ValueError("Failed to delete task")
+
+                try:
+                    ActivityLogService.log_activity(
+                        tenant_id=tenant_id, resource_type="rt-tasks", resource_id=task_id, action="delete",
+                        old_data=dict(existing), new_data=None, description=f"Task {task_id} deleted",
+                        performed_by=deleted_by, org_id=org_id, bus_id=bus_id, loc_id=None, cursor=cursor)
+                except Exception as log_err:
+                    logger.warning(f"Activity log failed: {log_err}", exc_info=True)
+
+                return Respons(success=True, detail="Task deleted successfully",
+                               data=[DeleteTaskServiceReadDto(task_id=task_id, message="Task deleted successfully")])
+        except ValueError as e:
+            return Respons(success=False, detail=str(e), error="VALIDATION_ERROR")
+        except Exception as e:
+            logger.error(f"Error deleting task: {str(e)}", exc_info=True)
+            return Respons(success=False, detail=f"Failed to delete task: {str(e)}", error="INTERNAL_ERROR")
 
     # =================================================================
     # PUBLIC: step actions (the state machine)

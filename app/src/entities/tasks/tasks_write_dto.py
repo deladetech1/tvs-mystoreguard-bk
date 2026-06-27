@@ -111,6 +111,10 @@ class CancelTaskControllerWriteDto(BaseModel):
     task_id: str
 
 
+class DeleteTaskControllerWriteDto(BaseModel):
+    task_id: str
+
+
 # =====================================================
 # NOTIFICATION SETTINGS WRITE DTOs
 # =====================================================

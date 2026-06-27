@@ -11,6 +11,7 @@ from src.entities.tasks.tasks_write_dto import (
     ApproveStepControllerWriteDto,
     RejectStepControllerWriteDto,
     CancelTaskControllerWriteDto,
+    DeleteTaskControllerWriteDto,
     TaskNotificationSettingsWriteDto,
     RemoveStepControllerWriteDto,
 )
@@ -21,6 +22,7 @@ from src.entities.tasks.tasks_read_dto import (
     GetTasksControllerReadDto,
     StepActionControllerReadDto,
     CancelTaskControllerReadDto,
+    DeleteTaskControllerReadDto,
     TaskNotificationSettingsControllerReadDto,
     TaskStatisticsControllerReadDto,
 )
@@ -144,6 +146,21 @@ def cancel_task(
         _require(current_user, [UPDATE, DELETE])
         c = _ctx(current_user, org_bus)
         return TasksService.cancel_task(data.task_id, c["tenant_id"], c["org_id"], c["bus_id"], c["user_id"])
+
+
+@tasks_router.delete("/delete", response_model=Respons[DeleteTaskControllerReadDto])
+def delete_task(
+    data: DeleteTaskControllerWriteDto,
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    _sub: dict = Depends(verify_subscription_active),
+    org_bus: dict = Depends(get_org_bus_with_permission),
+):
+    """Permanently delete a job and ALL its steps, dependencies, targets and notifications."""
+    with LogContext("tasks", "delete_task", task_id=data.task_id):
+        _require(current_user, [DELETE])
+        c = _ctx(current_user, org_bus)
+        return TasksService.delete_task(
+            data.task_id, c["tenant_id"], c["org_id"], c["bus_id"], c["user_id"])
 
 
 # ---------------- step removal (single-step convenience) ----------------
