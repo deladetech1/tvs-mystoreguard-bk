@@ -539,6 +539,31 @@ class TasksService:
             return Respons(success=False, detail=f"Failed to {action} step: {str(e)}", error="INTERNAL_ERROR")
 
     @staticmethod
+    def _complete_step_and_cascade(cursor, tenant_id, org_id, bus_id, task_id, step_id, user_id):
+        """Mark a step COMPLETED, activate/notify newly-available dependents, and
+        auto-complete the job if nothing is left open. Shared by approve_step."""
+        cursor.execute(
+            f"""UPDATE {T.MSG_TASK_STEPS_TABLE}
+            SET status = 'COMPLETED', completed_by = %s, completed_at = NOW()
+            WHERE id = %s AND tenant_id = %s""",
+            (user_id, step_id, tenant_id),
+        )
+        cursor.execute(
+            f"""SELECT step_id FROM {T.MSG_TASK_STEP_DEPS_TABLE}
+            WHERE tenant_id = %s AND depends_on_step_id = %s""",
+            (tenant_id, step_id),
+        )
+        dependents = [r["step_id"] for r in cursor.fetchall()]
+        for dep_step_id in dependents:
+            ds = TasksService._get_step(cursor, tenant_id, org_id, bus_id, task_id, dep_step_id)
+            if (ds and ds["status"] == "TODO"
+                    and TasksService._step_prereqs_complete(cursor, tenant_id, dep_step_id)
+                    and not TasksService._has_ready_notification(cursor, tenant_id, dep_step_id)):
+                TasksService._notify_step_assignees(
+                    cursor, tenant_id, org_id, bus_id, task_id, dep_step_id, user_id, kind="READY")
+        TasksService._maybe_complete_task(cursor, tenant_id, org_id, bus_id, task_id)
+
+    @staticmethod
     def done_step(task_id, step_id, tenant_id, org_id, bus_id, user_id) -> Respons[StepActionServiceReadDto]:
         try:
             with DatabaseManager.transaction() as cursor:
@@ -557,14 +582,19 @@ class TasksService:
                     WHERE id = %s AND tenant_id = %s""",
                     (user_id, step_id, tenant_id),
                 )
-                # Notify the step's approvers.
+                # Move to DONE (waiting for approval). If specific approvers are
+                # assigned, notify them; if none are assigned, it still waits for
+                # approval but anyone allowed to approve can do it (see approve_step).
                 approver_targets = TasksService._step_targets(cursor, tenant_id, step_id, "APPROVER")
                 approver_ids = expand_targets_to_user_ids(cursor, tenant_id, approver_targets)
-                TasksService._enqueue(cursor, tenant_id, org_id, bus_id, task_id, step_id,
-                                      approver_ids, "DONE_NEEDS_APPROVAL", user_id)
+                if approver_ids:
+                    TasksService._enqueue(cursor, tenant_id, org_id, bus_id, task_id, step_id,
+                                          approver_ids, "DONE_NEEDS_APPROVAL", user_id)
+                    detail = "Step marked DONE; approvers notified"
+                else:
+                    detail = "Step marked DONE; awaiting approval (no specific approver — anyone can approve)"
                 task = TasksService._load_task(cursor, tenant_id, org_id, bus_id, task_id)
-                return Respons(success=True, detail="Step marked DONE; approvers notified",
-                               data=[StepActionServiceReadDto(**task)])
+                return Respons(success=True, detail=detail, data=[StepActionServiceReadDto(**task)])
         except Exception as e:
             logger.error(f"Error marking step done: {str(e)}", exc_info=True)
             return Respons(success=False, detail=f"Failed to mark step done: {str(e)}", error="INTERNAL_ERROR")
@@ -578,31 +608,15 @@ class TasksService:
                     return Respons(success=False, detail="Step not found", error="NOT_FOUND")
                 if step["status"] != "DONE":
                     return Respons(success=False, detail="Only a DONE step can be approved", error="INVALID_STATE")
-                if not TasksService._user_matches_targets(cursor, tenant_id, step_id, user_id, "APPROVER"):
+                # If specific approvers are assigned, the caller must be one of them.
+                # If NONE are assigned, anyone allowed to approve (route permission) can.
+                approver_targets = TasksService._step_targets(cursor, tenant_id, step_id, "APPROVER")
+                if approver_targets and not TasksService._user_matches_targets(
+                        cursor, tenant_id, step_id, user_id, "APPROVER"):
                     return Respons(success=False, detail="You are not an approver of this step", error="NOT_APPROVER")
 
-                cursor.execute(
-                    f"""UPDATE {T.MSG_TASK_STEPS_TABLE}
-                    SET status = 'COMPLETED', completed_by = %s, completed_at = NOW()
-                    WHERE id = %s AND tenant_id = %s""",
-                    (user_id, step_id, tenant_id),
-                )
-                # Activate any downstream steps whose prerequisites are now all complete.
-                cursor.execute(
-                    f"""SELECT step_id FROM {T.MSG_TASK_STEP_DEPS_TABLE}
-                    WHERE tenant_id = %s AND depends_on_step_id = %s""",
-                    (tenant_id, step_id),
-                )
-                dependents = [r["step_id"] for r in cursor.fetchall()]
-                for dep_step_id in dependents:
-                    ds = TasksService._get_step(cursor, tenant_id, org_id, bus_id, task_id, dep_step_id)
-                    if (ds and ds["status"] == "TODO"
-                            and TasksService._step_prereqs_complete(cursor, tenant_id, dep_step_id)
-                            and not TasksService._has_ready_notification(cursor, tenant_id, dep_step_id)):
-                        TasksService._notify_step_assignees(
-                            cursor, tenant_id, org_id, bus_id, task_id, dep_step_id, user_id, kind="READY")
-
-                TasksService._maybe_complete_task(cursor, tenant_id, org_id, bus_id, task_id)
+                TasksService._complete_step_and_cascade(
+                    cursor, tenant_id, org_id, bus_id, task_id, step_id, user_id)
                 task = TasksService._load_task(cursor, tenant_id, org_id, bus_id, task_id)
                 try:
                     ActivityLogService.log_activity(
@@ -627,7 +641,10 @@ class TasksService:
                     return Respons(success=False, detail="Step not found", error="NOT_FOUND")
                 if step["status"] != "DONE":
                     return Respons(success=False, detail="Only a DONE step can be rejected", error="INVALID_STATE")
-                if not TasksService._user_matches_targets(cursor, tenant_id, step_id, user_id, "APPROVER"):
+                # Specific approvers (if any) gate this; otherwise anyone allowed to approve can reject.
+                approver_targets = TasksService._step_targets(cursor, tenant_id, step_id, "APPROVER")
+                if approver_targets and not TasksService._user_matches_targets(
+                        cursor, tenant_id, step_id, user_id, "APPROVER"):
                     return Respons(success=False, detail="You are not an approver of this step", error="NOT_APPROVER")
                 cursor.execute(
                     f"""UPDATE {T.MSG_TASK_STEPS_TABLE}
