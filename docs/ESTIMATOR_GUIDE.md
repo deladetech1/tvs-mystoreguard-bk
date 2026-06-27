@@ -89,6 +89,7 @@ Templates (`permission-msg-estimate-templates-*`):
 - `PUT  /estimate-templates/update?template_id=`
 - `GET  /estimate-templates/get?template_id=`
 - `GET  /estimate-templates/list`
+- `GET  /estimate-templates/statistics` (total / active / inactive / distinct domains)
 - `DELETE /estimate-templates/delete`
 
 Estimates (`permission-msg-estimates-*`):
@@ -97,6 +98,7 @@ Estimates (`permission-msg-estimates-*`):
 - `PATCH /estimates/status?estimate_id=`
 - `GET   /estimates/get?estimate_id=`
 - `GET   /estimates/list`
+- `GET   /estimates/statistics` (status counts + total/accepted/pipeline value)
 - `DELETE /estimates/delete`
 
 ## Worked example — curtain shop

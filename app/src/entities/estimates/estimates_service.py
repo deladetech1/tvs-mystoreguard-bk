@@ -9,6 +9,7 @@ from src.entities.estimates.estimates_read_dto import (
     GetEstimateListServiceReadDto,
     UpdateEstimateStatusServiceReadDto,
     DeleteEstimateServiceReadDto,
+    GetEstimateStatisticsServiceReadDto,
     EstimateItemReadBase,
 )
 from src.entities.estimates.estimates_write_dto import (
@@ -600,3 +601,48 @@ class EstimatesService:
         except Exception as e:
             logger.error(f"Error deleting estimate: {e}", exc_info=True)
             return Respons(success=False, detail=f"Failed to delete estimate: {e}", error="INTERNAL_ERROR")
+
+    # ------------------------------------------------------------------
+    # Statistics
+    # ------------------------------------------------------------------
+    @staticmethod
+    def get_statistics(
+        tenant_id, org_id, bus_id,
+    ) -> Respons[GetEstimateStatisticsServiceReadDto]:
+        """Status counts and value totals for estimates in the org/business."""
+        try:
+            with DatabaseManager.transaction() as cursor:
+                cursor.execute(
+                    f"""SELECT
+                        COUNT(*) as total_estimates,
+                        COUNT(CASE WHEN status = 'DRAFT' THEN 1 END) as draft,
+                        COUNT(CASE WHEN status = 'SENT' THEN 1 END) as sent,
+                        COUNT(CASE WHEN status = 'ACCEPTED' THEN 1 END) as accepted,
+                        COUNT(CASE WHEN status = 'REJECTED' THEN 1 END) as rejected,
+                        COUNT(CASE WHEN status = 'EXPIRED' THEN 1 END) as expired,
+                        COUNT(CASE WHEN status = 'CONVERTED' THEN 1 END) as converted,
+                        COALESCE(SUM(grand_total), 0) as total_value,
+                        COALESCE(SUM(CASE WHEN status = 'ACCEPTED' THEN grand_total ELSE 0 END), 0) as accepted_value,
+                        COALESCE(SUM(CASE WHEN status IN ('DRAFT', 'SENT') THEN grand_total ELSE 0 END), 0) as pipeline_value
+                    FROM {db_settings.MSG_ESTIMATES_TABLE}
+                    WHERE tenant_id = %s AND org_id = %s AND bus_id = %s
+                    AND delete_status = 'NOT_DELETED'""",
+                    (tenant_id, org_id, bus_id),
+                )
+                row = cursor.fetchone() or {}
+                stats = GetEstimateStatisticsServiceReadDto(
+                    total_estimates=int(row.get("total_estimates") or 0),
+                    draft=int(row.get("draft") or 0),
+                    sent=int(row.get("sent") or 0),
+                    accepted=int(row.get("accepted") or 0),
+                    rejected=int(row.get("rejected") or 0),
+                    expired=int(row.get("expired") or 0),
+                    converted=int(row.get("converted") or 0),
+                    total_value=_round_money(row.get("total_value") or 0),
+                    accepted_value=_round_money(row.get("accepted_value") or 0),
+                    pipeline_value=_round_money(row.get("pipeline_value") or 0),
+                )
+                return Respons(success=True, detail="Estimate statistics retrieved successfully", data=[stats])
+        except Exception as e:
+            logger.error(f"Error getting estimate statistics: {e}", exc_info=True)
+            return Respons(success=False, detail=f"Failed to get estimate statistics: {e}", error="INTERNAL_ERROR")

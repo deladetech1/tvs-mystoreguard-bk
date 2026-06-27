@@ -105,3 +105,29 @@ class DeleteEstimateControllerReadDto(DeleteEstimateReadBase):
 
 class DeleteEstimateServiceReadDto(DeleteEstimateReadBase):
     pass
+
+
+# =====================================================
+# ESTIMATE STATISTICS READ DTOs
+# =====================================================
+
+class EstimateStatisticsReadBase(BaseModel):
+    """Counts and value totals for estimates in the current org/business."""
+    total_estimates: int = Field(default=0, description="All non-deleted estimates")
+    draft: int = Field(default=0, description="Estimates in DRAFT")
+    sent: int = Field(default=0, description="Estimates in SENT")
+    accepted: int = Field(default=0, description="Estimates in ACCEPTED")
+    rejected: int = Field(default=0, description="Estimates in REJECTED")
+    expired: int = Field(default=0, description="Estimates in EXPIRED")
+    converted: int = Field(default=0, description="Estimates in CONVERTED")
+    total_value: float = Field(default=0.0, description="Sum of grand_total across all non-deleted estimates")
+    accepted_value: float = Field(default=0.0, description="Sum of grand_total for ACCEPTED estimates")
+    pipeline_value: float = Field(default=0.0, description="Sum of grand_total for DRAFT + SENT (open) estimates")
+
+
+class GetEstimateStatisticsControllerReadDto(EstimateStatisticsReadBase):
+    pass
+
+
+class GetEstimateStatisticsServiceReadDto(EstimateStatisticsReadBase):
+    pass
