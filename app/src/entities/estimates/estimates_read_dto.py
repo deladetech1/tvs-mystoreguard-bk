@@ -7,6 +7,16 @@ from pydantic import BaseModel, Field
 # ESTIMATE ITEM READ
 # =====================================================
 
+class ComputedValueRead(BaseModel):
+    """One computed value on a line (yards, material cost, …) and its rolled-up total."""
+    key: Optional[str] = None
+    label: Optional[str] = None
+    unit: Optional[str] = None
+    kind: str = "money"           # money | quantity | display
+    value: Any = None             # per-unit result (number, or text for display)
+    total: Optional[float] = None  # value × quantity (None for display-only)
+
+
 class EstimateItemReadBase(BaseModel):
     id: str
     estimate_id: str
@@ -17,11 +27,20 @@ class EstimateItemReadBase(BaseModel):
     field_values: Dict[str, Any] = Field(default_factory=dict)
     unit_amount: float = 0.0
     computed_amount: float = 0.0
+    computed_values: List[ComputedValueRead] = Field(default_factory=list)
 
 
 # =====================================================
 # ESTIMATE READ
 # =====================================================
+
+class QuantityTotalRead(BaseModel):
+    """An estimate-wide rollup of a `quantity` computation (e.g. total yards)."""
+    key: Optional[str] = None
+    label: Optional[str] = None
+    unit: Optional[str] = None
+    total: float = 0.0
+
 
 class EstimateReadBase(BaseModel):
     id: str
@@ -43,6 +62,7 @@ class EstimateReadBase(BaseModel):
     discount_amount: float = 0.0
     tax_amount: float = 0.0
     grand_total: float = 0.0
+    quantity_totals: List[QuantityTotalRead] = Field(default_factory=list)
     valid_until: Optional[date] = None
     items: List[EstimateItemReadBase] = Field(default_factory=list)
     delete_status: str = "NOT_DELETED"

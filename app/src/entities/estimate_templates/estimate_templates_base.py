@@ -1,7 +1,7 @@
 import ast
 from typing import Optional, List, Any
 from typing_extensions import Literal
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # =====================================================
@@ -12,6 +12,12 @@ DeleteStatusType = Literal['PENDING', 'DELETED', 'NOT_DELETED']
 
 # The kind of input an estimator captures for a field on site.
 FieldDataType = Literal['number', 'dimension', 'select', 'boolean', 'text']
+
+# What a computed value represents:
+#   money    -> adds to the line price (and the estimate's money total)
+#   quantity -> rolled up into its own total by key (e.g. total yards), never money
+#   display  -> just shown on the line, not totalled anywhere
+ComputationKind = Literal['money', 'quantity', 'display']
 
 
 # =====================================================
@@ -44,28 +50,55 @@ class FieldDef(BaseModel):
         return v
 
 
+def _parses(expr: str) -> str:
+    """Reject a formula with a syntax error at template-create time."""
+    try:
+        ast.parse(expr, mode="eval")
+    except SyntaxError as exc:
+        raise ValueError(f"Invalid formula syntax: {exc.msg}")
+    return expr
+
+
+class Computation(BaseModel):
+    """One named, computed value on a line item. Computations run in order and
+    each can reference the fields AND any computation defined above it."""
+    key: str = Field(..., min_length=1, max_length=100, description="Variable name, e.g. 'yards', 'material_cost'. Reusable by later computations.")
+    label: str = Field(..., min_length=1, max_length=255, description="Label shown on the estimate, e.g. 'Material cost'")
+    formula: str = Field(..., min_length=1, description="Expression over field keys + earlier computation keys. Supports + - * /, ifelse, comparisons, and/or/not.")
+    unit: Optional[str] = Field(None, max_length=50, description="Unit shown next to the value, e.g. 'yd', 'GHS'")
+    kind: ComputationKind = Field(default='money', description="money (adds to price) | quantity (own rolled-up total) | display (shown only)")
+
+    @field_validator("key")
+    @classmethod
+    def _key_is_identifier(cls, v: str) -> str:
+        if not v.isidentifier():
+            raise ValueError(f"Computation key '{v}' must be a valid identifier (letters, digits, underscore; no leading digit)")
+        return v
+
+    @field_validator("formula")
+    @classmethod
+    def _formula_is_safe(cls, v: str) -> str:
+        return _parses(v)
+
+
 class LineItemDef(BaseModel):
     """A kind of thing that can be added to an estimate (a 'Window', a 'Door',
-    'Labour'). Holds the fields to capture and the formula that prices one unit."""
+    'Labour'). Holds the fields to capture and the computations that price it.
+
+    Provide EITHER a single `formula` (simple: becomes one money computation) OR a
+    list of `computations` (advanced: multiple named, chained values)."""
     key: str = Field(..., min_length=1, max_length=100, description="Unique key within the template, e.g. 'window'")
     name: str = Field(..., min_length=1, max_length=255, description="Display name, e.g. 'Window'")
     description: Optional[str] = Field(None, max_length=1000)
     unit: Optional[str] = Field(None, max_length=50, description="Output unit label, e.g. 'window', 'sqm'")
     fields: List[FieldDef] = Field(default_factory=list, description="Inputs captured for this line item")
-    formula: str = Field(..., min_length=1, description="Arithmetic over field keys, e.g. 'height * width * fabric_rate + labor'")
+    formula: Optional[str] = Field(None, description="Shortcut: a single money formula (auto-wrapped into one computation)")
+    computations: List[Computation] = Field(default_factory=list, description="Named, ordered computed values (yards, material cost, ...)")
 
     @field_validator("formula")
     @classmethod
-    def _formula_is_safe(cls, v: str) -> str:
-        # Validate the formula parses against a permissive numeric context so a
-        # broken template is rejected at creation time, not when an estimate runs.
-        try:
-            # Parse only to catch syntax errors at creation time; unknown-name
-            # errors are acceptable here (fields are validated separately).
-            ast.parse(v, mode="eval")
-        except SyntaxError as exc:
-            raise ValueError(f"Invalid formula syntax: {exc.msg}")
-        return v
+    def _formula_is_safe(cls, v: Optional[str]) -> Optional[str]:
+        return _parses(v) if v else v
 
     @field_validator("fields")
     @classmethod
@@ -75,6 +108,31 @@ class LineItemDef(BaseModel):
         if dupes:
             raise ValueError(f"Duplicate field keys in line item: {', '.join(sorted(dupes))}")
         return v
+
+    @model_validator(mode="after")
+    def _normalise_computations(self):
+        # Allow the simple `formula` shortcut: wrap it as one money computation.
+        if not self.computations:
+            if self.formula:
+                self.computations = [Computation(key="amount", label="Amount", formula=self.formula, kind="money")]
+            else:
+                raise ValueError(f"Line item '{self.key}' needs either a formula or at least one computation")
+
+        comp_keys = [c.key for c in self.computations]
+        dupes = {k for k in comp_keys if comp_keys.count(k) > 1}
+        if dupes:
+            raise ValueError(f"Duplicate computation keys in line item '{self.key}': {', '.join(sorted(dupes))}")
+
+        # A computation key must not collide with a field key (would be ambiguous).
+        field_keys = {f.key for f in self.fields}
+        clash = field_keys.intersection(comp_keys)
+        if clash:
+            raise ValueError(f"Computation key(s) clash with field key(s) in '{self.key}': {', '.join(sorted(clash))}")
+
+        # At least one money computation, so the line has a price.
+        if not any(c.kind == "money" for c in self.computations):
+            raise ValueError(f"Line item '{self.key}' needs at least one 'money' computation to have a price")
+        return self
 
 
 class TemplateModifiers(BaseModel):

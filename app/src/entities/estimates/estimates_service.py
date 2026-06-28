@@ -85,6 +85,8 @@ class EstimatesService:
 
         priced_lines: List[dict] = []
         subtotal = 0.0
+        # Estimate-level rollup of `quantity` computations, keyed by computation key.
+        quantity_totals: Dict[str, dict] = {}
 
         for item in items:
             line_key = item.line_def_key
@@ -99,23 +101,66 @@ class EstimatesService:
                         f"Missing required field '{fdef.get('label', fdef['key'])}' for line '{line_def.get('name', line_key)}'"
                     )
 
+            qty = float(item.quantity)
             context = build_context(item.field_values, line_def.get("fields", []))
-            try:
-                unit_amount = evaluate_formula(line_def["formula"], context)
-            except FormulaError as exc:
-                raise PricingError(f"Could not price line '{line_def.get('name', line_key)}': {exc}")
 
-            line_total = _round_money(unit_amount * float(item.quantity))
+            # Run computations in order; each result feeds the next.
+            computations = line_def.get("computations") or []
+            if not computations and line_def.get("formula"):
+                # Back-compat: a line def stored with the old single `formula`.
+                computations = [{"key": "amount", "label": "Amount", "formula": line_def["formula"], "kind": "money"}]
+
+            computed_values: List[dict] = []
+            per_unit_money = 0.0
+            for comp in computations:
+                try:
+                    raw = evaluate_formula(comp["formula"], context)
+                except FormulaError as exc:
+                    raise PricingError(f"Could not price '{comp.get('label', comp.get('key'))}' on line '{line_def.get('name', line_key)}': {exc}")
+                context[comp["key"]] = raw  # available to later computations
+
+                kind = comp.get("kind", "money")
+                numeric = None
+                line_value_total = None
+                if kind in ("money", "quantity"):
+                    try:
+                        numeric = float(raw)
+                    except (TypeError, ValueError):
+                        raise PricingError(f"Computation '{comp.get('label', comp.get('key'))}' did not produce a number")
+                    line_value_total = round(numeric * qty, 4)
+                    if kind == "money":
+                        per_unit_money += numeric
+
+                computed_values.append({
+                    "key": comp.get("key"),
+                    "label": comp.get("label"),
+                    "unit": comp.get("unit"),
+                    "kind": kind,
+                    "value": (round(numeric, 4) if numeric is not None else raw),
+                    "total": (_round_money(line_value_total) if kind == "money" else line_value_total),
+                })
+
+                # Roll up quantity computations across the whole estimate.
+                if kind == "quantity":
+                    bucket = quantity_totals.setdefault(comp["key"], {
+                        "key": comp.get("key"), "label": comp.get("label"),
+                        "unit": comp.get("unit"), "total": 0.0,
+                    })
+                    bucket["total"] = round(bucket["total"] + (numeric * qty), 4)
+
+            unit_amount = _round_money(per_unit_money)
+            line_total = _round_money(per_unit_money * qty)
             subtotal += line_total
 
             priced_lines.append({
                 "line_def_key": line_key,
                 "name": line_def.get("name"),
                 "label": item.label,
-                "quantity": float(item.quantity),
+                "quantity": qty,
                 "field_values": item.field_values,
-                "unit_amount": _round_money(unit_amount),
+                "unit_amount": unit_amount,
                 "computed_amount": line_total,
+                "computed_values": computed_values,
             })
 
         subtotal = _round_money(subtotal)
@@ -139,6 +184,7 @@ class EstimatesService:
             "grand_total": grand_total,
             "currency": modifiers.get("currency"),
             "valid_days": int(modifiers.get("valid_days", 30) or 0),
+            "quantity_totals": list(quantity_totals.values()),
         }
 
     @staticmethod
@@ -176,6 +222,7 @@ class EstimatesService:
         for r in rows:
             d = dict(r)
             d["field_values"] = _parse_json(d.get("field_values"), {})
+            d["computed_values"] = _parse_json(d.get("computed_values"), [])
             items.append(EstimateItemReadBase(
                 id=d["id"],
                 estimate_id=d["estimate_id"],
@@ -186,12 +233,14 @@ class EstimatesService:
                 field_values=d["field_values"],
                 unit_amount=float(d.get("unit_amount") or 0.0),
                 computed_amount=float(d.get("computed_amount") or 0.0),
+                computed_values=d["computed_values"],
             ))
         return items
 
     @staticmethod
     def _hydrate_estimate(cursor, row: dict, tenant_id: str) -> dict:
         d = dict(row)
+        d["quantity_totals"] = _parse_json(d.get("quantity_totals"), [])
         d["items"] = EstimatesService._load_items(cursor, d["id"], tenant_id)
         return d
 
@@ -268,9 +317,9 @@ class EstimatesService:
                      template_id, template_version, template_snapshot,
                      customer_id, title, notes, status, currency,
                      subtotal, markup_amount, discount_amount, tax_amount, grand_total,
-                     valid_until, delete_status, cdate, ctime, cdatetime, created_by)
+                     quantity_totals, valid_until, delete_status, cdate, ctime, cdatetime, created_by)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING *""",
                     (
                         estimate_id, tenant_id, org_id, bus_id, loc_id, estimate_number,
@@ -278,6 +327,7 @@ class EstimatesService:
                         data.customer_id, data.title, data.notes, "DRAFT", priced["currency"],
                         priced["subtotal"], priced["markup_amount"], priced["discount_amount"],
                         priced["tax_amount"], priced["grand_total"],
+                        json.dumps(priced["quantity_totals"]),
                         valid_until, "NOT_DELETED", cdate, ctime, cdatetime, created_by,
                     ),
                 )
@@ -325,13 +375,13 @@ class EstimatesService:
             cursor.execute(
                 f"""INSERT INTO {db_settings.MSG_ESTIMATE_ITEMS_TABLE}
                 (id, tenant_id, org_id, bus_id, loc_id, estimate_id, line_def_key,
-                 name, label, quantity, field_values, unit_amount, computed_amount,
+                 name, label, quantity, field_values, unit_amount, computed_amount, computed_values,
                  cdate, ctime, cdatetime, created_by)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     item_id, tenant_id, org_id, bus_id, loc_id, estimate_id, line["line_def_key"],
                     line["name"], line["label"], line["quantity"], json.dumps(line["field_values"]),
-                    line["unit_amount"], line["computed_amount"],
+                    line["unit_amount"], line["computed_amount"], json.dumps(line.get("computed_values", [])),
                     cdate, ctime, cdatetime, created_by,
                 ),
             )
@@ -462,11 +512,12 @@ class EstimatesService:
 
                     set_fields += [
                         "subtotal = %s", "markup_amount = %s", "discount_amount = %s",
-                        "tax_amount = %s", "grand_total = %s", "currency = %s",
+                        "tax_amount = %s", "grand_total = %s", "currency = %s", "quantity_totals = %s",
                     ]
                     params += [
                         priced["subtotal"], priced["markup_amount"], priced["discount_amount"],
                         priced["tax_amount"], priced["grand_total"], priced["currency"],
+                        json.dumps(priced["quantity_totals"]),
                     ]
 
                     cursor.execute(

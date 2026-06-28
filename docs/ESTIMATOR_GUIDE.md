@@ -20,32 +20,62 @@ A template holds `line_item_defs` (JSONB) and `modifiers` (JSONB).
 - **Line item def** — a kind of thing you charge for (a "Window", "Labour"). Has:
   - `key` — unique key, used as the formula namespace (e.g. `window`)
   - `fields` — the inputs the estimator captures on site
-  - `formula` — arithmetic over field keys that prices **one unit**
+  - `computations` — one or more **named, ordered** computed values (see below).
+    A single `formula` string is also accepted as a shortcut and is auto-wrapped
+    into one `money` computation.
 - **Field** — one input with a `data_type`:
   - `number` / `dimension` → numeric variable under its `key`
   - `boolean` → `1.0` / `0.0` under its `key`
   - `select` → the chosen value under `key`, **and** the chosen option's `rate`
     under `<key>_rate`
-  - `text` → not exposed to the formula
+  - `text` → the raw text under its `key` (usable in `==` / `!=` only)
 - **Modifiers** — `markup_percent`, `discount_percent`, `tax_percent`,
   `min_charge`, `valid_days`, `currency`.
+
+### Computations (multiple named outputs)
+
+A line item runs an **ordered list** of computations. Each has a `key`, `label`,
+`formula`, optional `unit`, and a `kind`:
+
+| `kind` | Meaning |
+|---|---|
+| `money` | adds to the line price (and the estimate's money total). A line needs ≥1. |
+| `quantity` | rolled up into its own estimate-wide total by `key` (e.g. total yards) — never money |
+| `display` | just shown on the line, not totalled anywhere |
+
+Each computation can reference the fields **and any computation defined above it**,
+so they chain: `yards` → `material_cost = yards * price_per_yard` → `line`. Order
+matters; referencing a not-yet-defined key returns a clean validation error.
 
 ### Formula engine
 
 Formulas are evaluated by `src/utils/formula_evaluator.py` — an AST-walking
-**safe evaluator** (no `eval`/`exec`). Allowed: `+ - * / // % **`, parentheses,
-and helpers `min, max, round, abs, ceil, floor, sqrt, area, perimeter`. Anything
-else (attribute access, unknown names/functions) is rejected at template-create
+**safe evaluator** (no `eval`/`exec`). Supported:
+
+- arithmetic: `+ - * / // % **`, parentheses, unary `-`
+- comparisons: `> >= < <= == !=` (`==`/`!=` also work on text; chained allowed)
+- logic: `and` · `or` · `not`
+- conditional: `ifelse(condition, value_if_true, value_if_false)` (and native `a if c else b`)
+- functions: `min max round abs ceil floor sqrt area perimeter`
+
+Comparisons/logic evaluate to `1.0`/`0.0`. Anything else (attribute access,
+comprehensions, lambdas, unknown names/functions) is rejected at template-create
 time and at pricing time.
 
 ```
-height * width * fabric_rate + labor + lining * 50
+ifelse(num_windows >= 5, material_cost * 0.9, material_cost)
+ifelse(fabric == 'velvet', 90, 50)
 ```
 
 ## Pricing math
 
-For each line: `unit_amount = formula(field_values)`, `line_total = unit_amount × quantity`.
-Then:
+For each line, computations run top-to-bottom (each feeding the next):
+- `unit_amount` = Σ of the `money` computations (per unit)
+- `line_total` = `unit_amount × quantity`
+- every `quantity` computation is summed across all lines into `quantity_totals`
+  (e.g. total yards), kept separate from money.
+
+Then the modifiers apply to the money side:
 
 ```
 subtotal        = Σ line_total
@@ -54,6 +84,9 @@ discount_amount = (subtotal + markup) × discount_percent%
 tax_amount      = (subtotal + markup − discount) × tax_percent%
 grand_total     = max(subtotal + markup − discount + tax, min_charge)
 ```
+
+Each estimate item stores its full breakdown in `computed_values` (JSONB); the
+estimate stores `quantity_totals` (JSONB).
 
 ## Versioning / snapshot
 
