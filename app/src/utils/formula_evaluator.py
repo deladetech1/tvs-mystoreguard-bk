@@ -72,6 +72,8 @@ _FUNCTIONS = {
     "ceil": lambda x: float(math.ceil(_num(x))),
     "floor": lambda x: float(math.floor(_num(x))),
     "sqrt": lambda x: math.sqrt(_num(x)),
+    # round UP to the nearest `step` (e.g. fabric sold in half-yards: roundup_to(7.2, 0.5) -> 7.5)
+    "roundup_to": lambda x, step: (math.ceil(_num(x) / _num(step)) * _num(step)) if _num(step) != 0 else _num(x),
     "area": _area,
     "perimeter": _perimeter,
 }
