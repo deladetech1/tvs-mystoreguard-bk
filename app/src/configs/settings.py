@@ -207,6 +207,11 @@ class Settings:
     MSG_AFFILIATE_REFERRALS_TABLE = os.getenv("MSG_AFFILIATE_REFERRALS_TABLE", "mystoreguard.msg_affiliate_referrals")
     MSG_AFFILIATE_COMMISSIONS_TABLE = os.getenv("MSG_AFFILIATE_COMMISSIONS_TABLE", "mystoreguard.msg_affiliate_commissions")
 
+    # Estimator tables
+    MSG_ESTIMATE_TEMPLATES_TABLE = os.getenv("MSG_ESTIMATE_TEMPLATES_TABLE", "mystoreguard.msg_estimate_templates")
+    MSG_ESTIMATES_TABLE = os.getenv("MSG_ESTIMATES_TABLE", "mystoreguard.msg_estimates")
+    MSG_ESTIMATE_ITEMS_TABLE = os.getenv("MSG_ESTIMATE_ITEMS_TABLE", "mystoreguard.msg_estimate_items")
+
     @property
     def database_url(self) -> str:
         if self.DATABASE_URL:

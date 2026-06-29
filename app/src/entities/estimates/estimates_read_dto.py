@@ -1,0 +1,153 @@
+from typing import Optional, List, Any, Dict
+from datetime import datetime, date
+from pydantic import BaseModel, Field
+
+
+# =====================================================
+# ESTIMATE ITEM READ
+# =====================================================
+
+class ComputedValueRead(BaseModel):
+    """One computed value on a line (yards, material cost, …) and its rolled-up total."""
+    key: Optional[str] = None
+    label: Optional[str] = None
+    unit: Optional[str] = None
+    kind: str = "money"           # money | quantity | display
+    value: Any = None             # per-unit result (number, or text for display)
+    total: Optional[float] = None  # value × quantity (None for display-only)
+
+
+class EstimateItemReadBase(BaseModel):
+    id: str
+    estimate_id: str
+    line_def_key: str
+    name: Optional[str] = None
+    label: Optional[str] = None
+    quantity: float = 1.0
+    field_values: Dict[str, Any] = Field(default_factory=dict)
+    unit_amount: float = 0.0
+    computed_amount: float = 0.0
+    computed_values: List[ComputedValueRead] = Field(default_factory=list)
+
+
+# =====================================================
+# ESTIMATE READ
+# =====================================================
+
+class QuantityTotalRead(BaseModel):
+    """An estimate-wide rollup of a `quantity` computation (e.g. total yards)."""
+    key: Optional[str] = None
+    label: Optional[str] = None
+    unit: Optional[str] = None
+    total: float = 0.0
+
+
+class EstimateReadBase(BaseModel):
+    id: str
+    tenant_id: str
+    org_id: str
+    bus_id: str
+    loc_id: Optional[str] = None
+    estimate_number: Optional[str] = None
+    template_id: str
+    template_version: int = 1
+    customer_id: Optional[str] = None
+    customer_name: Optional[str] = None
+    title: Optional[str] = None
+    notes: Optional[str] = None
+    status: str = "DRAFT"
+    currency: Optional[str] = None
+    subtotal: float = 0.0
+    markup_amount: float = 0.0
+    discount_amount: float = 0.0
+    tax_amount: float = 0.0
+    grand_total: float = 0.0
+    quantity_totals: List[QuantityTotalRead] = Field(default_factory=list)
+    valid_until: Optional[date] = None
+    items: List[EstimateItemReadBase] = Field(default_factory=list)
+    delete_status: str = "NOT_DELETED"
+    cdate: Optional[str] = None
+    ctime: Optional[str] = None
+    cdatetime: Optional[datetime] = None
+    created_by: Optional[str] = None
+    updated_by: Optional[str] = None
+    deleted_by: Optional[str] = None
+
+
+class CreateEstimateControllerReadDto(EstimateReadBase):
+    pass
+
+
+class CreateEstimateServiceReadDto(EstimateReadBase):
+    pass
+
+
+class UpdateEstimateControllerReadDto(EstimateReadBase):
+    pass
+
+
+class UpdateEstimateServiceReadDto(EstimateReadBase):
+    pass
+
+
+class GetEstimateControllerReadDto(EstimateReadBase):
+    pass
+
+
+class GetEstimateServiceReadDto(EstimateReadBase):
+    pass
+
+
+class GetEstimateListControllerReadDto(EstimateReadBase):
+    pass
+
+
+class GetEstimateListServiceReadDto(EstimateReadBase):
+    pass
+
+
+class UpdateEstimateStatusControllerReadDto(EstimateReadBase):
+    pass
+
+
+class UpdateEstimateStatusServiceReadDto(EstimateReadBase):
+    pass
+
+
+class DeleteEstimateReadBase(BaseModel):
+    estimate_id: str
+    message: str
+
+
+class DeleteEstimateControllerReadDto(DeleteEstimateReadBase):
+    pass
+
+
+class DeleteEstimateServiceReadDto(DeleteEstimateReadBase):
+    pass
+
+
+# =====================================================
+# ESTIMATE STATISTICS READ DTOs
+# =====================================================
+
+class EstimateStatisticsReadBase(BaseModel):
+    """Counts and value totals for estimates in the current org/business."""
+    total_estimates: int = Field(default=0, description="All non-deleted estimates")
+    draft: int = Field(default=0, description="Estimates in DRAFT")
+    sent: int = Field(default=0, description="Estimates in SENT")
+    accepted: int = Field(default=0, description="Estimates in ACCEPTED")
+    rejected: int = Field(default=0, description="Estimates in REJECTED")
+    expired: int = Field(default=0, description="Estimates in EXPIRED")
+    converted: int = Field(default=0, description="Estimates in CONVERTED")
+    total_value: float = Field(default=0.0, description="Sum of grand_total across all non-deleted estimates")
+    accepted_value: float = Field(default=0.0, description="Sum of grand_total for ACCEPTED estimates")
+    pipeline_value: float = Field(default=0.0, description="Sum of grand_total for DRAFT + SENT (open) estimates")
+
+
+class GetEstimateStatisticsControllerReadDto(EstimateStatisticsReadBase):
+    pass
+
+
+class GetEstimateStatisticsServiceReadDto(EstimateStatisticsReadBase):
+    pass

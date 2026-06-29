@@ -4,6 +4,7 @@ from src.entities.stock_takes.stock_takes_base import (
     StockTakeBase,
     StockTakeItemCountBase,
     ResolutionStatus,
+    LocationType,
 )
 
 
@@ -62,4 +63,46 @@ class ResolveStockTakeItemControllerWriteDto(ResolveStockTakeItemWriteBase):
 
 class ResolveStockTakeItemServiceWriteDto(ResolveStockTakeItemWriteBase):
     """Service DTO for resolving a stock take item."""
+    pass
+
+
+# =====================================================
+# EDIT STOCK TAKE WRITE DTOs (single full-replace PUT)
+# =====================================================
+
+class EditStockTakeItemWrite(StockTakeItemCountBase):
+    """A line in an edit payload.
+
+    Carry the line's `id` to keep/update an existing line; omit `id` to add a new
+    line. Stored lines whose `id` is absent from the payload are removed. `product_id`
+    cannot change on an existing line — to swap a product, drop the old line and add
+    a new one.
+    """
+    id: Optional[str] = Field(
+        None, description="Existing line id to update; omit to add a new line"
+    )
+
+
+class EditStockTakeWriteBase(BaseModel):
+    """Full edit of a DRAFT stock take: header fields plus the desired final line set.
+
+    Changing location_type re-snapshots every line's system quantity against the new
+    location's on-hand table and recomputes variances.
+    """
+    location_type: Optional[LocationType] = Field(
+        None, description="Move the count between STORE and WAREHOUSE (re-snapshots all lines)"
+    )
+    description: Optional[str] = Field(None, description="Updated description / reason for this stock take")
+    items: List[EditStockTakeItemWrite] = Field(
+        ..., min_length=1, description="The full desired set of counted lines after the edit"
+    )
+
+
+class EditStockTakeControllerWriteDto(EditStockTakeWriteBase):
+    """Controller DTO for editing a stock take."""
+    pass
+
+
+class EditStockTakeServiceWriteDto(EditStockTakeWriteBase):
+    """Service DTO for editing a stock take."""
     pass

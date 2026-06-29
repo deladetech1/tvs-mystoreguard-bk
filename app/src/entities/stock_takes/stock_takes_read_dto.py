@@ -101,6 +101,20 @@ class CompleteStockTakeControllerReadDto(StockTakeReadDto):
 
 
 # =====================================================
+# EDIT READ DTOs
+# =====================================================
+
+class EditStockTakeServiceReadDto(StockTakeReadDto):
+    """Full stock take returned after an edit."""
+    pass
+
+
+class EditStockTakeControllerReadDto(StockTakeReadDto):
+    """Full stock take returned after an edit."""
+    pass
+
+
+# =====================================================
 # STATISTICS READ DTOs
 # =====================================================
 
