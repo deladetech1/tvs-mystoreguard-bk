@@ -1,11 +1,16 @@
-"""Collaboration layer for tasks: comments, @mentions and file attachments.
+"""Collaboration layer for task STEPS: comments, @mentions and file attachments.
+
+Each step is the clickable "ticket": you open a step to see its discussion and files.
 
 - Comments are editable by their author and HARD-deleted (no soft-delete column).
 - Attachments reuse the file manager (Azure Blob + msg_document_paths): files of any
   format are uploaded first via the file manager, then linked here by `document_id`.
-  An attachment is task-level (comment_id NULL) or comment-level (comment_id set).
+  An attachment is step-level (comment_id NULL) or comment-level (comment_id set).
 - @Mentions tag any active user in the tenant; each mention enqueues a MENTIONED task
-  notification, which the notifications worker delivers by email.
+  notification (carrying the step), which the notifications worker delivers by email.
+
+task_id is stored alongside step_id for scoping and so notifications can reference the
+parent task; it is always derived from the step, never supplied by the caller.
 """
 from typing import List, Optional, Tuple
 
@@ -15,13 +20,13 @@ from src.entities.tasks.tasks_read_dto import (
     AttachmentRead,
     CommentServiceReadDto,
     CommentsListServiceReadDto,
-    TaskAttachmentsServiceReadDto,
+    StepAttachmentsServiceReadDto,
     DeletedServiceReadDto,
 )
 from src.entities.tasks.tasks_write_dto import (
     CreateCommentServiceWriteDto,
     UpdateCommentServiceWriteDto,
-    AddTaskAttachmentsWriteDto,
+    AddStepAttachmentsWriteDto,
 )
 from src.entities.filemanager.fmg_service import FileUploadService
 from src.entities.filemanager.fmg_write_dto import FileDeleteServiceWriteDto
@@ -37,21 +42,22 @@ T = db_settings
 
 
 class TaskCommentsService:
-    """Comments, mentions and attachments for tasks."""
+    """Comments, mentions and attachments for task steps."""
 
     # =================================================================
     # INTERNAL HELPERS
     # =================================================================
 
     @staticmethod
-    def _task_exists(cursor, tenant_id, org_id, bus_id, task_id) -> bool:
+    def _step_task_id(cursor, tenant_id, org_id, bus_id, step_id) -> Optional[str]:
+        """Return the step's parent task_id if the step exists in this business, else None."""
         cursor.execute(
-            f"""SELECT 1 FROM {T.MSG_TASKS_TABLE}
-            WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s
-            AND delete_status = 'NOT_DELETED' LIMIT 1""",
-            (task_id, tenant_id, org_id, bus_id),
+            f"""SELECT task_id FROM {T.MSG_TASK_STEPS_TABLE}
+            WHERE id = %s AND tenant_id = %s AND org_id = %s AND bus_id = %s LIMIT 1""",
+            (step_id, tenant_id, org_id, bus_id),
         )
-        return cursor.fetchone() is not None
+        row = cursor.fetchone()
+        return row["task_id"] if row else None
 
     @staticmethod
     def _valid_user_ids(cursor, tenant_id, user_ids: List[str]) -> List[str]:
@@ -84,9 +90,9 @@ class TaskCommentsService:
         return [r["id"] for r in cursor.fetchall()]
 
     @staticmethod
-    def _link_attachments(cursor, tenant_id, org_id, bus_id, task_id, comment_id,
+    def _link_attachments(cursor, tenant_id, org_id, bus_id, step_id, task_id, comment_id,
                           document_ids: List[str], created_by) -> None:
-        """Insert junction rows linking valid documents to a task (and optionally a comment)."""
+        """Insert junction rows linking valid documents to a step (and optionally a comment)."""
         valid = TaskCommentsService._valid_document_ids(cursor, tenant_id, org_id, bus_id, document_ids)
         if not valid:
             return
@@ -94,39 +100,39 @@ class TaskCommentsService:
         for doc_id in valid:
             cursor.execute(
                 f"""INSERT INTO {T.MSG_TASK_ATTACHMENTS_TABLE}
-                (id, tenant_id, org_id, bus_id, task_id, comment_id, document_id,
+                (id, tenant_id, org_id, bus_id, step_id, task_id, comment_id, document_id,
                  is_active, delete_status, cdate, ctime, cdatetime, created_by)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, true, 'NOT_DELETED', %s, %s, %s, %s)""",
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, true, 'NOT_DELETED', %s, %s, %s, %s)""",
                 (Helper.generate_unique_identifier(prefix="tat"), tenant_id, org_id, bus_id,
-                 task_id, comment_id, doc_id, ts["cdate"], ts["ctime"], ts["cdatetime"], created_by),
+                 step_id, task_id, comment_id, doc_id, ts["cdate"], ts["ctime"], ts["cdatetime"], created_by),
             )
 
     @staticmethod
-    def _add_mentions(cursor, tenant_id, org_id, bus_id, task_id, comment_id,
+    def _add_mentions(cursor, tenant_id, org_id, bus_id, step_id, task_id, comment_id,
                       user_ids: List[str], created_by) -> List[str]:
-        """Insert mention rows for valid users (deduped, skipping the author). Returns ids inserted."""
+        """Insert mention rows for valid users (deduped). Returns the user ids inserted."""
         valid = TaskCommentsService._valid_user_ids(cursor, tenant_id, user_ids)
         added = []
         for uid in valid:
             cursor.execute(
                 f"""INSERT INTO {T.MSG_TASK_COMMENT_MENTIONS_TABLE}
-                (id, tenant_id, org_id, bus_id, comment_id, task_id, mentioned_user_id, created_by)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                (id, tenant_id, org_id, bus_id, comment_id, step_id, task_id, mentioned_user_id, created_by)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (tenant_id, org_id, bus_id, comment_id, mentioned_user_id) DO NOTHING""",
                 (Helper.generate_unique_identifier(prefix="tmn"), tenant_id, org_id, bus_id,
-                 comment_id, task_id, uid, created_by),
+                 comment_id, step_id, task_id, uid, created_by),
             )
             added.append(uid)
         return added
 
     @staticmethod
-    def _notify_mentions(cursor, tenant_id, org_id, bus_id, task_id, comment_id,
+    def _notify_mentions(cursor, tenant_id, org_id, bus_id, step_id, task_id,
                          user_ids: List[str], actor_id) -> None:
-        """Enqueue MENTIONED notifications for everyone tagged except the author."""
+        """Enqueue MENTIONED notifications (on the step) for everyone tagged except the author."""
         recipients = [u for u in dict.fromkeys(user_ids) if u and u != actor_id]
         if recipients:
             TasksService._enqueue(
-                cursor, tenant_id, org_id, bus_id, task_id, None, recipients, "MENTIONED", actor_id)
+                cursor, tenant_id, org_id, bus_id, task_id, step_id, recipients, "MENTIONED", actor_id)
 
     @staticmethod
     def _mentions_for(cursor, tenant_id, comment_ids: List[str]) -> dict:
@@ -149,11 +155,11 @@ class TaskCommentsService:
         return out
 
     @staticmethod
-    def _attachments_for(cursor, tenant_id, org_id, bus_id, *, task_id=None, comment_ids=None) -> dict:
+    def _attachments_for(cursor, tenant_id, org_id, bus_id, *, step_id=None, comment_ids=None) -> dict:
         """Map key -> [AttachmentRead] with presigned URLs.
 
         When comment_ids is given, keys are comment ids (comment-level attachments).
-        When task_id is given (comment_ids None), returns task-level attachments keyed by task_id.
+        When step_id is given (comment_ids None), returns step-level attachments keyed by step_id.
         """
         where = ["a.tenant_id = %s", "a.org_id = %s", "a.bus_id = %s",
                  "a.delete_status = 'NOT_DELETED'", "a.is_active = true"]
@@ -165,11 +171,11 @@ class TaskCommentsService:
             where.append(f"a.comment_id IN ({placeholders})")
             params.extend(comment_ids)
         else:
-            where.append("a.task_id = %s")
+            where.append("a.step_id = %s")
             where.append("a.comment_id IS NULL")
-            params.append(task_id)
+            params.append(step_id)
         cursor.execute(
-            f"""SELECT a.id, a.comment_id, a.task_id, a.document_id, a.created_by, a.cdatetime,
+            f"""SELECT a.id, a.comment_id, a.step_id, a.document_id, a.created_by, a.cdatetime,
                        d.document_path, d.file_name, d.description
             FROM {T.MSG_TASK_ATTACHMENTS_TABLE} a
             INNER JOIN {T.MSG_DOCUMENT_PATHS_TABLE} d
@@ -187,7 +193,7 @@ class TaskCommentsService:
                 id=r["id"], document_id=r["document_id"], file_name=r.get("file_name"),
                 description=r.get("description"), presigned_url=url,
                 created_by=r.get("created_by"), cdatetime=r.get("cdatetime"))
-            key = r["comment_id"] if comment_ids is not None else r["task_id"]
+            key = r["comment_id"] if comment_ids is not None else r["step_id"]
             out.setdefault(key, []).append(item)
         return out
 
@@ -198,15 +204,16 @@ class TaskCommentsService:
         attachments = TaskCommentsService._attachments_for(
             cursor, tenant_id, org_id, bus_id, comment_ids=[cid]).get(cid, [])
         return CommentServiceReadDto(
-            id=cid, task_id=comment_row["task_id"], body=comment_row["body"],
-            created_by=comment_row.get("created_by"), author_name=comment_row.get("author_name"),
-            edited_at=comment_row.get("edited_at"), cdatetime=comment_row.get("cdatetime"),
-            mentions=mentions, attachments=attachments)
+            id=cid, step_id=comment_row["step_id"], task_id=comment_row.get("task_id"),
+            body=comment_row["body"], created_by=comment_row.get("created_by"),
+            author_name=comment_row.get("author_name"), edited_at=comment_row.get("edited_at"),
+            cdatetime=comment_row.get("cdatetime"), mentions=mentions, attachments=attachments)
 
     @staticmethod
     def _load_comment(cursor, tenant_id, org_id, bus_id, comment_id) -> Optional[dict]:
         cursor.execute(
-            f"""SELECT c.id, c.task_id, c.body, c.edited_at, c.cdatetime, c.created_by, u.fullname AS author_name
+            f"""SELECT c.id, c.step_id, c.task_id, c.body, c.edited_at, c.cdatetime, c.created_by,
+                       u.fullname AS author_name
             FROM {T.MSG_TASK_COMMENTS_TABLE} c
             LEFT JOIN {T.CORE_PLATFORM_USERS_TABLE} u
                 ON c.created_by = u.id AND c.tenant_id = u.tenant_id
@@ -252,34 +259,36 @@ class TaskCommentsService:
         return [(r["document_id"], r.get("loc_id")) for r in cursor.fetchall()]
 
     # =================================================================
-    # PUBLIC: comments
+    # PUBLIC: comments (anchored on a step)
     # =================================================================
 
     @staticmethod
-    def create_comment(data: CreateCommentServiceWriteDto, task_id, tenant_id, org_id, bus_id, created_by
+    def create_comment(data: CreateCommentServiceWriteDto, step_id, tenant_id, org_id, bus_id, created_by
                        ) -> Respons[CommentServiceReadDto]:
         try:
             with DatabaseManager.transaction() as cursor:
-                if not TaskCommentsService._task_exists(cursor, tenant_id, org_id, bus_id, task_id):
-                    return Respons(success=False, detail="Task not found", error="NOT_FOUND")
+                task_id = TaskCommentsService._step_task_id(cursor, tenant_id, org_id, bus_id, step_id)
+                if not task_id:
+                    return Respons(success=False, detail="Step not found", error="NOT_FOUND")
 
                 comment_id = Helper.generate_unique_identifier(prefix="tcm")
                 ts = Helper.current_date_time()
                 cursor.execute(
                     f"""INSERT INTO {T.MSG_TASK_COMMENTS_TABLE}
-                    (id, tenant_id, org_id, bus_id, task_id, body, cdate, ctime, cdatetime, created_by)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                    (comment_id, tenant_id, org_id, bus_id, task_id, data.body,
+                    (id, tenant_id, org_id, bus_id, step_id, task_id, body, cdate, ctime, cdatetime, created_by)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (comment_id, tenant_id, org_id, bus_id, step_id, task_id, data.body,
                      ts["cdate"], ts["ctime"], ts["cdatetime"], created_by),
                 )
 
                 TaskCommentsService._link_attachments(
-                    cursor, tenant_id, org_id, bus_id, task_id, comment_id, data.document_ids, created_by)
+                    cursor, tenant_id, org_id, bus_id, step_id, task_id, comment_id, data.document_ids, created_by)
 
                 added = TaskCommentsService._add_mentions(
-                    cursor, tenant_id, org_id, bus_id, task_id, comment_id, data.mentioned_user_ids, created_by)
+                    cursor, tenant_id, org_id, bus_id, step_id, task_id, comment_id,
+                    data.mentioned_user_ids, created_by)
                 TaskCommentsService._notify_mentions(
-                    cursor, tenant_id, org_id, bus_id, task_id, comment_id, added, created_by)
+                    cursor, tenant_id, org_id, bus_id, step_id, task_id, added, created_by)
 
                 row = TaskCommentsService._load_comment(cursor, tenant_id, org_id, bus_id, comment_id)
                 dto = TaskCommentsService._build_comment(cursor, tenant_id, org_id, bus_id, row)
@@ -289,21 +298,22 @@ class TaskCommentsService:
             return Respons(success=False, detail=f"Failed to add comment: {str(e)}", error="INTERNAL_ERROR")
 
     @staticmethod
-    def list_comments(task_id, tenant_id, org_id, bus_id) -> Respons[CommentsListServiceReadDto]:
+    def list_comments(step_id, tenant_id, org_id, bus_id) -> Respons[CommentsListServiceReadDto]:
         try:
             with DatabaseManager.transaction() as cursor:
-                if not TaskCommentsService._task_exists(cursor, tenant_id, org_id, bus_id, task_id):
-                    return Respons(success=False, detail="Task not found", error="NOT_FOUND")
+                task_id = TaskCommentsService._step_task_id(cursor, tenant_id, org_id, bus_id, step_id)
+                if not task_id:
+                    return Respons(success=False, detail="Step not found", error="NOT_FOUND")
 
                 cursor.execute(
-                    f"""SELECT c.id, c.task_id, c.body, c.edited_at, c.cdatetime, c.created_by,
+                    f"""SELECT c.id, c.step_id, c.task_id, c.body, c.edited_at, c.cdatetime, c.created_by,
                                u.fullname AS author_name
                     FROM {T.MSG_TASK_COMMENTS_TABLE} c
                     LEFT JOIN {T.CORE_PLATFORM_USERS_TABLE} u
                         ON c.created_by = u.id AND c.tenant_id = u.tenant_id
-                    WHERE c.tenant_id = %s AND c.org_id = %s AND c.bus_id = %s AND c.task_id = %s
+                    WHERE c.tenant_id = %s AND c.org_id = %s AND c.bus_id = %s AND c.step_id = %s
                     ORDER BY c.cdatetime DESC""",
-                    (tenant_id, org_id, bus_id, task_id),
+                    (tenant_id, org_id, bus_id, step_id),
                 )
                 rows = [dict(r) for r in cursor.fetchall()]
                 ids = [r["id"] for r in rows]
@@ -312,13 +322,13 @@ class TaskCommentsService:
                     cursor, tenant_id, org_id, bus_id, comment_ids=ids)
                 comments = [
                     CommentServiceReadDto(
-                        id=r["id"], task_id=r["task_id"], body=r["body"], created_by=r.get("created_by"),
-                        author_name=r.get("author_name"), edited_at=r.get("edited_at"),
-                        cdatetime=r.get("cdatetime"), mentions=mentions.get(r["id"], []),
-                        attachments=attachments.get(r["id"], []))
+                        id=r["id"], step_id=r["step_id"], task_id=r.get("task_id"), body=r["body"],
+                        created_by=r.get("created_by"), author_name=r.get("author_name"),
+                        edited_at=r.get("edited_at"), cdatetime=r.get("cdatetime"),
+                        mentions=mentions.get(r["id"], []), attachments=attachments.get(r["id"], []))
                     for r in rows
                 ]
-                dto = CommentsListServiceReadDto(task_id=task_id, comments=comments)
+                dto = CommentsListServiceReadDto(step_id=step_id, task_id=task_id, comments=comments)
                 return Respons(success=True, detail="Comments retrieved", data=[dto])
         except Exception as e:
             logger.error(f"Error listing comments: {str(e)}", exc_info=True)
@@ -336,7 +346,8 @@ class TaskCommentsService:
                 if comment.get("created_by") != user_id:
                     return Respons(success=False, detail="Only the author can edit this comment", error="FORBIDDEN")
 
-                task_id = comment["task_id"]
+                step_id = comment["step_id"]
+                task_id = comment.get("task_id")
 
                 if data.body is not None:
                     cursor.execute(
@@ -359,10 +370,11 @@ class TaskCommentsService:
                         (tenant_id, comment_id),
                     )
                     added = TaskCommentsService._add_mentions(
-                        cursor, tenant_id, org_id, bus_id, task_id, comment_id, data.mentioned_user_ids, user_id)
+                        cursor, tenant_id, org_id, bus_id, step_id, task_id, comment_id,
+                        data.mentioned_user_ids, user_id)
                     newly = [u for u in added if u not in existing]
                     TaskCommentsService._notify_mentions(
-                        cursor, tenant_id, org_id, bus_id, task_id, comment_id, newly, user_id)
+                        cursor, tenant_id, org_id, bus_id, step_id, task_id, newly, user_id)
 
                 if data.document_ids is not None:
                     # documents being unlinked and referenced nowhere else become orphans to purge
@@ -373,8 +385,7 @@ class TaskCommentsService:
                         (tenant_id, org_id, bus_id, comment_id),
                     )
                     TaskCommentsService._link_attachments(
-                        cursor, tenant_id, org_id, bus_id, task_id, comment_id, data.document_ids, user_id)
-                    # keep only documents that are not being re-linked
+                        cursor, tenant_id, org_id, bus_id, step_id, task_id, comment_id, data.document_ids, user_id)
                     keep = set(TaskCommentsService._valid_document_ids(
                         cursor, tenant_id, org_id, bus_id, data.document_ids))
                     purge = [d for d in purge if d[0] not in keep]
@@ -416,38 +427,40 @@ class TaskCommentsService:
                        data=[DeletedServiceReadDto(id=comment_id, message="Comment deleted")])
 
     # =================================================================
-    # PUBLIC: task-level attachments
+    # PUBLIC: step-level attachments
     # =================================================================
 
     @staticmethod
-    def add_task_attachments(data: AddTaskAttachmentsWriteDto, task_id, tenant_id, org_id, bus_id, created_by
-                            ) -> Respons[TaskAttachmentsServiceReadDto]:
+    def add_step_attachments(data: AddStepAttachmentsWriteDto, step_id, tenant_id, org_id, bus_id, created_by
+                            ) -> Respons[StepAttachmentsServiceReadDto]:
         try:
             with DatabaseManager.transaction() as cursor:
-                if not TaskCommentsService._task_exists(cursor, tenant_id, org_id, bus_id, task_id):
-                    return Respons(success=False, detail="Task not found", error="NOT_FOUND")
+                task_id = TaskCommentsService._step_task_id(cursor, tenant_id, org_id, bus_id, step_id)
+                if not task_id:
+                    return Respons(success=False, detail="Step not found", error="NOT_FOUND")
                 TaskCommentsService._link_attachments(
-                    cursor, tenant_id, org_id, bus_id, task_id, None, data.document_ids, created_by)
+                    cursor, tenant_id, org_id, bus_id, step_id, task_id, None, data.document_ids, created_by)
                 attachments = TaskCommentsService._attachments_for(
-                    cursor, tenant_id, org_id, bus_id, task_id=task_id).get(task_id, [])
-                dto = TaskAttachmentsServiceReadDto(task_id=task_id, attachments=attachments)
+                    cursor, tenant_id, org_id, bus_id, step_id=step_id).get(step_id, [])
+                dto = StepAttachmentsServiceReadDto(step_id=step_id, task_id=task_id, attachments=attachments)
                 return Respons(success=True, detail="Attachments added", data=[dto])
         except Exception as e:
-            logger.error(f"Error adding task attachments: {str(e)}", exc_info=True)
+            logger.error(f"Error adding step attachments: {str(e)}", exc_info=True)
             return Respons(success=False, detail=f"Failed to add attachments: {str(e)}", error="INTERNAL_ERROR")
 
     @staticmethod
-    def list_task_attachments(task_id, tenant_id, org_id, bus_id) -> Respons[TaskAttachmentsServiceReadDto]:
+    def list_step_attachments(step_id, tenant_id, org_id, bus_id) -> Respons[StepAttachmentsServiceReadDto]:
         try:
             with DatabaseManager.transaction() as cursor:
-                if not TaskCommentsService._task_exists(cursor, tenant_id, org_id, bus_id, task_id):
-                    return Respons(success=False, detail="Task not found", error="NOT_FOUND")
+                task_id = TaskCommentsService._step_task_id(cursor, tenant_id, org_id, bus_id, step_id)
+                if not task_id:
+                    return Respons(success=False, detail="Step not found", error="NOT_FOUND")
                 attachments = TaskCommentsService._attachments_for(
-                    cursor, tenant_id, org_id, bus_id, task_id=task_id).get(task_id, [])
-                dto = TaskAttachmentsServiceReadDto(task_id=task_id, attachments=attachments)
+                    cursor, tenant_id, org_id, bus_id, step_id=step_id).get(step_id, [])
+                dto = StepAttachmentsServiceReadDto(step_id=step_id, task_id=task_id, attachments=attachments)
                 return Respons(success=True, detail="Attachments retrieved", data=[dto])
         except Exception as e:
-            logger.error(f"Error listing task attachments: {str(e)}", exc_info=True)
+            logger.error(f"Error listing step attachments: {str(e)}", exc_info=True)
             return Respons(success=False, detail=f"Failed to list attachments: {str(e)}", error="INTERNAL_ERROR")
 
     @staticmethod

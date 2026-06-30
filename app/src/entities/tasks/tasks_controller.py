@@ -17,7 +17,7 @@ from src.entities.tasks.tasks_write_dto import (
     RemoveStepControllerWriteDto,
     CreateCommentControllerWriteDto,
     UpdateCommentControllerWriteDto,
-    AddTaskAttachmentsWriteDto,
+    AddStepAttachmentsWriteDto,
 )
 from src.entities.tasks.tasks_read_dto import (
     CreateTaskControllerReadDto,
@@ -31,7 +31,7 @@ from src.entities.tasks.tasks_read_dto import (
     TaskStatisticsControllerReadDto,
     CommentControllerReadDto,
     CommentsListControllerReadDto,
-    TaskAttachmentsControllerReadDto,
+    StepAttachmentsControllerReadDto,
     DeletedControllerReadDto,
 )
 from src.entities.shared.sh_response import Respons
@@ -281,36 +281,36 @@ def update_notification_settings(
         return TasksService.upsert_notification_settings(data, c["tenant_id"], c["org_id"], c["bus_id"], c["user_id"])
 
 
-# ---------------- comments + @mentions ----------------
+# ---------------- step comments + @mentions ----------------
 
-@tasks_router.post("/{task_id}/comments", response_model=Respons[CommentControllerReadDto])
+@tasks_router.post("/steps/{step_id}/comments", response_model=Respons[CommentControllerReadDto])
 def create_comment(
-    task_id: str,
+    step_id: str,
     data: CreateCommentControllerWriteDto,
     current_user: dict = Depends(CustomAuthService.get_current_user),
     _sub: dict = Depends(verify_subscription_active),
     org_bus: dict = Depends(get_org_bus_with_permission),
 ):
-    """Post a comment on a task; attach uploaded files and @mention users (who get emailed)."""
-    with LogContext("tasks", "create_comment", task_id=task_id):
+    """Post a comment on a step; attach uploaded files and @mention users (who get emailed)."""
+    with LogContext("tasks", "create_comment", step_id=step_id):
         _require(current_user, [UPDATE])
         c = _ctx(current_user, org_bus)
         return TaskCommentsService.create_comment(
-            data=data, task_id=task_id, tenant_id=c["tenant_id"], org_id=c["org_id"],
+            data=data, step_id=step_id, tenant_id=c["tenant_id"], org_id=c["org_id"],
             bus_id=c["bus_id"], created_by=c["user_id"])
 
 
-@tasks_router.get("/{task_id}/comments", response_model=Respons[CommentsListControllerReadDto])
+@tasks_router.get("/steps/{step_id}/comments", response_model=Respons[CommentsListControllerReadDto])
 def list_comments(
-    task_id: str,
+    step_id: str,
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus: dict = Depends(get_org_bus_with_permission),
 ):
-    """List a task's comments (newest first) with mentions and attachment URLs."""
-    with LogContext("tasks", "list_comments", task_id=task_id):
+    """List a step's comments (newest first) with mentions and attachment URLs."""
+    with LogContext("tasks", "list_comments", step_id=step_id):
         _require(current_user, [GET])
         c = _ctx(current_user, org_bus)
-        return TaskCommentsService.list_comments(task_id, c["tenant_id"], c["org_id"], c["bus_id"])
+        return TaskCommentsService.list_comments(step_id, c["tenant_id"], c["org_id"], c["bus_id"])
 
 
 @tasks_router.put("/comments/{comment_id}", response_model=Respons[CommentControllerReadDto])
@@ -347,36 +347,36 @@ def delete_comment(
             comment_id, c["tenant_id"], c["org_id"], c["bus_id"], c["user_id"], can_delete_any=can_delete_any)
 
 
-# ---------------- task-level attachments ----------------
+# ---------------- step-level attachments ----------------
 
-@tasks_router.post("/{task_id}/attachments", response_model=Respons[TaskAttachmentsControllerReadDto])
-def add_task_attachments(
-    task_id: str,
-    data: AddTaskAttachmentsWriteDto,
+@tasks_router.post("/steps/{step_id}/attachments", response_model=Respons[StepAttachmentsControllerReadDto])
+def add_step_attachments(
+    step_id: str,
+    data: AddStepAttachmentsWriteDto,
     current_user: dict = Depends(CustomAuthService.get_current_user),
     _sub: dict = Depends(verify_subscription_active),
     org_bus: dict = Depends(get_org_bus_with_permission),
 ):
-    """Attach already-uploaded documents directly to a task."""
-    with LogContext("tasks", "add_task_attachments", task_id=task_id):
+    """Attach already-uploaded documents directly to a step."""
+    with LogContext("tasks", "add_step_attachments", step_id=step_id):
         _require(current_user, [UPDATE])
         c = _ctx(current_user, org_bus)
-        return TaskCommentsService.add_task_attachments(
-            data=data, task_id=task_id, tenant_id=c["tenant_id"], org_id=c["org_id"],
+        return TaskCommentsService.add_step_attachments(
+            data=data, step_id=step_id, tenant_id=c["tenant_id"], org_id=c["org_id"],
             bus_id=c["bus_id"], created_by=c["user_id"])
 
 
-@tasks_router.get("/{task_id}/attachments", response_model=Respons[TaskAttachmentsControllerReadDto])
-def list_task_attachments(
-    task_id: str,
+@tasks_router.get("/steps/{step_id}/attachments", response_model=Respons[StepAttachmentsControllerReadDto])
+def list_step_attachments(
+    step_id: str,
     current_user: dict = Depends(CustomAuthService.get_current_user),
     org_bus: dict = Depends(get_org_bus_with_permission),
 ):
-    """List a task's direct (non-comment) attachments with download URLs."""
-    with LogContext("tasks", "list_task_attachments", task_id=task_id):
+    """List a step's direct (non-comment) attachments with download URLs."""
+    with LogContext("tasks", "list_step_attachments", step_id=step_id):
         _require(current_user, [GET])
         c = _ctx(current_user, org_bus)
-        return TaskCommentsService.list_task_attachments(task_id, c["tenant_id"], c["org_id"], c["bus_id"])
+        return TaskCommentsService.list_step_attachments(step_id, c["tenant_id"], c["org_id"], c["bus_id"])
 
 
 @tasks_router.delete("/attachments/{attachment_id}", response_model=Respons[DeletedControllerReadDto])
@@ -386,7 +386,7 @@ def delete_attachment(
     _sub: dict = Depends(verify_subscription_active),
     org_bus: dict = Depends(get_org_bus_with_permission),
 ):
-    """Remove an attachment (task- or comment-level) and its underlying file."""
+    """Remove an attachment (step- or comment-level) and its underlying file."""
     with LogContext("tasks", "delete_attachment", attachment_id=attachment_id):
         _require(current_user, [UPDATE])
         c = _ctx(current_user, org_bus)

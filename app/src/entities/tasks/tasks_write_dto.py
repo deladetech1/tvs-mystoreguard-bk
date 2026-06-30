@@ -163,6 +163,6 @@ class UpdateCommentServiceWriteDto(UpdateCommentWriteBase):
     pass
 
 
-class AddTaskAttachmentsWriteDto(BaseModel):
-    """Attach already-uploaded documents directly to a task (not tied to a comment)."""
-    document_ids: List[str] = Field(..., min_length=1, description="Document ids to attach to the task")
+class AddStepAttachmentsWriteDto(BaseModel):
+    """Attach already-uploaded documents directly to a step (not tied to a comment)."""
+    document_ids: List[str] = Field(..., min_length=1, description="Document ids to attach to the step")

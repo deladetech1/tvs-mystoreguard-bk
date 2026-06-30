@@ -194,7 +194,8 @@ class AttachmentRead(BaseModel):
 
 class CommentReadBase(BaseModel):
     id: str
-    task_id: str
+    step_id: str
+    task_id: Optional[str] = Field(None, description="Parent task of the step (for navigation)")
     body: str
     created_by: Optional[str] = None
     author_name: Optional[str] = None
@@ -213,7 +214,8 @@ class CommentServiceReadDto(CommentReadBase):
 
 
 class CommentsListReadBase(BaseModel):
-    task_id: str
+    step_id: str
+    task_id: Optional[str] = None
     comments: List[CommentReadBase] = Field(default_factory=list)
 
 
@@ -225,16 +227,17 @@ class CommentsListServiceReadDto(CommentsListReadBase):
     pass
 
 
-class TaskAttachmentsReadBase(BaseModel):
-    task_id: str
+class StepAttachmentsReadBase(BaseModel):
+    step_id: str
+    task_id: Optional[str] = None
     attachments: List[AttachmentRead] = Field(default_factory=list)
 
 
-class TaskAttachmentsControllerReadDto(TaskAttachmentsReadBase):
+class StepAttachmentsControllerReadDto(StepAttachmentsReadBase):
     pass
 
 
-class TaskAttachmentsServiceReadDto(TaskAttachmentsReadBase):
+class StepAttachmentsServiceReadDto(StepAttachmentsReadBase):
     pass
 
 
