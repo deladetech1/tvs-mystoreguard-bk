@@ -38,8 +38,10 @@ class TaskStepRead(BaseModel):
     claimed_by_name: Optional[str] = None
     claimed_at: Optional[datetime] = None
     done_by: Optional[str] = None
+    done_by_name: Optional[str] = None
     done_at: Optional[datetime] = None
     completed_by: Optional[str] = None
+    completed_by_name: Optional[str] = None
     completed_at: Optional[datetime] = None
     depends_on: List[str] = Field(default_factory=list)
     targets: List[TaskStepTargetRead] = Field(default_factory=list)

@@ -240,9 +240,14 @@ class TasksService:
         td["deleted_by"] = None
 
         cursor.execute(
-            f"""SELECT s.*, claimer.fullname AS claimed_by_name
+            f"""SELECT s.*,
+                       claimer.fullname AS claimed_by_name,
+                       doer.fullname AS done_by_name,
+                       completer.fullname AS completed_by_name
             FROM {T.MSG_TASK_STEPS_TABLE} s
             LEFT JOIN {T.CORE_PLATFORM_USERS_TABLE} claimer ON s.claimed_by = claimer.id AND s.tenant_id = claimer.tenant_id
+            LEFT JOIN {T.CORE_PLATFORM_USERS_TABLE} doer ON s.done_by = doer.id AND s.tenant_id = doer.tenant_id
+            LEFT JOIN {T.CORE_PLATFORM_USERS_TABLE} completer ON s.completed_by = completer.id AND s.tenant_id = completer.tenant_id
             WHERE s.task_id = %s AND s.tenant_id = %s ORDER BY s.display_order ASC""",
             (task_id, tenant_id),
         )
@@ -278,6 +283,8 @@ class TasksService:
             s["targets"] = targets.get(s["id"], [])
             s["claimed_by_name"] = s.get("claimed_by_name")
             s["claimed_by"] = s.get("claimed_by")
+            s["done_by_name"] = s.get("done_by_name")
+            s["completed_by_name"] = s.get("completed_by_name")
             s["is_available"] = (
                 s["status"] in ("TODO", "IN_PROGRESS")
                 and TasksService._step_prereqs_complete(cursor, tenant_id, s["id"])
