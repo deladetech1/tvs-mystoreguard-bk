@@ -162,6 +162,9 @@ class Settings:
     MSG_TASK_STEP_TARGETS_TABLE = os.getenv("MSG_TASK_STEP_TARGETS_TABLE", "mystoreguard.msg_task_step_targets")
     MSG_TASK_NOTIFICATION_SETTINGS_TABLE = os.getenv("MSG_TASK_NOTIFICATION_SETTINGS_TABLE", "mystoreguard.msg_task_notification_settings")
     MSG_TASK_NOTIFICATIONS_TABLE = os.getenv("MSG_TASK_NOTIFICATIONS_TABLE", "mystoreguard.msg_task_notifications")
+    MSG_TASK_COMMENTS_TABLE = os.getenv("MSG_TASK_COMMENTS_TABLE", "mystoreguard.msg_task_comments")
+    MSG_TASK_COMMENT_MENTIONS_TABLE = os.getenv("MSG_TASK_COMMENT_MENTIONS_TABLE", "mystoreguard.msg_task_comment_mentions")
+    MSG_TASK_ATTACHMENTS_TABLE = os.getenv("MSG_TASK_ATTACHMENTS_TABLE", "mystoreguard.msg_task_attachments")
     CORE_PLATFORM_GROUPS_TABLE = os.getenv("CORE_PLATFORM_GROUPS_TABLE", "core_platform.cp_groups")
 
     # Sales tables

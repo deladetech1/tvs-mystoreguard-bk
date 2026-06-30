@@ -7,6 +7,8 @@ _KIND_COPY = {
                             "A step has been marked done and is waiting for you to approve it."),
     "REMINDER": ("Reminder: a task is still pending on you", "#dc3545",
                  "This step is still waiting on you. Please action it when you can."),
+    "MENTIONED": ("You were mentioned in a task comment", "#6f42c1",
+                  "Someone mentioned you in a comment on this task. Open it to see the discussion."),
 }
 
 

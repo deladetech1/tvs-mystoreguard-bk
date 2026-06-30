@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional
 from src.utils.auth import CustomAuthService, get_org_bus_with_permission, verify_subscription_active
 from src.entities.tasks.tasks_service import TasksService
+from src.entities.tasks.tasks_comments_service import TaskCommentsService
 from src.entities.tasks.tasks_write_dto import (
     CreateTaskControllerWriteDto,
     UpdateTaskControllerWriteDto,
@@ -14,6 +15,9 @@ from src.entities.tasks.tasks_write_dto import (
     DeleteTaskControllerWriteDto,
     TaskNotificationSettingsWriteDto,
     RemoveStepControllerWriteDto,
+    CreateCommentControllerWriteDto,
+    UpdateCommentControllerWriteDto,
+    AddTaskAttachmentsWriteDto,
 )
 from src.entities.tasks.tasks_read_dto import (
     CreateTaskControllerReadDto,
@@ -25,6 +29,10 @@ from src.entities.tasks.tasks_read_dto import (
     DeleteTaskControllerReadDto,
     TaskNotificationSettingsControllerReadDto,
     TaskStatisticsControllerReadDto,
+    CommentControllerReadDto,
+    CommentsListControllerReadDto,
+    TaskAttachmentsControllerReadDto,
+    DeletedControllerReadDto,
 )
 from src.entities.shared.sh_response import Respons
 from src.configs.logging import get_logger
@@ -271,3 +279,116 @@ def update_notification_settings(
     with LogContext("tasks", "update_notification_settings", tenant_id=current_user.data[0].tenant_id):
         c = _ctx(current_user, org_bus)
         return TasksService.upsert_notification_settings(data, c["tenant_id"], c["org_id"], c["bus_id"], c["user_id"])
+
+
+# ---------------- comments + @mentions ----------------
+
+@tasks_router.post("/{task_id}/comments", response_model=Respons[CommentControllerReadDto])
+def create_comment(
+    task_id: str,
+    data: CreateCommentControllerWriteDto,
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    _sub: dict = Depends(verify_subscription_active),
+    org_bus: dict = Depends(get_org_bus_with_permission),
+):
+    """Post a comment on a task; attach uploaded files and @mention users (who get emailed)."""
+    with LogContext("tasks", "create_comment", task_id=task_id):
+        _require(current_user, [UPDATE])
+        c = _ctx(current_user, org_bus)
+        return TaskCommentsService.create_comment(
+            data=data, task_id=task_id, tenant_id=c["tenant_id"], org_id=c["org_id"],
+            bus_id=c["bus_id"], created_by=c["user_id"])
+
+
+@tasks_router.get("/{task_id}/comments", response_model=Respons[CommentsListControllerReadDto])
+def list_comments(
+    task_id: str,
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    org_bus: dict = Depends(get_org_bus_with_permission),
+):
+    """List a task's comments (newest first) with mentions and attachment URLs."""
+    with LogContext("tasks", "list_comments", task_id=task_id):
+        _require(current_user, [GET])
+        c = _ctx(current_user, org_bus)
+        return TaskCommentsService.list_comments(task_id, c["tenant_id"], c["org_id"], c["bus_id"])
+
+
+@tasks_router.put("/comments/{comment_id}", response_model=Respons[CommentControllerReadDto])
+def update_comment(
+    comment_id: str,
+    data: UpdateCommentControllerWriteDto,
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    _sub: dict = Depends(verify_subscription_active),
+    org_bus: dict = Depends(get_org_bus_with_permission),
+):
+    """Edit your own comment (body / mentions / attachments)."""
+    with LogContext("tasks", "update_comment", comment_id=comment_id):
+        _require(current_user, [UPDATE])
+        c = _ctx(current_user, org_bus)
+        return TaskCommentsService.update_comment(
+            data=data, comment_id=comment_id, tenant_id=c["tenant_id"], org_id=c["org_id"],
+            bus_id=c["bus_id"], user_id=c["user_id"])
+
+
+@tasks_router.delete("/comments/{comment_id}", response_model=Respons[DeletedControllerReadDto])
+def delete_comment(
+    comment_id: str,
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    _sub: dict = Depends(verify_subscription_active),
+    org_bus: dict = Depends(get_org_bus_with_permission),
+):
+    """Permanently delete a comment (author, or anyone with the task delete permission)."""
+    with LogContext("tasks", "delete_comment", comment_id=comment_id):
+        _require(current_user, [UPDATE, DELETE])
+        c = _ctx(current_user, org_bus)
+        can_delete_any = AuthService.has_any_permission(
+            user_roles=current_user.data, required_permissions=[DELETE])
+        return TaskCommentsService.delete_comment(
+            comment_id, c["tenant_id"], c["org_id"], c["bus_id"], c["user_id"], can_delete_any=can_delete_any)
+
+
+# ---------------- task-level attachments ----------------
+
+@tasks_router.post("/{task_id}/attachments", response_model=Respons[TaskAttachmentsControllerReadDto])
+def add_task_attachments(
+    task_id: str,
+    data: AddTaskAttachmentsWriteDto,
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    _sub: dict = Depends(verify_subscription_active),
+    org_bus: dict = Depends(get_org_bus_with_permission),
+):
+    """Attach already-uploaded documents directly to a task."""
+    with LogContext("tasks", "add_task_attachments", task_id=task_id):
+        _require(current_user, [UPDATE])
+        c = _ctx(current_user, org_bus)
+        return TaskCommentsService.add_task_attachments(
+            data=data, task_id=task_id, tenant_id=c["tenant_id"], org_id=c["org_id"],
+            bus_id=c["bus_id"], created_by=c["user_id"])
+
+
+@tasks_router.get("/{task_id}/attachments", response_model=Respons[TaskAttachmentsControllerReadDto])
+def list_task_attachments(
+    task_id: str,
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    org_bus: dict = Depends(get_org_bus_with_permission),
+):
+    """List a task's direct (non-comment) attachments with download URLs."""
+    with LogContext("tasks", "list_task_attachments", task_id=task_id):
+        _require(current_user, [GET])
+        c = _ctx(current_user, org_bus)
+        return TaskCommentsService.list_task_attachments(task_id, c["tenant_id"], c["org_id"], c["bus_id"])
+
+
+@tasks_router.delete("/attachments/{attachment_id}", response_model=Respons[DeletedControllerReadDto])
+def delete_attachment(
+    attachment_id: str,
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    _sub: dict = Depends(verify_subscription_active),
+    org_bus: dict = Depends(get_org_bus_with_permission),
+):
+    """Remove an attachment (task- or comment-level) and its underlying file."""
+    with LogContext("tasks", "delete_attachment", attachment_id=attachment_id):
+        _require(current_user, [UPDATE])
+        c = _ctx(current_user, org_bus)
+        return TaskCommentsService.delete_attachment(
+            attachment_id, c["tenant_id"], c["org_id"], c["bus_id"], c["user_id"])
