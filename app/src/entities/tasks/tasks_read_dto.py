@@ -170,3 +170,82 @@ class TaskStatisticsControllerReadDto(TaskStatisticsReadBase):
 
 class TaskStatisticsServiceReadDto(TaskStatisticsReadBase):
     pass
+
+
+# =====================================================
+# COMMENT / ATTACHMENT READ DTOs
+# =====================================================
+
+class CommentMentionRead(BaseModel):
+    user_id: str
+    fullname: Optional[str] = None
+    email: Optional[str] = None
+
+
+class AttachmentRead(BaseModel):
+    id: str = Field(..., description="Attachment (junction) id")
+    document_id: str
+    file_name: Optional[str] = None
+    description: Optional[str] = None
+    presigned_url: Optional[str] = Field(None, description="24h read URL; None if it could not be generated")
+    created_by: Optional[str] = None
+    cdatetime: Optional[datetime] = None
+
+
+class CommentReadBase(BaseModel):
+    id: str
+    task_id: str
+    body: str
+    created_by: Optional[str] = None
+    author_name: Optional[str] = None
+    edited_at: Optional[datetime] = None
+    cdatetime: Optional[datetime] = None
+    mentions: List[CommentMentionRead] = Field(default_factory=list)
+    attachments: List[AttachmentRead] = Field(default_factory=list)
+
+
+class CommentControllerReadDto(CommentReadBase):
+    pass
+
+
+class CommentServiceReadDto(CommentReadBase):
+    pass
+
+
+class CommentsListReadBase(BaseModel):
+    task_id: str
+    comments: List[CommentReadBase] = Field(default_factory=list)
+
+
+class CommentsListControllerReadDto(CommentsListReadBase):
+    pass
+
+
+class CommentsListServiceReadDto(CommentsListReadBase):
+    pass
+
+
+class TaskAttachmentsReadBase(BaseModel):
+    task_id: str
+    attachments: List[AttachmentRead] = Field(default_factory=list)
+
+
+class TaskAttachmentsControllerReadDto(TaskAttachmentsReadBase):
+    pass
+
+
+class TaskAttachmentsServiceReadDto(TaskAttachmentsReadBase):
+    pass
+
+
+class DeletedReadBase(BaseModel):
+    id: str
+    message: str
+
+
+class DeletedControllerReadDto(DeletedReadBase):
+    pass
+
+
+class DeletedServiceReadDto(DeletedReadBase):
+    pass

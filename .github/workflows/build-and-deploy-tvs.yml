@@ -11,6 +11,15 @@ on:
       - "func/**"
       - ".github/workflows/build-and-deploy-tvs.yml"
   workflow_dispatch:
+    inputs:
+      deploy_target:
+        description: "What to deploy (manual runs only)"
+        type: choice
+        default: all
+        options:
+          - all
+          - containerapp
+          - functions
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -50,7 +59,9 @@ jobs:
   build-and-deploy-app:
     name: Build & Deploy Container App
     needs: detect-changes
-    if: needs.detect-changes.outputs.app_changed == 'true' || github.event_name == 'workflow_dispatch'
+    if: |
+      (github.event_name == 'push' && needs.detect-changes.outputs.app_changed == 'true') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.deploy_target == 'all' || inputs.deploy_target == 'containerapp'))
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -119,7 +130,9 @@ jobs:
   deploy-functions:
     name: Deploy Azure Functions
     needs: detect-changes
-    if: needs.detect-changes.outputs.func_changed == 'true' || github.event_name == 'workflow_dispatch'
+    if: |
+      (github.event_name == 'push' && needs.detect-changes.outputs.func_changed == 'true') ||
+      (github.event_name == 'workflow_dispatch' && (inputs.deploy_target == 'all' || inputs.deploy_target == 'functions'))
     runs-on: ubuntu-latest
     permissions:
       id-token: write

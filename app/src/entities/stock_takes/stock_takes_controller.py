@@ -5,6 +5,7 @@ from src.entities.stock_takes.stock_takes_service import StockTakesService
 from src.entities.stock_takes.stock_takes_write_dto import (
     CreateStockTakeControllerWriteDto,
     ResolveStockTakeItemControllerWriteDto,
+    EditStockTakeControllerWriteDto,
 )
 from src.entities.stock_takes.stock_takes_read_dto import (
     CreateStockTakeControllerReadDto,
@@ -12,6 +13,7 @@ from src.entities.stock_takes.stock_takes_read_dto import (
     CompleteStockTakeControllerReadDto,
     ResolveStockTakeItemControllerReadDto,
     StockTakeStatisticsControllerReadDto,
+    EditStockTakeControllerReadDto,
 )
 from src.entities.shared.sh_response import Respons
 from src.configs.logging import get_logger
@@ -168,5 +170,33 @@ def resolve_stock_take_item(
         bus_id=org_bus_loc["bus_id"],
         stock_take_id=stock_take_id,
         item_id=item_id,
+        user_id=current_user.data[0].user_id,
+    )
+
+
+# 6. Edit a DRAFT stock take (header + full line set) in one call
+@stock_takes_router.put("/{stock_take_id}", response_model=Respons[EditStockTakeControllerReadDto])
+def edit_stock_take(
+    stock_take_id: str,
+    data: EditStockTakeControllerWriteDto,
+    current_user: dict = Depends(CustomAuthService.get_current_user),
+    _subscription_check: dict = Depends(verify_subscription_active),
+    org_bus_loc: dict = Depends(get_org_bus_loc_with_permission),
+):
+    """Edit a DRAFT stock take, like create but updating an existing one.
+
+    Send the header fields plus the full desired list of lines. The service diffs
+    it against what is stored: lines with an `id` are updated, lines without an
+    `id` are added (system qty snapshotted, variance computed), and stored lines
+    absent from the payload are removed. Only DRAFT takes can be edited, and a line
+    that already had a stock adjustment applied can't be removed or recounted.
+    """
+    _authorize(current_user, ["permission-msg-stock-takes-create"])
+    return StockTakesService.edit_stock_take(
+        data=data,
+        tenant_id=current_user.data[0].tenant_id,
+        org_id=org_bus_loc["org_id"],
+        bus_id=org_bus_loc["bus_id"],
+        stock_take_id=stock_take_id,
         user_id=current_user.data[0].user_id,
     )

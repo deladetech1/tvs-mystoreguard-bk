@@ -123,3 +123,46 @@ class TaskNotificationSettingsWriteDto(BaseModel):
     opt_in: Optional[bool] = Field(None, description="Receive task emails")
     reminder_interval_minutes: Optional[int] = Field(
         None, ge=15, description="Minutes between 'still pending' reminders (min 15)")
+
+
+# =====================================================
+# COMMENT / ATTACHMENT WRITE DTOs
+# =====================================================
+
+class CreateCommentWriteBase(BaseModel):
+    """Post a comment on a task. Files (any format) are uploaded first via the file
+    manager (`POST /file/post/multiple`); pass the resulting ids as `document_ids`."""
+    body: str = Field(..., min_length=1, description="Comment text")
+    mentioned_user_ids: List[str] = Field(
+        default_factory=list, description="cp_users ids to @mention; each gets an email notification")
+    document_ids: List[str] = Field(
+        default_factory=list, description="Document ids (from the file manager) to attach to this comment")
+
+
+class CreateCommentControllerWriteDto(CreateCommentWriteBase):
+    pass
+
+
+class CreateCommentServiceWriteDto(CreateCommentWriteBase):
+    pass
+
+
+class UpdateCommentWriteBase(BaseModel):
+    """Edit a comment. Author only. `mentioned_user_ids` / `document_ids` replace the
+    existing sets when provided; omit (None) to leave them unchanged."""
+    body: Optional[str] = Field(None, min_length=1)
+    mentioned_user_ids: Optional[List[str]] = Field(None, description="Replace the mention set")
+    document_ids: Optional[List[str]] = Field(None, description="Replace the comment's attachment set")
+
+
+class UpdateCommentControllerWriteDto(UpdateCommentWriteBase):
+    pass
+
+
+class UpdateCommentServiceWriteDto(UpdateCommentWriteBase):
+    pass
+
+
+class AddTaskAttachmentsWriteDto(BaseModel):
+    """Attach already-uploaded documents directly to a task (not tied to a comment)."""
+    document_ids: List[str] = Field(..., min_length=1, description="Document ids to attach to the task")
